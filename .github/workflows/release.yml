@@ -12,8 +12,23 @@ permissions:
   contents: write
 
 jobs:
+  # 发布前的第一道闸:版本号对不上就直接停,不浪费十分钟去打包。
+  # 打标签触发时:三处版本号必须一致,且标签名去掉 v 后也要等于版本号。
+  # 手动触发时:只校验三处版本号互相一致(没有标签可比)。
+  verify:
+    name: 校验版本号
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: 三处版本号 + 标签名一致性
+        run: node scripts/check-version.mjs
+
   windows:
     name: Windows(Electron)
+    needs: [verify]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +59,7 @@ jobs:
 
   android:
     name: Android(arm64 release APK,已签名)
+    needs: [verify]
     runs-on: ubuntu-latest
     env:
       NDK_VERSION: 25.2.9519653
