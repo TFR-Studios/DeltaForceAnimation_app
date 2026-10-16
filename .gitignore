@@ -22,8 +22,10 @@ key.properties
 
 # 桌面应用打包产物(免安装目录 / 便携版 exe / 自检输出)
 release/
-build/icon.ico
-build/icon.png
+# 注意:build/icon.ico 与 build/icon.png **要提交**。
+# 它们是打包的输入(不是产物),而且由 npm run icons 生成时需要真的拉起 Electron;
+# CI 的 Windows runner 上没有可用的图形会话,让流水线依赖这一步很脆。
+# 换 logo 之后再本地跑一次 npm run icons,把这两个文件一起提交即可。
 
 # 日志与系统文件
 *.log

@@ -1,0 +1,124 @@
+name: Release
+
+# 打一个 v* 标签 → 两个 runner 分别出包 → 自动建 Release 并挂附件。
+# 也可以从 Actions 页面手动触发(手动触发只出包,不发 Release)。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows(Electron)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: 安装依赖
+        run: npm ci
+      - name: 构建前端(类型检查 + Vite)
+        run: npm run build
+      - name: 打包(免安装目录 + 便携版单文件)
+        run: npx electron-builder --win --x64 --publish never
+      - name: 整理产物
+        shell: pwsh
+        run: |
+          $ver = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          $portable = Get-ChildItem release -Filter 'DeltaForceAnimationEditor-Portable-*.exe' | Select-Object -First 1
+          if ($portable) { Copy-Item $portable.FullName "release-assets/$($portable.Name)" }
+          Compress-Archive -Path release/win-unpacked/* -DestinationPath "release-assets/DeltaForceAnimationEditor-$ver-win-unpacked.zip" -CompressionLevel Optimal
+          Get-ChildItem release-assets | Select-Object Name,Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: release-assets/*
+          if-no-files-found: error
+
+  android:
+    name: Android(arm64 release APK,已签名)
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 25.2.9519653
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: 安装 Android SDK 组件
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "platforms;android-37.0" "build-tools;37.0.0" "ndk;$NDK_VERSION" "platform-tools"
+      - name: 还原 Android 签名密钥(从 Secrets)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo '::error::缺少 ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD 这两个 Secret(见 README 的 Android 端一节)'; exit 1;
+          fi
+          cd src-tauri/gen/android
+          echo "$KEYSTORE_BASE64" | base64 -d > dfae-release.keystore
+          printf 'storeFile=dfae-release.keystore\nstorePassword=%s\nkeyAlias=dfae\nkeyPassword=%s\n' "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" > keystore.properties
+      - name: 安装依赖
+        run: npm ci
+      - name: 构建并签名 release APK
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          export NDK_HOME="$ANDROID_NDK_HOME"
+          npm run tauri android build -- --apk -t aarch64 --ci
+      - name: 校验签名并整理产物
+        run: |
+          APK=src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --print-certs "$APK"
+          VER=$(node -p "require('./package.json').version")
+          mkdir -p release-assets
+          cp "$APK" "release-assets/dfae-${VER}-arm64-v8a.apk"
+          ls -l release-assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: 建 Release 并挂附件
+    needs: [windows, android]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ -f "docs/RELEASE_NOTES_${TAG}.md" ]; then
+            NOTES="--notes-file docs/RELEASE_NOTES_${TAG}.md"
+          else
+            NOTES="--generate-notes"
+          fi
+          gh release create "$TAG" --title "$TAG" $NOTES release-assets/*

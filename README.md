@@ -28,6 +28,7 @@
 - [Windows 端比网页版多了什么](#windows-端比网页版多了什么)
 - [Android 端(Tauri v2)](#android-端tauri-v2)
 - [构建与打包(维护者)](#构建与打包维护者)
+- [发版(打标签 → CI 自动出包)](#发版打标签--ci-自动出包)
 - [命令一览](#命令一览)
 - [目录结构](#目录结构)
 - [桌面外壳实现要点](#桌面外壳实现要点)
@@ -293,6 +294,57 @@ release\
 | `productName` | `三角洲行动动画编辑器` | 决定 exe 名、任务栏名、通知来源名。 |
 | `portable.unpackDirName` | `DeltaForceAnimationEditor` | 便携版解压到 `%TEMP%` 时用**纯 ASCII** 目录名,避免中文路径在个别环境下的坑。 |
 | `files` | `electron/**` + `dist/**` + `package.json` | 源码(`src/`、`animations/`、`tools/`)不进产物 —— 产物里只有"跑起来需要的东西"。 |
+
+---
+
+## 发版(打标签 → CI 自动出包)
+
+[.github/workflows/release.yml](.github/workflows/release.yml) 已经配好:打一个 `v*` 标签,GitHub 会开两个 runner 分别出包,并自动建 Release 把附件挂上去。
+
+### 一次性配置(两个 Secret)
+
+| Secret | 内容 |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | 签名密钥的 base64。在项目根目录跑一行拿到:
+`[Convert]::ToBase64String([IO.File]::ReadAllBytes("src-tauri\gen\android\dfae-release.keystore"))` |
+| `ANDROID_KEYSTORE_PASSWORD` | `src-tauri\gen\android\keystore.properties` 里 `storePassword` 的值 |
+
+加到仓库的 `Settings → Secrets and variables → Actions → New repository secret`。
+本地那份 `keystore.properties` 与 `.keystore` **不在仓库里**(`.gitignore` 挡住了),不要提交。
+
+> ⚠️ **把 keystore 备份到仓库之外**(私有仓库 / 网盘都行)。Android 要求同一个应用的后续版本必须用同一把密钥签名 ——
+> 密钥丢了,老用户就只能卸载重装才能升级。
+
+### 发一版
+
+```bash
+# 1) 改版本号(package.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml 三处保持一致)
+git add -A && git commit -m 'chore: v1.0.2'
+git push
+
+# 2) 打标签并推 —— 这一步触发 CI
+git tag v1.0.2
+git push origin v1.0.2
+```
+
+CI 产出三个附件:
+
+| 附件 | 说明 |
+|---|---|
+| `DeltaForceAnimationEditor-Portable-<版本>.exe` | Windows 便携版单文件(约 88 MB) |
+| `DeltaForceAnimationEditor-<版本>-win-unpacked.zip` | Windows 免安装版 |
+| `dfae-<版本>-arm64-v8a.apk` | Android **release 签名包**(约 27 MB,含 `arm64-v8a`) |
+
+不想发 Release、只想出包:到 Actions 页面手动 `Run workflow` —— 手动触发只上传 artifacts,不发 Release。
+
+### 本地出签名包
+
+```powershell
+npm run tauri android build -- --apk -t aarch64
+# 产物:src-tauri\gen\android\app\build\outputs\apk\universal\release\app-universal-release.apk
+```
+
+体积对比:**debug 288 MB → release 26.9 MB**(调试符号与未优化代码去掉之后)。
 
 ---
 

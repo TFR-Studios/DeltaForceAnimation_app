@@ -14,6 +14,17 @@ val tauriProperties = Properties().apply {
     }
 }
 
+/* 发布签名:从 gen/android/keystore.properties 读。
+ * 这个文件与 .keystore 都**不在仓库里**(根 .gitignore 与 gen/android/.gitignore 都挡了),
+ * CI 上由 GitHub Secrets 还原。没有它们时照样能编 debug 包 —— release 包只是没有签名。 */
+val keystoreProperties = Properties().apply {
+    val propFile = rootProject.file("keystore.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
+
 android {
     compileSdk = 37
     namespace = "top.tfrstudio.dfae.tauri"
@@ -24,6 +35,16 @@ android {
         targetSdk = 37
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -39,6 +60,7 @@ android {
             }
         }
         getByName("release") {
+            if (hasReleaseKeystore) signingConfig = signingConfigs.getByName("release")
             optimization {
                enable = true
             }
