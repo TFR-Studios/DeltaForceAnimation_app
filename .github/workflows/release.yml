@@ -107,6 +107,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
@@ -128,3 +131,16 @@ jobs:
           else
             gh release create "$TAG" --title "$TAG" $NOTES release-assets/*
           fi
+      # 把同一批产物也同步到 GitCode。
+      # 为什么要单独做:GitCode 的「仓库镜像」只同步代码(分支/标签/提交),不同步 Release 附件,
+      # 而软件的更新检查是靠 GitCode 上的附件下载地址 —— 少这一步,GitCode 上就只有代码没有安装包。
+      # 没配 GITCODE_TOKEN 就只是警告并跳过,不影响 GitHub 这边的发布。
+      - name: 同步到 GitCode(镜像 + 更新源)
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: |
+          if [ -z "$GITCODE_TOKEN" ]; then
+            echo "::warning::没有配置 GITCODE_TOKEN,跳过 GitCode 同步(见 README 的「把它同步到 GitCode」一节)"
+            exit 0
+          fi
+          node scripts/publish-to-gitcode.mjs "$GITHUB_REF_NAME" release-assets

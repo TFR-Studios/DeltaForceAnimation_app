@@ -22,6 +22,8 @@ key.properties
 
 # 桌面应用打包产物(免安装目录 / 便携版 exe / 自检输出)
 release/
+# CI / 本地打出来的待发布产物(发完之后就没有用了)
+/release-assets/
 # 注意:build/icon.ico 与 build/icon.png **要提交**。
 # 它们是打包的输入(不是产物),而且由 npm run icons 生成时需要真的拉起 Electron;
 # CI 的 Windows runner 上没有可用的图形会话,让流水线依赖这一步很脆。

@@ -29,6 +29,7 @@
 - [Android 端(Tauri v2)](#android-端tauri-v2)
 - [构建与打包(维护者)](#构建与打包维护者)
 - [发版(打标签 → CI 自动出包)](#发版打标签--ci-自动出包)
+- [同步到 GitCode(镜像 + 更新源)](#同步到-gitcode镜像--更新源)
 - [命令一览](#命令一览)
 - [目录结构](#目录结构)
 - [桌面外壳实现要点](#桌面外壳实现要点)
@@ -345,6 +346,58 @@ npm run tauri android build -- --apk -t aarch64
 ```
 
 体积对比:**debug 288 MB → release 26.9 MB**(调试符号与未优化代码去掉之后)。
+
+---
+
+## 同步到 GitCode(镜像 + 更新源)
+
+GitCode 在这里承担两个角色:**GitHub 的代码镜像**,以及**软件的更新源**(国内下载比 GitHub 稳)。
+
+### 代码:自动同步
+
+在 GitCode 项目页 → **项目设置 → 仓库镜像 → 选 Pull** 里配置一次(GitHub → GitCode)。官方说明:
+<https://docs.gitcode.com/docs/help/home/org_project/project_manage/project_settings/repository_mirroring/>
+
+配好之后,分支、标签、提交都会自动同步过来,不用再管。
+
+> ⚠️ **注意方向**:Pull 是 GitHub → GitCode(你要的);Push 是反过来的,别配错。
+> 另外建议勾上「覆盖分叉分支」—— 意思是永远以 GitHub 为准。
+
+### 安装包:由 CI 自动同步
+
+⚠️ **仓库镜像只同步代码,不同步 Release 的附件。** 少这一步,GitCode 上就只有代码、下载不到安装包。
+
+[.github/workflows/release.yml](.github/workflows/release.yml) 的 `publish` 作业里已经接好了
+[scripts/publish-to-gitcode.mjs](scripts/publish-to-gitcode.mjs):GitHub 的发行版建完之后,同一批附件会再传一份到 GitCode。
+
+需要配一个 Secret:
+
+| Secret | 内容 |
+|---|---|
+| `GITCODE_TOKEN` | GitCode 的私人令牌(GitCode 右上角头像 → 设置 → 访问令牌) |
+
+没配也能跑 —— 只是会打一条黄色警告并跳过这一步,不影响 GitHub 那边的发布。
+
+本地也能手动跑(脚本是幂等的:同名附件先删再传,发行版说明就地更新):
+
+```bash
+GITCODE_TOKEN=xxx node scripts/publish-to-gitcode.mjs v1.0.2 release-assets
+```
+
+### 软件怎么做更新检查
+
+GitCode 的接口**不用登录就能读**,直接问它「最新发行版是哪个」:
+
+```
+GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/releases/latest
+```
+
+返回里带着版本号(`tag_name`)和每个安装包的下载地址(`assets[].browser_download_url`)。
+字段名与 GitHub 一致,所以两端的解析逻辑可以共用一套。
+
+> **两个平台的更新方式不一样**:
+> Windows 可以做成真·自动更新(下载新 exe 替换自己);
+> Android **做不到静默更新** —— 系统不允许 App 自己装自己,只能下载 APK 后跳到系统安装界面,让用户点「安装」。
 
 ---
 
