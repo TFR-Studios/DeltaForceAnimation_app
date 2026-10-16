@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "三角洲行动动画编辑器",
+        "url": "index.html",
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  }
+}

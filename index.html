@@ -1,0 +1,584 @@
+<!-- 三角洲行动动画编辑器 · 单页入口(Vite 构建,纯静态部署) -->
+<!-- 结构顺序:启动加载层 -> 顶栏 -> 主区(预览 + 侧栏) -> 数据加载浮层 -> 导出浮层 -> 动画画廊 -> 状态栏 -->
+<!-- 样式来自 src/style.css,由 src/main.ts 顶部 import 引入,所以这里没有外部样式表链接 -->
+<!-- 只有启动加载层的样式内联在 head 的 style 标签里:它必须在样式表就绪之前就能渲染,否则会白屏 -->
+<!-- 本文件里的 id 与 main.ts 顶部的 $() 常量一一对应,改名必须两边同步,否则取到 null 后静默失效 -->
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport 只设 initial-scale=1,不锁定缩放:移动端允许用户双指放大查看画布细节 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- 站点图标:DFAED 矢量标志(public/logo.svg,构建时原样拷贝到站点根目录) -->
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <title>三角洲行动动画编辑器</title>
+    <!-- 首屏主题:必须内联且早于任何样式生效。样式表还没加载时,先按"深色为主"落
+         data-theme;用户上次选了浅色就换成浅色。这样首屏不会先亮一下深色再切浅色。 -->
+    <script>
+      (function () {
+        var theme = 'dark';
+        try {
+          if (localStorage.getItem('dfae.ui.theme.v1') === 'light') theme = 'light';
+        } catch (e) { /* 存储不可用:保持默认深色 */ }
+        document.documentElement.dataset.theme = theme;
+        window.__DFAE_THEME = theme;
+      })();
+    </script>
+    <!-- 启动加载界面(内联样式):不依赖外部 CSS,在样式表加载完成前即可显示,避免白屏。
+         配色只用同一族的两个锚点色:#242424(深色底)/ #f2f2f4(浅色底),
+         浅色分支由 <html data-theme="light"> 命中 —— 这两段必须内联,因为此刻
+         src/style.css 还没加载,用不了 --bg/--text 这些令牌。 -->
+    <style>
+      /* 启动加载层的字体与主界面同一套(产品字体 + 系统兜底)。这里必须内联:
+           此刻 src/style.css 还没到,拿不到 --font-ui;字体文件本身也还没开始下载,
+           所以第一帧一定是系统字体渲染,font-display:swap 到位后换成产品字体 —— 不会白屏。 */
+      #app-loading{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:#242424;color:#f2f2f4;transition:opacity .4s ease;font-family:"ProjectD Type","Segoe UI Variable Text","Segoe UI",system-ui,"Microsoft YaHei",sans-serif}
+      #app-loading.is-hidden{opacity:0;pointer-events:none}
+      html[data-theme="light"] #app-loading{background:#f2f2f4;color:#242424}
+      .ld-term{width:380px;max-width:86vw;display:flex;flex-direction:column;gap:14px}
+      .ld-title{display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px;letter-spacing:.2px}
+      .ld-logo{width:30px;height:30px;flex:none;display:block;border-radius:6px}
+      .ld-log{font-size:12.5px;line-height:1.6;color:#9b9ba3;font-variant-numeric:tabular-nums}
+      html[data-theme="light"] .ld-log{color:#6a6a72}
+      .ld-log b{color:inherit;font-weight:600}
+      .ld-log .ok{color:#54d6a4}
+      html[data-theme="light"] .ld-log .ok{color:#0b6a45}
+      /* 进度条:22 个方块由 main.ts 生成(每条 i 一格)。这里把它画成一条连续的细条,
+         保留"分格点亮"的信息量,但不再是终端里的方块墙。 */
+      .ld-bar{display:flex;gap:2px;height:4px;margin:2px 0 0}
+      .ld-bar i{flex:1;height:100%;border-radius:2px;background:rgba(128,128,132,.28)}
+      .ld-bar i.on{background:#f2f2f4}
+      html[data-theme="light"] .ld-bar i{background:rgba(80,80,88,.18)}
+      html[data-theme="light"] .ld-bar i.on{background:#242424}
+      .ld-pct{font-size:12px;color:#9b9ba3;font-variant-numeric:tabular-nums}
+      html[data-theme="light"] .ld-pct{color:#6a6a72}
+    </style>
+  </head>
+  <body>
+    <!-- 启动加载层:纯静态骨架(终端风文案 + 方块进度条),不依赖外部样式表,是「打开页面即见」的兜底画面 -->
+    <!-- 方块由 main.ts 的 startLoadingProgress 生成;进度推到 96% 附近会停下等待,动画 ready 后才冲向 100% -->
+    <!-- 冲满后加 is-hidden 淡出,500ms 后整体移除。淡出的同一刻主动画已 ready,
+         舞台落定动效会在那一刻播一次(main.ts 的 pulseStage,见 style.css 6.3)——
+         所以"应用出现"看到的是画面从虚到实地落定,而不是一次硬切。 -->
+    <div id="app-loading" role="status" aria-label="加载中">
+      <div class="ld-term">
+        <div class="ld-title"><img class="ld-logo" src="/logo.svg" alt="" aria-hidden="true" />三角洲行动动画编辑器</div>
+        <div class="ld-log">正在准备渲染引擎 <b>·</b> <span class="ok">就绪</span></div>
+        <div class="ld-log" id="ldStatus">正在加载动画资源</div>
+        <div class="ld-bar" id="ldBar"></div>
+        <div class="ld-pct" id="ldPct">0%</div>
+      </div>
+    </div>
+    <!-- 顶栏:品牌 + 制作声明徽标 + 动画选择器;高度自适应,窄屏时靠 flex-wrap 换到第二行 -->
+    <header class="topbar">
+      <div class="brand">
+        <img class="brand-logo" src="/logo.svg" alt="" aria-hidden="true" />
+        <span>三角洲行动动画编辑器<span class="tag">编辑 · 预览 · 导出</span></span>
+      </div>
+      <!-- 制作声明徽标:纯展示元素,不参与任何编辑或导出逻辑;「未使用 AI」是结论,样式上给了最高亮度 -->
+      <!-- 改版(2026-10)去掉了它的入场/待机动效:产品界面每次启动都重播一遍扫光属于装饰,
+           不是状态反馈(见 DESIGN.md 的 Motion 段)。这一条是刻意的,不要"顺手加回来"。 -->
+      <span class="craft-note" role="note" title="本页所有动画均由人工使用 AE 制作,未使用 AI 生成">
+        <svg class="bi craft-note-ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325"/>
+        </svg><span class="craft-note-text">动画由人工使用 <b>AE</b> 制作 · <em>未使用 AI</em></span>
+      </span>
+      <!-- 动画选择器(顶栏只放「当前动画」这一条,完整列表在下面的动画画廊里) -->
+      <!-- 之所以不再用原生 select:动画变多以后,下拉列表只能显示纯文本、无法分组/搜索/预览,
+           而且会把顶栏宽度撑得忽长忽短。这里改成一个触发器按钮,点击打开 #animPicker 画廊。 -->
+      <!-- 触发器上的名称 / 规格 / 数量都由 main.ts 的 syncAnimTrigger 写入 -->
+      <div class="anim-switch">
+        <!-- 「动画」这个可见标签在这里是冗余的:触发器本身就写着当前动画名 +
+             规格 + 总数,用户在上下文中一眼就知道这块是干什么的。
+             保留同一个 class 供样式/脚本按老选择器定位,但视觉上交给读屏(仅 sr-only)。 -->
+        <span class="anim-switch-label">动画</span>
+        <button type="button" class="anim-trigger" id="animTrigger" aria-haspopup="dialog" aria-expanded="false"
+                title="选择要编辑的动画(快捷键:斜杠 / 或 Ctrl+K)">
+          <span class="anim-trigger-text">
+            <!-- 名称 + 总数在同一行:总数是"这套动画属于八套里的哪一个"的元信息,
+                 贴在名字右侧比单独占一格更省宽度,也更容易读成一组。 -->
+            <span class="anim-trigger-head">
+              <span class="anim-trigger-name" id="animTriggerName">撤离动画</span>
+              <span class="anim-trigger-count" id="animTriggerCount"></span>
+            </span>
+            <span class="anim-trigger-meta" id="animTriggerMeta"></span>
+          </span>
+          <svg class="bi anim-trigger-caret" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path d="M8 11.2 2.6 5.8l1.13-1.13L8 8.94l4.27-4.27 1.13 1.13z"/>
+          </svg>
+        </button>
+        <!-- 兼容层:历史校验脚本用 page.select('#selAnim', key) 驱动切换(tools/verify-*.mjs),
+             保留一个隐藏的原生 select 作为「程序化切换入口」,options 由 main.ts 按注册表生成。
+             对用户不可见、不参与 Tab 顺序,只负责 set value + dispatch change 这条老路径。 -->
+        <select id="selAnim" class="anim-compat" tabindex="-1" aria-hidden="true"></select>
+      </div>
+      <!-- 下载列表(仅桌面客户端显示,由 main.ts 检测 window.dfaeDownloads 后取消 hidden):
+           导出的视频 + 历史记录都在这里,支持搜索、重命名、定位、用默认播放器打开。
+           浏览器里没有这套主进程能力,按钮与面板整体保持隐藏,不影响网页版。 -->
+      <button type="button" class="dw-open" id="btnDownloads" hidden title="下载列表 / 下载历史" aria-haspopup="dialog">
+        <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M8 1.2a.9.9 0 0 1 .9.9v6.03l1.53-1.53a.9.9 0 1 1 1.27 1.27l-3.06 3.06a.9.9 0 0 1-1.27 0L4.3 7.87a.9.9 0 0 1 1.27-1.27L7.1 8.13V2.1a.9.9 0 0 1 .9-.9z"/>
+          <path d="M2.4 11.2a.9.9 0 0 1 .9.9v1.1h9.4v-1.1a.9.9 0 1 1 1.8 0v1.5a1.4 1.4 0 0 1-1.4 1.4H2.9a1.4 1.4 0 0 1-1.4-1.4v-1.5a.9.9 0 0 1 .9-.9z"/>
+        </svg>
+        <span class="dw-open-text">下载列表</span>
+        <span class="dw-open-count" id="downloadsCount" hidden></span>
+      </button>
+    </header>
+
+    <!-- 主区:左列预览面板 + 右侧固定 320px 侧栏;两侧各自滚动,页面本身不滚动 -->
+    <main class="layout">
+      <section class="preview-panel">
+        <!-- 预览舞台(stage):滚轮缩放、拖拽平移都在这一层响应,事件见 main.ts 的 wheel / pointer 处理 -->
+        <!-- 内层 previewInner 是 lottie 容器,同时代表安全框尺寸(撤离 1920×1080、位置暴露 3840×1080) -->
+        <!-- popupLayer 叠在画布内部显示弹窗动画,与主动画同帧号同步 -->
+        <div class="preview-stage" id="stage">
+          <!-- 舞台扫描线:换动画 / 第一帧到位时自上而下走一遍(见 main.ts 的 pulseStage)。
+               它是一枚绝对定位、pointer-events:none 的纯视觉元素,不参与任何几何计算,
+               也不影响适配算法与导出 —— 导出渲染的是画布本身,不经过舞台。 -->
+          <div class="stage-scan" id="stageScan" aria-hidden="true"></div>
+          <!-- 两层各管一件事,不要再合并回一层:
+               .preview-canvas 是「画布框定层」—— 由 CSS 的 left/top:50% + translate(-50%,-50%)
+               把 1:1 的画布盒精确钉在舞台中心,它不参与任何缩放;
+               #previewInner 是「画布缩放层」—— main.ts 的适配算法只往它的 transform 写
+               translate(pan) scale(fit),不再需要靠负 margin 做居中。
+               拆开之后"居中"与"缩放"互不干扰:换适配策略不会把画面推歪,
+               也不会再出现「CSS 的 translate 被 main.ts 覆写掉」这种静默偏移。 -->
+          <div class="preview-canvas">
+            <div class="preview-inner" id="previewInner">
+              <div class="popup-layer" id="popupLayer" hidden></div>
+            </div>
+          </div>
+        </div>
+        <!-- 时间轴:min/max/step 由 main.ts 按当前动画总帧数重写,这里的 0..0 只是占位 -->
+        <!-- 帧号与秒数同显,秒 = 帧号 / 动画帧率(帧率取自 lottie JSON 的 fr 字段),方便与 AE 时间轴对照 -->
+        <div class="timeline">
+            <input type="range" id="rngFrame" min="0" max="0" step="1" value="0" title="拖动预览时间轴" aria-label="动画时间轴" />
+            <span class="frame">帧 <b id="frameInfo">0 / 0</b> · <span id="timeInfo">0.00s</span></span>
+          </div>
+          <!-- 播放控制条:回到开头 / 播放暂停(空格键)/ 循环 / 速度(0.1~3.0 倍)/ 视图缩放与复位 -->
+          <!-- 「速度」只作用于预览(main.ts 调 anim.setSpeed),导出流程不读取该值 -->
+          <!-- spacer 之后是导出相关:导出格式(MP4 / AVI)、导出按钮、渲染器(SVG / Canvas)、适配(包含 / 铺满 / 原始)、背景色、透明背景 -->
+          <!-- 勾选「透明背景」时格式会自动切到 AVI 并被禁用(MP4 不支持透明通道),原因见 main.ts 的 syncExportFormatUI -->
+          <div class="transport">
+          <button id="btnRestart" class="icon-btn" type="button" title="回到开头" aria-label="回到开头">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M15 1.6v12.8a.8.8 0 0 1-1.258.65L4.8 8.65v5.75a.8.8 0 0 1-1.6 0V1.6a.8.8 0 0 1 1.6 0v5.75l8.942-6.4A.8.8 0 0 1 15 1.6z"/>
+            </svg>
+          </button>
+          <button id="btnPlay" class="play-btn icon-btn" type="button" title="播放/暂停(空格键)" aria-label="播放">
+            <span class="ico-stack">
+              <svg id="icoPlay" class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M3.2 1.72v12.56c0 .66.72 1.07 1.29.74l10.3-6.28a.86.86 0 0 0 0-1.48L4.49.98a.86.86 0 0 0-1.29.74z"/>
+              </svg>
+              <!-- 暂停图标默认收起:显隐与交叉淡入由 CSS 按 #btnPlay 的 aria-pressed 驱动
+                   (style.css 的 .ico-stack 段),这里不再写行内 display —— 行内样式会压死 CSS 的过渡。 -->
+              <svg id="icoPause" class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M4.2 1.3h2.6a.8.8 0 0 1 .8.8v11.8a.8.8 0 0 1-.8.8H4.2a.8.8 0 0 1-.8-.8V2.1a.8.8 0 0 1 .8-.8zm5 0h2.6a.8.8 0 0 1 .8.8v11.8a.8.8 0 0 1-.8.8H9.2a.8.8 0 0 1-.8-.8V2.1a.8.8 0 0 1 .8-.8z"/>
+              </svg>
+            </span>
+          </button>
+          <label class="loop"><input type="checkbox" id="chkLoop" data-df-switch /> 循环</label>
+          <label>速度
+            <input type="range" id="rngSpeed" min="0.1" max="3" step="0.1" value="1" />
+            <span id="speedVal">1.0×</span>
+          </label>
+          <span class="frame">缩放 <b id="zoomInfo">100%</b></span>
+          <button id="btnResetView" type="button" title="复位视图(也可双击预览区)">复位视图</button>
+          <label>导出格式
+            <select id="selFormat" data-df-select title="导出格式:使用当前背景色;勾选透明背景时自动导出 AVI">
+              <option value="mp4">MP4</option>
+              <option value="avi">AVI</option>
+            </select>
+          </label>
+          <!-- 导出分辨率:「自动」= 桌面按原始分辨率、移动端按 1080p 级;
+               实际编码尺寸还会再按本机编码器能力向下压(手机编不了 4K 时自动降档,不会导出失败),
+               当前实际规格会显示在导出浮层的标题上。 -->
+          <label>分辨率
+            <select id="selRes" data-df-select title="导出分辨率:自动 = 按本机能力选择(移动端默认 1080p 级,桌面端保持原始分辨率)">
+              <option value="auto">自动</option>
+              <option value="1">原始</option>
+              <option value="0.75">75%</option>
+              <option value="0.5">50%</option>
+            </select>
+          </label>
+          <span class="export-hint" id="exportHint"></span>
+          <button id="btnExport" type="button" title="导出视频(含音频,使用当前背景色;透明背景自动导出 AVI)">导出视频</button>
+          <span class="spacer"></span>
+          <label>渲染器
+            <select id="selRenderer" data-df-select>
+              <option value="svg">SVG</option>
+              <option value="canvas">Canvas</option>
+            </select>
+          </label>
+          <label>适配
+            <select id="selFit" data-df-select>
+              <option value="contain">包含</option>
+              <option value="cover">铺满</option>
+              <option value="none">原始</option>
+            </select>
+          </label>
+          <label class="bg">背景色 <input type="color" id="bgColor" value="#16181d" /></label>
+          <label><input type="checkbox" id="chkTransparent" data-df-switch /> 透明背景</label>
+        </div>
+      </section>
+
+      <!-- 侧栏:动画信息 -> 动画时长(仅位置暴露) -> 报酬信息(仅任务弹窗) -> 文字图层 -> 形状图层 -> 图片图层 -> 图标选择 -> 弹窗图层 -->
+      <!-- 除「动画信息」外,各区块默认 hidden,由 main.ts 按当前动画的数据能力逐块打开 -->
+      <!-- 各区块标题后的 span 是图层数量计数,由 main.ts 写入 -->
+      <aside class="side-panel">
+        <!-- 区块跳转(吸顶):侧栏里最长的撤离动画内容高约 5900px、10 个区块,
+             「弹窗图层」在 5217px 处 —— 控件一直都在,只是埋在 13 个文字图层 + 22 个形状图层之后。
+             这一条把任意区块变成一次选择,并且用它的当前值回答"我正在看哪一段"(滚动时自动跟随)。
+             选项由 main.ts 按**当前动画实际显示的区块**生成(区块显隐跟着 caps 走),
+             所以它不会列出点了没反应的东西;只剩一个区块时整条收起。
+             为什么是 <select> 而不是一排胶囊:面板只有 272-336px 宽,10 个中文区块名排成胶囊要 3 行,
+             吸顶条会吃掉侧栏 12% 的高度(实测),而下拉展开时同样列出全部区块。 -->
+        <label class="side-nav" id="sideNav" hidden>
+          <span class="side-nav-label">跳转到</span>
+          <select id="sideNavSelect" data-df-select title="跳到侧栏的某个区块" aria-label="跳转到侧栏区块"></select>
+        </label>
+        <h3>动画信息</h3>
+        <dl id="infoList"></dl>
+        <!-- 动画时长(由注册项的 caps.timing 决定是否显示):时长滑杆把末尾淡出关键帧整体后移,范围 1~10s、步进 0.1s -->
+        <!-- 「二次扫描」勾选后主动画播完紧接着播第二段;下一行是它的时长,默认 hidden,勾选后才出现 -->
+        <!-- 这两行(勾选行 + 时长行)只对 caps.nextScan 为真的动画显示 —— 「时长可调」和「有第二段」是两件事:
+             弹窗类动画只该有时长滑杆,不该出现「二次扫描」(整行隐藏由 switchAnimation 写 nextScanRow.hidden) -->
+        <div id="timingSection" hidden>
+        <h3>动画时长</h3>
+          <div class="timing-row">
+            <label class="timing-item" title="调整主动画持续时间(1s-10s),移动末尾淡出关键帧">
+              <span class="timing-name">时长</span>
+              <input type="range" id="rngDuration" min="1" max="10" step="0.1" value="10" />
+              <span id="durationVal">10.0s</span>
+            </label>
+            <label class="timing-item" id="nextScanRow" title="开启后,主动画播完紧接着播放二次扫描动画">
+              <input type="checkbox" id="chkNextScan" data-df-switch /> 二次扫描
+            </label>
+            <label class="timing-item" id="nextDurationRow" hidden title="调整二次扫描动画持续时间(1s-10s)">
+              <span class="timing-name">二次扫描时长</span>
+              <input type="range" id="rngNextDuration" min="1" max="10" step="0.1" value="3.2" />
+              <span id="nextDurationVal">3.2s</span>
+            </label>
+          </div>
+        </div>
+        <!-- 报酬信息(仅任务弹窗动画显示):一个开关统一控制「预期报酬」「数字」与货币图标三者的显隐 -->
+        <!-- 放在「文字图层」之前,是因为其中两项(预期报酬 / 数字)就列在紧随其后的列表里 -->
+        <!-- 实现走图层的 hd(隐藏)标记而不是把不透明度压成 0:三者在侧栏各有独立的不透明度滑块,
+             改不透明度来隐藏会被滑块冲掉,也会覆盖用户隐藏前调好的值(见 main.ts 的 setMissionRewardVisible) -->
+        <div id="missionRewardSection" hidden>
+          <h3>报酬信息</h3>
+          <label class="popup-toggle" id="missionRewardToggle" title="统一控制「预期报酬」「数字」与货币图标三者的显隐;隐藏后各自的文案 / 颜色 / 不透明度设置都会保留,重新勾选即原样恢复">
+            <input type="checkbox" id="chkMissionReward" data-df-switch checked /> 显示预期报酬 / 数字 / 图标
+          </label>
+        </div>
+        <!-- 预设(仅大战场弹窗动画显示):按 animations/animation_7/preset.txt 一键套用「图标 + 主标题 + 内容」 -->
+        <!-- 预设表是纯文本配置,由 main.ts 用 ?raw 导入后在浏览器里解析 —— 改预设只需要改那个 txt,不用碰代码 -->
+        <!-- 选中态的判据是「图标与两行文字全都对得上」,所以手动改过文字 / 图标之后高亮会自动消失(见 main.ts) -->
+        <!-- 默认**收起**:预设条目带两行文案预览,5 条全铺开会占掉近半屏侧栏,所以只留一行可点的标题。
+              这一行刻意做成「卡片按钮」而不是和别的区块一样的灰标题 —— 它是可点控件,要一眼能找到:
+              圆角边框 + 面板底色 + 强调色箭头,悬停/展开时边框变强调色;右侧常驻一句状态提示
+              (收起且未命中预设时显示「点开选择」,命中后显示「当前:预设名」)。 -->
+        <div id="presetSection" hidden>
+        <h3 class="preset-head">
+          <button type="button" id="presetToggle" class="preset-toggle" aria-expanded="false" aria-controls="presetBody" title="展开 / 收起预设列表:一项 = 图标 + 两行文案,点一下整套换掉">
+            <svg class="preset-caret" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M6 2.6 12.9 8 6 13.4z" />
+            </svg>
+            <span class="preset-title">预设</span>
+            <span class="preset-count" id="presetCount"></span>
+            <span class="preset-hint" id="presetHint"></span>
+          </button>
+        </h3>
+        <div id="presetBody" hidden>
+          <ul id="presetList"></ul>
+          <p class="preset-note">点一项就把图标与两行文字一起换掉;之后还能在下面的「文字图层 / 图标选择」里继续微调。</p>
+        </div>
+        </div>
+        <!-- 文字图层:每项可改文案与颜色,右上角「重置」恢复该图层在 JSON 里的原始文案与颜色 -->
+        <h3>文字图层 <span id="textCount"></span></h3>
+        <ul id="textList"></ul>
+        <h3>形状图层 <span id="shapeCount"></span></h3>
+        <ul id="shapeList"></ul>
+        <!-- 主题颜色(默认 hidden):把动画里所有 #77B0F0 的填充、所有 #78C5F3 的描边统一换成指定颜色。
+             判据是「当前这一族颜色」而非写死 #77B0F0/#78C5F3 —— 改过一次之后,下一次是拿新颜色继续替换,
+             所以重复修改、连续改色都能正确接续;「重置」把这一族换回出厂色。 -->
+        <div id="themeSection" hidden>
+        <h3>主题颜色 <span id="themeCount"></span></h3>
+        <div class="theme-colors">
+          <label class="t-color-label" title="动画里所有该色(默认 #77B0F0)的填充会一起换成这个颜色">
+            默认填充颜色
+            <input type="color" id="themeFill" value="#77b0f0" />
+            <input type="text" class="hex-input" id="themeFillHex" value="#77B0F0" spellcheck="false" placeholder="#rrggbb" />
+          </label>
+          <label class="t-color-label" title="动画里所有该色(默认 #78C5F3)的描边会一起换成这个颜色">
+            描边默认颜色
+            <input type="color" id="themeStroke" value="#78c5f3" />
+            <input type="text" class="hex-input" id="themeStrokeHex" value="#78C5F3" spellcheck="false" placeholder="#rrggbb" />
+          </label>
+        </div>
+        <button id="themeReset" type="button" title="把这一族颜色恢复为出厂的 #77B0F0 / #78C5F3">重置为默认色</button>
+        <p class="theme-note">改动立刻套用到当前动画里**所有等于该颜色值的填充与描边**(含预合成内部);之后再用其它颜色改,是在新颜色上继续替换。</p>
+        </div>
+        <!-- 图片图层(默认 hidden):仅当动画里存在可调色的图片图层时由 main.ts 打开,例如位置暴露的图标位图 -->
+        <div id="imageSection" hidden>
+        <h3>图片图层 <span id="imageCount"></span></h3>
+        <ul id="imageList"></ul>
+        </div>
+        <!-- 图标选择(默认 hidden,位置暴露 / 任务弹窗动画显示):位置暴露用分段选项卡分别给「位置暴露」与「二次扫描」指定图标,任务弹窗动画只有一个图标位 -->
+        <!-- 勾选「跟随位置暴露」时第二段复用第一段的图标,取消勾选后可为第二段单独选择或上传 -->
+        <!-- 「居中微调」在隐藏图标后可用:字体字形的墨迹存在固有光学偏差,用 ±8(合成坐标)手动调正 -->
+        <!-- 上传限制:PNG / JPG / WebP / GIF 且不超过 2MB,超限会在状态栏报错(校验在 main.ts) -->
+        <div id="iconSection" hidden>
+        <h3>图标选择 <span id="iconCount"></span></h3>
+        <!-- 「显示图标」开关只对位置暴露动画有意义:隐藏时文字与底框要一起回中,逻辑写死在 setIconVisible 里;
+             任务弹窗动画的图标用下面「图标不透明度」控制,因此该行与居中微调、分段选项卡都会对它隐藏 -->
+        <label class="popup-toggle" id="iconToggleRow" title="取消勾选后隐藏图标(主段与二次扫描同步),文字与底框一起回到画面中心">
+          <input type="checkbox" id="chkIcon" data-df-switch checked /> 显示图标
+        </label>
+        <div class="icon-nudge" id="iconNudgeRow" hidden title="隐藏图标后,文字(及底框)的左右微调:某些字体字形存在固有光学偏差,预览时调到观感正中即可(SVG/Canvas、导出均生效)">
+          <span class="timing-name">居中微调</span>
+          <button type="button" id="btnNudgeL" class="nudge-btn" title="向左微调" aria-label="向左微调">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M10.3 1.4a.85.85 0 0 1 1.4.66v11.88a.85.85 0 0 1-1.4.66L2.6 8.66a.86.86 0 0 1 0-1.32z"/>
+            </svg>
+          </button>
+          <span id="iconNudgeVal" class="nudge-val">0 px</span>
+          <button type="button" id="btnNudgeR" class="nudge-btn" title="向右微调" aria-label="向右微调">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M5.7 1.4a.85.85 0 0 0-1.4.66v11.88a.85.85 0 0 0 1.4.66l7.7-5.94a.86.86 0 0 0 0-1.32z"/>
+            </svg>
+          </button>
+          <button type="button" id="btnNudgeReset" class="nudge-btn" title="重置为 0">重置</button>
+        </div>
+        <!-- 分段选项卡(仅位置暴露动画显示):任务弹窗动画只有一个图标位,不需要分段 -->
+        <div class="icon-scope" id="iconScopeTabs" role="tablist" aria-label="选择要自定义图标的扫描段">
+          <button type="button" class="icon-scope-btn is-active" id="iconScopeMain" data-scope="main" role="tab" aria-selected="true" title="自定义位置暴露(第一段)的图标">
+            <span class="icon-scope-label">位置暴露</span>
+            <span class="icon-scope-pick">
+              <img class="icon-scope-thumb" id="iconScopeThumbMain" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/%3E" />
+              <span class="icon-scope-name" id="iconScopeNameMain"></span>
+            </span>
+          </button>
+          <button type="button" class="icon-scope-btn" id="iconScopeNext" data-scope="next" role="tab" aria-selected="false" title="自定义二次扫描(第二段)的图标">
+            <span class="icon-scope-label">二次扫描</span>
+            <span class="icon-scope-pick">
+              <img class="icon-scope-thumb" id="iconScopeThumbNext" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/%3E" />
+              <span class="icon-scope-name" id="iconScopeNameNext"></span>
+            </span>
+          </button>
+        </div>
+        <label class="icon-follow" id="iconFollowRow" hidden title="勾选后二次扫描沿用位置暴露的图标;取消勾选即可为二次扫描单独选择或上传图标">
+          <input type="checkbox" id="chkFollowMainIcon" data-df-switch checked /> 二次扫描跟随位置暴露
+        </label>
+        <p class="icon-scope-hint" id="iconScopeHint" hidden></p>
+        <label class="icon-upload" title="上传本地图片作为图标(PNG/JPG/WebP,≤2MB),应用到当前动画的图标位">
+          <input type="file" id="iconFile" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+          <span>
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M8 1.4a.9.9 0 0 1 .9.9v4.8h4.8a.9.9 0 0 1 0 1.8H8.9v4.8a.9.9 0 0 1-1.8 0V8.9H2.3a.9.9 0 0 1 0-1.8h4.8V2.3A.9.9 0 0 1 8 1.4z"/>
+            </svg>
+            上传自定义图标
+          </span>
+        </label>
+        <!-- 图标不透明度(仅任务弹窗动画显示):图标是一张普通位图图层,直接改它的图层不透明度,
+             与「图片图层」列表共用同一套 .o-slider 处理(main.ts 的 bindOpacitySliders) -->
+        <div id="iconOpacityRow" hidden>
+          <label class="t-opacity" title="调整图标的不透明度">
+            <span class="timing-name">图标不透明度</span>
+            <input type="range" class="o-slider" id="iconOpacitySlider" data-ind="0" min="0" max="100" step="1" value="100" />
+            <span class="o-val" id="iconOpacityVal">100%</span>
+          </label>
+        </div>
+        <ul id="iconList"></ul>
+        </div>
+        <!-- 弹窗图层:控制 windows_animation.json 弹窗的显隐,并编辑弹窗文字与颜色 -->
+        <!-- 整块是否显示由 main.ts 按当前动画是否带弹窗数据决定;弹窗与主动画同帧号同步叠加 -->
+        <!-- 提示:名称含「蒙版」的图层不可改色,弹窗文字默认居中对齐,改文字后仍保持居中 -->
+        <div id="popupSection">
+        <h3>弹窗图层 <span id="popupCount"></span></h3>
+        <div class="popup-panel">
+          <label class="popup-toggle" title="显示/隐藏 windows_animation.json 弹窗(与主动画同帧号同步)">
+            <input type="checkbox" id="chkPopup" data-df-switch /> 显示弹窗
+            <span class="popup-file">windows_animation.json</span>
+          </label>
+          <h4>弹窗文字 <span id="popupTextCount"></span></h4>
+          <ul id="popupTextList"></ul>
+          <h4>弹窗颜色(蒙版除外) <span id="popupShapeCount"></span></h4>
+          <ul id="popupShapeList"></ul>
+          <p class="popup-note">提示:名称含「蒙版」的图层不可改色;弹窗文字默认居中对齐,编辑文字后仍保持居中。</p>
+        </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- 切换动画时按需下载数据包的加载浮层(实时进度) -->
+    <!-- 数据加载浮层:层级 9999(见 style.css),与启动加载层同层,保证盖在所有内容之上 -->
+    <!-- 拿不到总长度时进度条会退化为来回滑动的不确定态(main.ts 加 indet 类) -->
+    <div id="dataLoading" hidden>
+      <div class="dl-card">
+        <div class="dl-title"><b id="dlTitle">正在加载动画数据…</b><span id="dataLoadingPct" class="dl-pct">0%</span></div>
+        <div class="dl-bar"><div class="dl-fill" id="dataLoadingFill"></div></div>
+        <div class="dl-note">首次进入该动画需下载对应数据包,之后浏览器会缓存,再切换即秒开</div>
+      </div>
+    </div>
+
+    <!-- 导出进度浮层:状态文案 + 大号百分比 + 进度条 + 明细 + 告警 + 取消按钮 -->
+    <!-- 成功 / 失败 / 取消三态只改百分比的颜色类与文案;非错误态在若干秒后自动关闭(见 main.ts 的 finishExportOverlay) -->
+    <!-- 导出进行中按钮文案是「取消导出」,结束后变成「关闭」 -->
+    <div class="export-overlay" id="exportOverlay" hidden>
+      <div class="export-card">
+        <div class="export-head">
+          <span class="export-title">
+            <svg class="bi bi-lg" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M1.6 3.6h12.8a1.6 1.6 0 0 1 1.6 1.6v5.6a1.6 1.6 0 0 1-1.6 1.6H1.6A1.6 1.6 0 0 1 0 10.8V5.2a1.6 1.6 0 0 1 1.6-1.6zm3.7 2.1a.7.7 0 0 0-1.06.6v3.4a.7.7 0 0 0 1.06.6l2.9-1.7a.7.7 0 0 0 0-1.2zM4.5 0h7l-.6 2.4h-7z" opacity=".95"/>
+            </svg>
+            正在导出视频
+          </span>
+          <span class="export-format" id="exportFormatTag"></span>
+        </div>
+        <div class="export-status" id="exportStatus">正在准备…</div>
+        <div class="export-percent" id="exportPercent">0%</div>
+        <div class="export-bar"><div class="export-bar-fill" id="exportBarFill"></div></div>
+        <div class="export-detail" id="exportDetail"></div>
+        <!-- 正在导出的这个文件本身(用户要求:点了导出视频就能看到"下载列表 + 下载进度条")。
+             结构与下载列表里的一行一致(类型图标 + 文件名 + 元信息 + 状态),它由 main.ts 在导出期间
+             实时更新:编码阶段的进度写成百分比,落盘阶段换成「正在写入下载文件夹…」,成功变成「已保存」。 -->
+        <div class="export-file" id="exportFile" hidden>
+          <span class="dw-type" id="exportFileIcon"></span>
+          <div class="dw-info">
+            <div class="dw-name" id="exportFileName">—</div>
+            <div class="dw-meta" id="exportFileMeta"></div>
+          </div>
+          <span class="export-file-pct" id="exportFilePct"></span>
+        </div>
+        <div class="export-warn" id="exportWarn" hidden></div>
+        <!-- 完成后才出现:保存到手机(Web Share,手机把视频存进相册/文件最可靠的一条路)、
+             重新下载(自动下载被拦截或没找到文件时再触发一次);导出中与失败态下都隐藏。 -->
+        <div class="export-actions">
+          <button id="btnExportSave" type="button" class="primary" hidden>保存到手机</button>
+          <button id="btnExportRedownload" type="button" hidden>重新下载</button>
+          <button id="btnExportCancel" type="button">取消导出</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 动画画廊(选择动画的主入口):搜索框 + 卡片网格 -->
+    <!-- 这里只搭静态骨架,动态部分全在 main.ts 的「动画选择器」区块 —— 下面每个 id 都对应那里的一个 $() 引用,
+         改名必须两边同步,否则取到 null 后静默失效(与本文件顶部那条约定一致)。 -->
+    <!-- 骨架里没有的东西,都是有意的:没有分组筛选条、没有收藏星标、卡片上也没有简介。
+         要加回其中任何一样,除了这里补 DOM,还要动 main.ts 的 renderAnimGallery 与 style.css 的
+         「动画画廊」段;tools/verify-anim-picker.mjs 里有一条检查专门盯着「这三样不该存在」。 -->
+    <!-- 交互约定(实现都在 main.ts):点卡片任意位置 = 切换;Esc / 点背景 / 点关闭按钮 = 关闭;
+         方向键移动、Enter 切换、数字 1–9 直选、Home/End 跳首尾;鼠标移到卡片上方向键光标会跟着走;
+         滚轮落在面板任意位置都能滚动网格;选完动画会把焦点交还给页面,所以紧接着按空格是播放/暂停。 -->
+    <!-- 若要新增/增删卡片上的字段,只需要改 main.ts 的 renderAnimGallery —— 卡片是整段 innerHTML 重画的,
+         这里不用加任何节点。卡片数量随 ANIMATIONS 注册表自动增长,顶栏那条触发器长度不变。 -->
+    <div class="anim-picker" id="animPicker" hidden role="dialog" aria-modal="true" aria-labelledby="animPickerTitle">
+      <div class="ap-backdrop" id="animPickerBackdrop"></div>
+      <div class="ap-panel">
+        <div class="ap-head">
+          <div class="ap-title-wrap">
+            <h2 class="ap-title" id="animPickerTitle">选择动画</h2>
+            <p class="ap-sub" id="animPickerSub"></p>
+          </div>
+          <!-- 头部右侧成组:搜索框 + 关闭按钮。关闭按钮贴在面板右上角(用户的明确要求),
+               所以它必须是这一行最右的元素,不能再让搜索框把它挤到左边。 -->
+          <div class="ap-head-actions">
+          <div class="ap-search">
+            <svg class="bi ap-search-ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M11.74 10.34a6.5 6.5 0 1 0-1.397 1.398l.098.115 3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+            </svg>
+            <input type="search" id="animSearch" placeholder="搜索动画名称 / 关键词…" autocomplete="off" spellcheck="false" aria-label="搜索动画" />
+            <button type="button" class="ap-search-clear" id="animSearchClear" title="清空搜索" aria-label="清空搜索" hidden>
+              <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M4.65 4.65a.8.8 0 0 1 1.13 0L8 6.87l2.22-2.22a.8.8 0 1 1 1.13 1.13L9.13 8l2.22 2.22a.8.8 0 0 1-1.13 1.13L8 9.13l-2.22 2.22a.8.8 0 0 1-1.13-1.13L6.87 8 4.65 5.78a.8.8 0 0 1 0-1.13z"/>
+              </svg>
+            </button>
+          </div>
+          <button type="button" class="ap-close" id="animPickerClose" title="关闭(Esc)" aria-label="关闭">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M4.65 4.65a.8.8 0 0 1 1.13 0L8 6.87l2.22-2.22a.8.8 0 1 1 1.13 1.13L9.13 8l2.22 2.22a.8.8 0 0 1-1.13 1.13L8 9.13l-2.22 2.22a.8.8 0 0 1-1.13-1.13L6.87 8 4.65 5.78a.8.8 0 0 1 0-1.13z"/>
+            </svg>
+          </button>
+          </div>
+        </div>
+        <!-- 卡片网格。这是面板里唯一的滚动区(main.ts 把落在面板别处的滚轮转发到它身上);
+             #animGrid 内的卡片由 main.ts 的 renderAnimGallery 整段重写,#animEmpty 是无匹配时的空状态 -->
+        <div class="ap-body" id="animPickerBody">
+          <div class="ap-grid" id="animGrid"></div>
+          <div class="ap-empty" id="animEmpty" hidden>
+            <svg class="bi bi-xl" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M11.74 10.34a6.5 6.5 0 1 0-1.397 1.398l.098.115 3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+            </svg>
+            <p id="animEmptyText">没有匹配的动画</p>
+          </div>
+        </div>
+        <div class="ap-foot">
+          <span class="ap-hint"><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> 移动 · <kbd>Enter</kbd> 切换 · <kbd>1</kbd>–<kbd>9</kbd> 直选 · <kbd>Esc</kbd> 关闭</span>
+          <span class="ap-hint">点卡片任意位置即可切换,最近用过的排在前面</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 下载列表 / 下载历史(仅桌面客户端;骨架静态写在下面,行由 main.ts 的 renderDownloads 生成)
+         数据全部来自主进程(electron/downloads.cjs):列表 = 磁盘对账后的历史清单,
+         所以软件被删掉 / 搬到别的盘之后再打开,这里依然能看到当初导出的记录。
+         「下载历史」不是浏览器下载记录 —— 它是本应用自己维护的 json(存在用户数据目录,不在软件目录里)。
+         面板内的交互(点遮罩关闭、Esc 关闭、搜索、重命名、定位)实现在 main.ts 的「下载列表」区块。 -->
+    <div class="dw-picker" id="downloadsPanel" hidden role="dialog" aria-modal="true" aria-labelledby="downloadsTitle">
+      <div class="dw-backdrop" id="downloadsBackdrop"></div>
+      <div class="dw-panel">
+        <div class="dw-head">
+          <div class="dw-title-wrap">
+            <h2 class="dw-title" id="downloadsTitle">下载列表</h2>
+            <p class="dw-sub" id="downloadsSub"></p>
+          </div>
+          <!-- 头部右侧成组:搜索框 + 关闭按钮(关闭按钮贴面板右上角,与动画画廊一致) -->
+          <div class="ap-head-actions">
+          <div class="dw-search ap-search">
+            <svg class="bi ap-search-ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M11.74 10.34a6.5 6.5 0 1 0-1.397 1.398l.098.115 3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+            </svg>
+            <input type="search" id="downloadsSearch" placeholder="搜索文件名 / 格式…" autocomplete="off" spellcheck="false" aria-label="搜索下载记录" />
+            <button type="button" class="ap-search-clear" id="downloadsSearchClear" title="清空搜索" aria-label="清空搜索" hidden>
+              <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M4.65 4.65a.8.8 0 0 1 1.13 0L8 6.87l2.22-2.22a.8.8 0 1 1 1.13 1.13L9.13 8l2.22 2.22a.8.8 0 0 1-1.13 1.13L8 9.13l-2.22 2.22a.8.8 0 0 1-1.13-1.13L6.87 8 4.65 5.78a.8.8 0 0 1 0-1.13z"/>
+              </svg>
+            </button>
+          </div>
+          <button type="button" class="ap-close" id="downloadsClose" title="关闭(Esc)" aria-label="关闭">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M4.65 4.65a.8.8 0 0 1 1.13 0L8 6.87l2.22-2.22a.8.8 0 1 1 1.13 1.13L9.13 8l2.22 2.22a.8.8 0 0 1-1.13 1.13L8 9.13l-2.22 2.22a.8.8 0 0 1-1.13-1.13L6.87 8 4.65 5.78a.8.8 0 0 1 0-1.13z"/>
+            </svg>
+          </button>
+          </div>
+        </div>
+        <!-- 工具条:打开下载文件夹 / 找回被挪走的文件 / 自动保存开关(整段由 main.ts 填充) -->
+        <div class="dw-bar" id="downloadsBar"></div>
+        <div class="dw-body" id="downloadsBody">
+          <ul class="dw-list" id="downloadsList"></ul>
+          <div class="ap-empty" id="downloadsEmpty" hidden>
+            <svg class="bi bi-xl" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M8 1.2a.9.9 0 0 1 .9.9v6.03l1.53-1.53a.9.9 0 1 1 1.27 1.27l-3.06 3.06a.9.9 0 0 1-1.27 0L4.3 7.87a.9.9 0 0 1 1.27-1.27L7.1 8.13V2.1a.9.9 0 0 1 .9-.9z"/>
+              <path d="M2.4 11.2a.9.9 0 0 1 .9.9v1.1h9.4v-1.1a.9.9 0 1 1 1.8 0v1.5a1.4 1.4 0 0 1-1.4 1.4H2.9a1.4 1.4 0 0 1-1.4-1.4v-1.5a.9.9 0 0 1 .9-.9z"/>
+            </svg>
+            <p id="downloadsEmptyText">还没有导出记录</p>
+          </div>
+        </div>
+        <!-- 底部只放一条"历史存在哪"的说明:面板已有的信息(记录数、丢失数)在副标题里,
+             这里不再重复 —— 重复的说明文字只会把列表挤矮。 -->
+        <div class="dw-foot">
+          <span class="dw-hint" id="downloadsHint"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 状态栏:显示最近一次操作的结果或错误,出错时加 error 类变红(文案由 main.ts 的 setStatus 写入)
+         文案写在内层 span 上:flex 容器上的 text-overflow 画不出省略号,长文案会被硬切掉;
+         包一层之后 #statusbar.textContent 仍然读出同一段文本,校验脚本不受影响。 -->
+    <footer class="statusbar" id="statusbar"><span class="statusbar-text" id="statusbarText">就绪</span></footer>
+    <!-- 模块入口:main.ts 会 import style.css 以及 lottie-web / mp4-muxer,最终由 Vite 打包成纯静态资源 -->
+    <!-- 除动画数据包按需下载外不依赖后端;仅开发模式下有 /save-avi 中间件,用于把本地导出的文件取回 tools 目录 -->
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

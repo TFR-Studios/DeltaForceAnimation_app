@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "桌面端最小权限:核心能力 + 通知 + 打开外链/文件。业务命令(save/list/...)由 invoke_handler 注册,不需要额外权限声明。",
+  "platforms": [
+    "windows",
+    "macOS",
+    "linux"
+  ],
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "core:default",
+    "notification:default",
+    "opener:default",
+    "opener:allow-open-path"
+  ]
+}

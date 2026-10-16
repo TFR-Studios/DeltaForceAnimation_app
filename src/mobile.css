@@ -1,0 +1,612 @@
+/* ============================================================================
+ * 移动端(手机 / 平板)外壳与触屏手势 —— 全部规则以 html[data-ui="mobile"] 开头
+ *
+ * 为什么整份都用属性前缀圈起来:桌面端(Electron / Tauri Windows)与移动端跑的是
+ * 同一个 index.html 与同一份 main.ts。移动端改造必须做到"桌面一个像素都不变",
+ * 所以这里不覆盖任何全局选择器 —— 只有当 src/mobile.ts 判定为触屏设备并把
+ * <html data-ui="mobile"> 写上去之后,下面这些规则才会命中。没有这个属性时,
+ * 本文件等于空文件。
+ *
+ * 布局模型(手机竖屏):
+ *   body(100dvh, flex column)
+ *     .topbar            两行网格:第一行「标志 + 动画选择器 + 主题」,第二行制作声明
+ *     .layout            flex column(桌面是 row)
+ *       .preview-panel   flex:1
+ *         #stage         手势层(touch-action:none,页面不跟着滚)
+ *         .timeline      一行:帧时间轴
+ *         .transport     固定一行:重播 / 播放 / 导出 / 设置(不横滑)
+ *       .side-panel     底部面板,高度 = --m-sheet(由 mobile.ts 拖拽写入)
+ *         .m-grip        拖拽把手(吸顶,永远看得见)
+ *         .m-tabs        分区芯片(吸顶),替换桌面那条 5900px 的长滚动
+ *         (只显示当前分区的节点)
+ *     .statusbar
+ *
+ * 停靠模型(横屏 / 宽度 ≥ 1024):
+ *   .layout 变横向,面板停靠右侧,宽度 = --m-side;同一个把手改成拖宽度。
+ * ========================================================================== */
+
+/* ---------- 1. 基础:视口、滚动、安全区 ---------- */
+
+html[data-ui='mobile'] {
+  /* 面板高度(px,由 mobile.ts 在拖拽/吸附时写入);停靠模式下改成 --m-side 管宽度 */
+  --m-sheet: 26dvh;
+  --m-side: 320px;
+  --m-grip-h: 22px;
+  --m-tabs-h: 46px;
+  --m-pad: 12px;
+  --m-safe-t: env(safe-area-inset-top, 0px);
+  --m-safe-b: env(safe-area-inset-bottom, 0px);
+  --m-safe-l: env(safe-area-inset-left, 0px);
+  --m-safe-r: env(safe-area-inset-right, 0px);
+  /* 面板左右内边距(含安全区)。把手与芯片条要用它做负边距补偿,
+   * 保证「居中」是相对**面板边框盒**而不是相对被内边距挤窄的内容盒 ——
+   * 刘海屏横屏时 safe-l 与 safe-r 不相等,用固定值补偿会让把手偏掉。 */
+  --m-pad-l: calc(var(--m-pad) + var(--m-safe-l));
+  --m-pad-r: calc(var(--m-pad) + var(--m-safe-r));
+  --topbar-h: 46px;
+  --m-craft-h: 24px;
+}
+
+html[data-ui='mobile'],
+html[data-ui='mobile'] body {
+  /* dvh 而不是 vh:移动端浏览器地址栏收放时 vh 会跳,舞台跟着跳一下很难看 */
+  height: 100dvh;
+  max-height: 100dvh;
+}
+
+html[data-ui='mobile'] body {
+  overflow: hidden;
+  overscroll-behavior: none;
+  /* manipulation:保留正常点击与滚动,但去掉"双击放大页面" —— 双击要留给画布 */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html[data-ui='mobile'] .topbar,
+html[data-ui='mobile'] .transport,
+html[data-ui='mobile'] .timeline,
+html[data-ui='mobile'] .statusbar,
+html[data-ui='mobile'] .m-tabs,
+html[data-ui='mobile'] .m-stage-tools {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 焦点环:触屏上依然要有(外接键盘 / 无障碍),统一用令牌色 */
+html[data-ui='mobile'] .m-tool:focus-visible,
+html[data-ui='mobile'] .m-tab:focus-visible,
+html[data-ui='mobile'] .m-grip:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---------- 2. 顶栏:两行网格 ----------
+ * 改版前是 flex + 固定 46px 高,窄屏放不下时 flex 会换行,而换行出来的第二行被
+ * 固定高度裁在盒子外 —— 表现就是「竖屏看不到动画选择器」。这里改成显式两行网格:
+ * 第一行只放三个必须常驻的东西,第二行整行留给制作声明(PRODUCT.md 要求文案与可见性
+ * 都保留,所以不能藏,只能给它自己一行)。 */
+
+html[data-ui='mobile'] .topbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: var(--topbar-h) var(--m-craft-h);
+  align-items: center;
+  column-gap: var(--sp-2);
+  row-gap: 0;
+  height: auto;
+  padding: var(--m-safe-t) var(--m-pad-r) 0 var(--m-pad-l);
+}
+
+html[data-ui='mobile'] .topbar > .brand { grid-area: 1 / 1; }
+html[data-ui='mobile'] .topbar > .anim-switch { grid-area: 1 / 2; }
+html[data-ui='mobile'] .topbar > #btnDownloads { grid-area: 1 / 3; }
+html[data-ui='mobile'] .topbar > .theme-switch { grid-area: 1 / 4; }
+html[data-ui='mobile'] .topbar > .craft-note {
+  grid-area: 2 / 1 / 2 / -1;
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+/* 手机竖屏:品牌只留标志。产品名在启动图、窗口标题与桌面端都在,
+ * 顶栏这一格让给"我在编辑哪套动画"这个真正的问题。 */
+@media (max-width: 1023px) {
+  html[data-ui='mobile'] .brand > span { display: none; }
+}
+html[data-ui='mobile'] .brand .tag,
+html[data-ui='mobile'] .anim-trigger-meta,
+html[data-ui='mobile'] .anim-trigger-count { display: none; }
+
+html[data-ui='mobile'] .brand { min-width: 0; }
+html[data-ui='mobile'] .anim-switch {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 0;
+  max-width: none;
+}
+html[data-ui='mobile'] .anim-trigger {
+  width: 100%;
+  min-width: 0;
+  /* 选择动画是移动端的主入口之一,给它一个触摸友好的高度 */
+  min-height: 38px;
+}
+html[data-ui='mobile'] .theme-switch { margin-left: 0; }
+
+/* 制作声明压到 10.5px:它要一直在,但不该跟主任务抢注意力 */
+html[data-ui='mobile'] .craft-note {
+  padding: 0;
+  height: var(--m-craft-h);
+  border: none;
+  background: none;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+html[data-ui='mobile'] .craft-note-text { font-size: 10.5px; }
+html[data-ui='mobile'] .craft-note-ico { width: 12px; height: 12px; }
+
+/* ---------- 3. 主区 ---------- */
+
+html[data-ui='mobile'] .layout {
+  flex-direction: column;
+  min-height: 0;
+}
+
+html[data-ui='mobile'] .preview-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 舞台是手势层:touch-action:none 把这块区域的触摸完全交给 JS,
+ * 浏览器的滚动 / 缩放都不再介入,双指捏合才能稳定缩放画布而不是缩放页面。 */
+html[data-ui='mobile'] .preview-stage {
+  touch-action: none;
+  cursor: default;
+  padding: var(--sp-2);
+}
+
+html[data-ui='mobile'] .preview-inner,
+html[data-ui='mobile'] .preview-canvas { pointer-events: none; }
+
+/* ---------- 4. 舞台悬浮控件 ----------
+ * 两枚按钮都带文字:改版前只有图标,用户看不出那个准星是"复位视图"(实测反馈)。
+ * 控件名要说清自己做什么,这是本项目自己写在 DESIGN.md 里的原则。 */
+
+.m-stage-tools { display: none; }
+
+html[data-ui='mobile'] .m-stage-tools {
+  position: absolute;
+  right: calc(var(--m-pad) + var(--m-safe-r));
+  bottom: calc(var(--m-pad) + var(--m-safe-b));
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  pointer-events: none;
+}
+html[data-ui='mobile'] .m-tool,
+html[data-ui='mobile'] .m-zoom-badge { pointer-events: auto; }
+
+html[data-ui='mobile'] .m-tool {
+  /* 44px 是触屏最小命中区(Apple HIG / Material 都取这个量级) */
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  color: var(--text);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+html[data-ui='mobile'] .m-tool:active {
+  transform: scale(0.95);
+  background: var(--surface-3);
+}
+html[data-ui='mobile'] .m-tool svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: currentColor;
+}
+/* 播放中不再把按钮淡掉(改版前淡化到 34%,用户以为按钮坏了)。
+ * 状态只由「图标 + 文案」表达:▶ 播放 / ⏸ 暂停。 */
+
+html[data-ui='mobile'] .m-zoom-badge {
+  min-width: 56px;
+  height: 26px;
+  padding: 0 10px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--surface-2) 84%, transparent);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(8px);
+}
+
+/* ---------- 5. 时间轴 + 播放条 ----------
+ * 改版前播放条是横向滚动的:一屏放不下时靠滑,而滑动手势会被行内的滑杆吃掉
+ * (手指按在速度滑块上,变成拖速度)。现在把"设置类"控件整段搬进面板
+ * (见 mobile.ts 的「播放与导出」分区),这一行只剩固定几枚按钮,不需要滚动,
+ * 也就没有"想滑却碰到滑块"这回事。 */
+
+html[data-ui='mobile'] .timeline {
+  padding: 8px var(--m-pad-r) 0 var(--m-pad-l);
+  gap: var(--sp-2);
+}
+html[data-ui='mobile'] .timeline .frame { font-size: 11px; }
+
+html[data-ui='mobile'] .transport {
+  flex-wrap: nowrap;
+  overflow: visible;
+  gap: var(--sp-2);
+  padding: 8px var(--m-pad-r) 10px var(--m-pad-l);
+}
+html[data-ui='mobile'] .transport .spacer { flex: 1 1 auto; display: block; }
+html[data-ui='mobile'] .transport > * { flex: none; }
+html[data-ui='mobile'] .transport .icon-btn {
+  width: 44px;
+  height: 44px;
+}
+html[data-ui='mobile'] .transport .play-btn {
+  width: 52px;
+  height: 52px;
+}
+/* 导出是这一屏唯一的主操作:实心、够高、标签说清后果 */
+html[data-ui='mobile'] #btnExport {
+  min-height: 46px;
+  padding: 0 16px;
+  font-weight: 700;
+}
+html[data-ui='mobile'] .m-settings-btn {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+html[data-ui='mobile'] .m-settings-btn:active { background: var(--surface-3); }
+html[data-ui='mobile'] .m-settings-btn svg { width: 15px; height: 15px; fill: currentColor; }
+
+/* 时间轴与播放条里的滑杆:触屏上要给足够粗的滑钮 */
+html[data-ui='mobile'] .timeline input[type='range'] { height: 32px; }
+html[data-ui='mobile'] input[type='range']::-webkit-slider-thumb {
+  width: 22px;
+  height: 22px;
+  margin-top: -9px;
+}
+html[data-ui='mobile'] .transport .export-hint { display: none; }
+
+/* ---------- 6. 底部面板 ---------- */
+
+html[data-ui='mobile'] .side-panel {
+  flex: 0 0 var(--m-sheet);
+  width: 100%;
+  height: var(--m-sheet);
+  min-height: 0;
+  border-left: none;
+  border-top: 1px solid var(--line);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  padding: 0 var(--m-pad-r) calc(var(--sp-4) + var(--m-safe-b)) var(--m-pad-l);
+  /* 触屏上不画竖向滚动条:Android 默认是浮层滚动条,滚动时会盖在内容上闪一下;
+   * 而"还能不能往下滚"由把手与芯片条下面露出的半行内容交代,不靠滚动条。
+   * scrollbar-gutter 兜底:万一某些环境下滚动条占布局宽度,也让它左右对称, */
+  scrollbar-width: none;
+  scrollbar-gutter: stable;
+  transition: none;
+  box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.32);
+  --side-nav-h: 0px;
+}
+html[data-ui='mobile'] .side-panel::-webkit-scrollbar { display: none; }
+html[data-ui='mobile'] .side-panel.is-snapping {
+  transition: height var(--dur-slow) var(--ease);
+}
+
+/* 拖拽把手:26px 高的可抓区域 + 中间一根 40×4 的指示条。
+ * 抓的是整条,不是那根细线 —— 手指按不准 4px。
+ * sticky:改版前它随面板滚走,滚到下面就没有"收起/展开"的入口了。 */
+html[data-ui='mobile'] .m-grip {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  flex: none;
+  height: var(--m-grip-h);
+  /* 负边距按「面板内边距 + 安全区」补偿,让把手盒正好等于面板的边框盒宽度,
+   * 于是里面的指示条在任何内边距 / 刘海组合下都真正落在屏幕中线上。 */
+  margin-left: calc(-1 * var(--m-pad-l));
+  margin-right: calc(-1 * var(--m-pad-r));
+  background: var(--surface);
+  cursor: grab;
+  touch-action: none;
+}
+html[data-ui='mobile'] .m-grip::before {
+  content: '';
+  width: 40px;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--line-strong);
+  transition: background var(--dur-fast) var(--ease), width var(--dur) var(--ease);
+}
+html[data-ui='mobile'] .side-panel.is-dragging .m-grip::before,
+html[data-ui='mobile'] .m-grip:active::before {
+  background: var(--text-3);
+  width: 56px;
+}
+
+/* 分区芯片:横向滚动的一排,取代桌面那条 select。
+ * 为什么是芯片而不是 select:手机上"当前在哪个分区"要一眼可见,
+ * 而可选分区是跟着动画变的(弹窗类动画没有形状图层那一节),芯片条天然表达这件事。 */
+html[data-ui='mobile'] .m-tabs {
+  position: sticky;
+  top: var(--m-grip-h);
+  z-index: 5;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--m-tabs-h);
+  margin-left: calc(-1 * var(--m-pad-l));
+  margin-right: calc(-1 * var(--m-pad-r));
+  padding: 0 var(--m-pad-l) 0 var(--m-pad-r);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  scroll-behavior: smooth;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+html[data-ui='mobile'] .m-tabs::-webkit-scrollbar { display: none; }
+html[data-ui='mobile'] .m-tab {
+  flex: none;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+html[data-ui='mobile'] .m-tab .m-tab-count {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+html[data-ui='mobile'] .m-tab.is-active {
+  background: var(--brand);
+  border-color: transparent;
+  color: var(--on-brand);
+  font-weight: 700;
+}
+html[data-ui='mobile'] .m-tab.is-active .m-tab-count {
+  color: color-mix(in srgb, var(--on-brand) 70%, transparent);
+}
+
+/* 桌面那条跳转条在移动端由芯片取代 */
+html[data-ui='mobile'] .side-nav { display: none !important; }
+
+/* 分区可见性:只显示当前分区。
+ * 隐藏用 !important 压过 style.css 里 .side-panel > * 可能带的 display;
+ * 而"当前分区"这边**不写 display** —— 保持 style.css 给它的原样
+ * (dl / ul / div 各自不同),避免"ul 被写成 block 之后项目符号错位"这类问题。
+ * [hidden] 仍然优先:被 main.ts 隐藏的分区即使轮到它也不会显示。 */
+html[data-ui='mobile'] .side-panel > [data-df-sec]:not(.is-active-sec) {
+  display: none !important;
+}
+
+html[data-ui='mobile'] .side-panel h3 {
+  top: var(--m-tabs-h);
+  font-size: 15px;
+  margin: var(--sp-3) 0 var(--sp-2);
+}
+html[data-ui='mobile'] .side-panel h3:first-of-type { margin-top: var(--sp-3); }
+
+/* 可折叠分区的展开箭头(目前只有「动画信息」用,默认折叠) */
+html[data-ui='mobile'] .m-sec-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+html[data-ui='mobile'] .side-panel h3.m-has-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+html[data-ui='mobile'] .m-sec-toggle svg {
+  width: 11px;
+  height: 11px;
+  fill: currentColor;
+  transition: transform var(--dur) var(--ease);
+}
+html[data-ui='mobile'] .m-sec-toggle[aria-expanded='true'] svg { transform: rotate(90deg); }
+
+/* 面板里的行高与命中区:触屏一律抬到 38-44px */
+html[data-ui='mobile'] .side-panel input[type='range'] { height: 34px; }
+html[data-ui='mobile'] .side-panel fluent-button,
+html[data-ui='mobile'] .side-panel button { min-height: 38px; }
+html[data-ui='mobile'] .side-panel fluent-text-field,
+html[data-ui='mobile'] .side-panel input[type='text'],
+html[data-ui='mobile'] .side-panel textarea { min-height: 38px; }
+
+/* ---------- 6b. 从播放条搬进面板的「播放与导出」控件 ----------
+ * 它们在桌面是 .transport 里的行内控件,搬进竖排面板后需要自己的一份排版规则。
+ * 一行一个控件、标签在左值在右,是这个面板里其它区块的既有语法。 */
+
+html[data-ui='mobile'] .m-ctrl {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-top: var(--sp-2);
+}
+html[data-ui='mobile'] .m-ctrl > label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 38px;
+  color: var(--text-2);
+  font-size: 13px;
+  white-space: nowrap;
+}
+html[data-ui='mobile'] .m-ctrl > label > select,
+html[data-ui='mobile'] .m-ctrl > label > .df-select { flex: 1 1 auto; min-width: 0; }
+html[data-ui='mobile'] .m-ctrl > label > input[type='range'] { flex: 1 1 auto; min-width: 0; }
+html[data-ui='mobile'] .m-ctrl > label > input[type='color'] {
+  width: 44px;
+  height: 34px;
+  padding: 2px;
+}
+html[data-ui='mobile'] .m-ctrl > :is(button, fluent-button) { align-self: flex-start; }
+html[data-ui='mobile'] .m-ctrl .export-hint {
+  display: block;
+  width: auto;
+  max-width: none;
+  white-space: normal;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* ---------- 7. 状态栏 ---------- */
+
+html[data-ui='mobile'] .statusbar {
+  min-height: calc(var(--statusbar-h) + var(--m-safe-b));
+  height: auto;
+  padding: 6px var(--m-pad-r) calc(6px + var(--m-safe-b)) var(--m-pad-l);
+  font-size: 11.5px;
+}
+
+/* ---------- 8. 首次进入的手势提示 ---------- */
+
+.m-hint { display: none; }
+
+html[data-ui='mobile'] .m-hint {
+  position: absolute;
+  left: 50%;
+  /* 放舞台顶部而不是底部:右下角是悬浮控件组,底部中间放提示会和它抢位置 */
+  top: var(--sp-3);
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 16px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--surface-2) 94%, transparent);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-3);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  white-space: nowrap;
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+html[data-ui='mobile'] .m-hint.is-show { opacity: 1; }
+html[data-ui='mobile'] .m-hint b { color: var(--text); font-weight: 700; }
+
+/* ---------- 9. 横屏 / 平板:面板停靠右侧 ----------
+ * 判据只有两条,越简单越不会在折叠屏 / 分屏上出意外:
+ *   · 横屏 —— 纵向只剩 350-450px,底部面板会挤成一条缝,只能停靠到右侧;
+ *   · 竖屏但宽度 ≥ 1024 —— 平板竖屏 / 桌面级窗口,横向有富余,停靠更好用。
+ * 其余情况一律用底部面板:竖屏下宽度比高度金贵。 */
+
+@media (orientation: landscape), (min-width: 1024px) {
+  html[data-ui='mobile'] .layout { flex-direction: row; }
+
+  html[data-ui='mobile'] .side-panel {
+    flex: 0 0 var(--m-side);
+    width: var(--m-side);
+    height: auto;
+    border-top: none;
+    border-left: 1px solid var(--line);
+    border-radius: 0;
+    padding: 0 var(--sp-4) var(--sp-4);
+    box-shadow: none;
+    --m-tabs-h: 42px;
+    --m-pad-l: var(--sp-4);
+    --m-pad-r: var(--sp-4);
+    transition: none;
+  }
+  html[data-ui='mobile'] .side-panel.is-snapping { transition: width var(--dur-slow) var(--ease); }
+
+  /* 同一个把手,改成拖宽度。方向提示靠 cursor 与把手右侧的提示文案,
+   * 位置、手感、双击吸附的规则都跟竖屏一致 —— 用户不需要学第二套。 */
+  html[data-ui='mobile'] .m-grip {
+    cursor: col-resize;
+    height: var(--m-grip-h);
+  }
+  html[data-ui='mobile'] .m-grip::before { width: 56px; }
+  html[data-ui='mobile'] .side-panel.is-dragging .m-grip::before { width: 72px; }
+}
+
+/* 手机横屏:纵向极度紧张,顶栏 / 时间轴 / 播放条 / 状态栏全部再收一档。
+ * 这几行不是凑数 —— 实测 800×450 下不收紧时舞台只剩 151px。 */
+@media (orientation: landscape) and (max-height: 619px) {
+  html[data-ui='mobile'] { --topbar-h: 40px; --m-craft-h: 20px; --statusbar-h: 24px; }
+  html[data-ui='mobile'] .side-panel {
+    flex: 0 0 var(--m-side);
+    padding: 0 var(--sp-3) var(--sp-3);
+    --m-tabs-h: 40px;
+    --m-pad-l: var(--sp-3);
+    --m-pad-r: var(--sp-3);
+  }
+  html[data-ui='mobile'] .timeline { padding: 2px var(--m-pad-r) 0 var(--m-pad-l); }
+  html[data-ui='mobile'] .transport {
+    padding: 2px var(--m-pad-r) 4px var(--m-pad-l);
+  }
+  html[data-ui='mobile'] .statusbar { padding-top: 2px; padding-bottom: 2px; }
+  html[data-ui='mobile'] .preview-stage { padding: 4px; }
+  html[data-ui='mobile'] .transport .play-btn { width: 44px; height: 44px; }
+  html[data-ui='mobile'] .transport .icon-btn { width: 38px; height: 38px; }
+  html[data-ui='mobile'] #btnExport { min-height: 40px; }
+  html[data-ui='mobile'] .m-settings-btn { min-height: 38px; }
+  /* 横屏高度紧张:面板里的行再收一档 */
+  html[data-ui='mobile'] .side-panel h3 { margin: var(--sp-2) 0; padding: 4px 0; }
+  html[data-ui='mobile'] .m-ctrl { gap: var(--sp-2); }
+  html[data-ui='mobile'] .m-ctrl > label { min-height: 34px; }
+}
+
+/* ---------- 10. 减少动效 ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-ui='mobile'] .side-panel.is-snapping,
+  html[data-ui='mobile'] .m-tabs,
+  html[data-ui='mobile'] .m-sec-toggle svg {
+    transition: none;
+    scroll-behavior: auto;
+  }
+}

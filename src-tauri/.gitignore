@@ -1,0 +1,11 @@
+# Rust 构建产物(动辄十几 GB,绝对不要进仓库)
+/target/
+
+# 本地环境变量 / 调试产物 —— 只挡 tauri-build 每次派生出来的权限 schema
+/gen/schemas/
+
+# 注意:src-tauri/gen/android **是要提交的**。
+# 它不只是生成物:里面有几处本项目的定制(平板锁横屏、API<29 的存储权限、
+# AndroidManifest 里的权限声明),忽略掉的话别人克隆后跑一次 tauri android init
+# 就会被覆盖掉 —— 而 gen/android 自己的 .gitignore 已经把 build/、.gradle/、
+# local.properties、keystore.properties 这些构建产物与本机配置挡在外面了。

@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Android 端最小权限:核心能力 + 通知 + 打开外链/文件。与桌面共用同一个窗口 label(main),所以前端能力检测结果两边完全一致。",
+  "platforms": [
+    "android",
+    "iOS"
+  ],
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "core:default",
+    "notification:default",
+    "opener:default",
+    "opener:allow-open-path"
+  ]
+}
