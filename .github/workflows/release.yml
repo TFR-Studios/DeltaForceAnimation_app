@@ -121,4 +121,10 @@ jobs:
           else
             NOTES="--generate-notes"
           fi
-          gh release create "$TAG" --title "$TAG" $NOTES release-assets/*
+          # 可重复执行:已经发过就把附件与说明更新一遍,不新建(标签移动 / 重跑流水线时不会报错)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+            gh release edit "$TAG" --title "$TAG" $NOTES
+          else
+            gh release create "$TAG" --title "$TAG" $NOTES release-assets/*
+          fi

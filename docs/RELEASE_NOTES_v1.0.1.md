@@ -8,7 +8,7 @@
 |---|---|---|
 | `DeltaForceAnimationEditor-Portable-1.0.1.exe` | Windows x64 | 便携版单文件,约 88 MB。首次启动会先解压到 `%TEMP%`,约 15 秒后出窗口 |
 | `DeltaForceAnimationEditor-1.0.1-win-unpacked.zip` | Windows x64 | 免安装版,解压即用(比便携版启动快) |
-| `dfae-1.0.1-arm64-debug.apk` | Android | 调试包,**仅供内测**:未签名发布、只含 `arm64-v8a`、体积偏大 |
+| `dfae-1.0.1-arm64-v8a.apk` | Android 7.0+ | **release 签名包**,27 MB,含 `arm64-v8a`。手机上下载后直接点开安装即可(需允许「安装未知来源应用」) |
 
 > **Windows 首次运行会有 SmartScreen 提示**(产物没有代码签名):点「更多信息」→「仍要运行」。
 
@@ -32,7 +32,8 @@
 - **Android 的完整导出链路尚未在真机上验证**:目前只在模拟器上验到了「导出字节 → 相册」这一段。
   模拟器(MuMu)缺少 H.264 硬件编码、画布 MediaRecorder 也被禁,编码那一步必然失败 —— 真机上应该正常,欢迎反馈。
 - Android 单次保存上限 120 MB,超过会明确报错;透明的无压缩 AVI 在移动端不可用(被内存护栏拦住)。
-- Windows 产物未签名;Android 目前只有 debug 包,没有签名 release 包。
+- Android 包只打了 `arm64-v8a`(近几年的手机都是这个);32 位老机型装不上。
+- Windows 产物未做代码签名,首次运行会有 SmartScreen 提示。
 
 ## 素材版权
 
