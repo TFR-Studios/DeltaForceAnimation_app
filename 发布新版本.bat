@@ -22,14 +22,14 @@ echo    3 = major  (breaking)     first digit +1, rest = 0
 echo    4 = custom version
 echo.
 set "CH="
-set /p "CH== Choose 1-4: "
+set /p "CH= Choose 1-4: "
 set "BUMP=patch"
 if "!CH!"=="1" set "BUMP=patch"
 if "!CH!"=="2" set "BUMP=minor"
 if "!CH!"=="3" set "BUMP=major"
 if not "!CH!"=="4" goto HAVE_BUMP
 set "BUMP="
-set /p "BUMP== Version (x.y.z): "
+set /p "BUMP= Version (x.y.z): "
 if not defined BUMP goto NO_BUMP
 :HAVE_BUMP
 echo.
@@ -41,7 +41,7 @@ echo    4. GitHub builds and publishes (~10 min), syncs to GitCode
 echo ------------------------------------------------------------
 echo.
 set "GO="
-set /p "GO== Start? (y = yes, Enter = cancel): "
+set /p "GO= Start? (y = yes, Enter = cancel): "
 if /i "!GO!"=="y" goto DO_IT
 echo    Cancelled.
 pause & exit /b 0
@@ -56,7 +56,7 @@ echo.
 echo    Release notes: docs\RELEASE_NOTES_!TAG!.md
 echo.
 set "EDIT="
-set /p "EDIT== Open it in Notepad now? (y = yes, Enter = skip): "
+set /p "EDIT= Open it in Notepad now? (y = yes, Enter = skip): "
 if /i not "!EDIT!"=="y" goto SKIP_EDIT
 start "" notepad "docs\RELEASE_NOTES_!TAG!.md"
 echo    Save it, then press any key here to continue...
@@ -94,7 +94,7 @@ echo              https://gitcode.com/TFR-Studios/DeltaForceAnimation_app/releas
 echo ------------------------------------------------------------
 echo.
 set "OPEN="
-set /p "OPEN== Open the Actions page? (y = yes): "
+set /p "OPEN= Open the Actions page? (y = yes): "
 if /i "!OPEN!"=="y" start "" https://github.com/TFR-Studios/DeltaForceAnimation_app/actions
 pause
 exit /b 0

@@ -22,8 +22,11 @@ if not defined CHANGED goto NOTHING
 :ASK_MSG
 echo.
 set "MSG="
-set /p "MSG== Commit message (required): "
-if not defined MSG echo    [X] Message cannot be empty. & goto ASK_MSG
+set /p "MSG= Commit message (required): "
+if defined MSG goto GOT_MSG
+echo    [X] Message cannot be empty.
+goto ASK_MSG
+:GOT_MSG
 echo.
 echo == Committing ==
 git add -A
