@@ -18,6 +18,8 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
+import https from 'node:https';
 
 const [tag, assetsDir, notesArg] = process.argv.slice(2);
 const token = process.env.GITCODE_TOKEN;
@@ -59,6 +61,28 @@ function notesFile() {
   if (notesArg) return notesArg;
   if (process.env.RELEASE_NOTES_FILE) return process.env.RELEASE_NOTES_FILE;
   return path.join('docs', 'RELEASE_NOTES_' + tag + '.md');
+}
+
+/* 大文件上传不要用 fetch:undici 默认 5 分钟收不到响应头就抛 HeadersTimeoutError,
+ * 132 MB 的安装包从 GitHub Actions 传到 GitCode 正好会踩到(2026-10-17 的 v1.0.2 补同步就失败在这里)。
+ * Node 的 http/https 客户端默认不设超时,这里只加一个 30 分钟的兜底。 */
+function putBytes(url, headers, bytes) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.request(u, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Length': bytes.length },
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode || 0, body }));
+    });
+    req.setTimeout(30 * 60 * 1000, () => req.destroy(new Error('上传超过 30 分钟')));
+    req.on('error', reject);
+    req.end(bytes);
+  });
 }
 
 /* 说明文字:优先用发布说明文件,没有就留空 */
@@ -139,8 +163,8 @@ for (const name of files) {
   const urlRes = await apiRetry('/releases/' + encodeURIComponent(tag) + '/upload_url?file_name=' + encodeURIComponent(name));
   if (urlRes.status >= 400) { console.error('        取上传地址失败:', urlRes.status, (await urlRes.text()).slice(0, 200)); failed++; continue; }
   const { url, headers } = await urlRes.json();
-  const put = await fetch(url, { method: 'PUT', headers, body: bytes });
-  const text = (await put.text()).slice(0, 120);
+  const put = await putBytes(url, headers, bytes);
+  const text = (put.body || '').slice(0, 120);
   console.log('        PUT → ' + put.status + ' ' + text);
   if (put.status >= 400) failed++;
   await sleep(1500);
