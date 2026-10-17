@@ -66,6 +66,34 @@ function notesFile() {
 /* 大文件上传不要用 fetch:undici 默认 5 分钟收不到响应头就抛 HeadersTimeoutError,
  * 132 MB 的安装包从 GitHub Actions 传到 GitCode 正好会踩到(2026-10-17 的 v1.0.2 补同步就失败在这里)。
  * Node 的 http/https 客户端默认不设超时,这里只加一个 30 分钟的兜底。 */
+/* 已经传过的附件不重复传:GitCode 的附件列表没有文件大小。
+ * 不能用 HEAD(GitCode 对 HEAD 返回 401),改用 Range: bytes=0-0 的 GET,
+ * 从 Content-Range 里读总大小 —— 只下 1 个字节,几秒钟就能判断。
+ * 这样补同步/重跑工作流时不会再把 100+ MB 的包传一遍,也不会在上传失败前先删掉旧包。 */
+async function remoteSize(url) {
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: { Range: 'bytes=0-0', 'User-Agent': 'dfae-release' },
+    });
+    if (res.status === 206) {
+      const total = /\/(\d+)\s*$/.exec(res.headers.get('content-range') || '');
+      if (res.body) await res.body.cancel().catch(() => {});
+      return total ? Number(total[1]) : null;
+    }
+    if (res.status === 200) {
+      const n = Number(res.headers.get('content-length'));
+      if (res.body) await res.body.cancel().catch(() => {});
+      return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    if (res.body) await res.body.cancel().catch(() => {});
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function putBytes(url, headers, bytes) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -142,24 +170,36 @@ for (const name of files) {
   const filePath = path.join(assetsDir, name);
   const info = await stat(filePath);
   if (!info.isFile()) continue;
-  const bytes = await readFile(filePath);
-  console.log('[GitCode] 上传 ' + name + ' (' + (bytes.length / 1048576).toFixed(1) + ' MB)');
+  console.log('[GitCode] 处理 ' + name + ' (' + (info.size / 1048576).toFixed(1) + ' MB)');
 
-  /* 3a) 删掉同名旧附件(先取一次当前列表,避免用过期数据) */
+  /* 3a) 已经存在且大小一致 → 直接跳过。
+   * 重跑工作流 / 补同步时不必把 100+ MB 的包再传一遍,也避免“上传失败前先删旧包”。 */
   const cur = await apiRetry('/releases/tags/' + encodeURIComponent(tag));
+  let existing = null;
   if (cur.status === 200) {
     const data = await cur.json();
-    for (const a of data.assets || []) {
-      if (a.name === name) {
-        const id = a.id ?? a.attach_file_id;
-        if (id == null) { console.log('        旧附件没有 id,跳过删除:', name); continue; }
-        const del = await apiRetry('/releases/' + encodeURIComponent(tag) + '/attach_files/' + id, { method: 'DELETE' });
-        console.log('        删除同名旧附件 id=' + id + ' → ' + del.status);
+    existing = (data.assets || []).find((a) => a.name === name) || null;
+    if (existing && existing.browser_download_url) {
+      const size = await remoteSize(existing.browser_download_url);
+      if (size === info.size) {
+        console.log('        已存在且大小一致(' + size + ' 字节),跳过');
+        continue;
       }
     }
   }
 
-  /* 3b) 取上传地址并 PUT */
+  /* 3b) 同名旧附件(大小不一致)先删掉,再传新的 */
+  if (existing) {
+    const id = existing.id ?? existing.attach_file_id;
+    if (id == null) { console.log('        旧附件没有 id,跳过删除:', name); }
+    else {
+      const del = await apiRetry('/releases/' + encodeURIComponent(tag) + '/attach_files/' + id, { method: 'DELETE' });
+      console.log('        删除同名旧附件 id=' + id + ' → ' + del.status);
+    }
+  }
+
+  /* 3c) 取上传地址并 PUT */
+  const bytes = await readFile(filePath);
   const urlRes = await apiRetry('/releases/' + encodeURIComponent(tag) + '/upload_url?file_name=' + encodeURIComponent(name));
   if (urlRes.status >= 400) { console.error('        取上传地址失败:', urlRes.status, (await urlRes.text()).slice(0, 200)); failed++; continue; }
   const { url, headers } = await urlRes.json();
