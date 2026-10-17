@@ -318,15 +318,36 @@ release\
 
 ### 发一版
 
-```bash
-# 1) 改版本号(package.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml 三处保持一致)
-git add -A && git commit -m 'chore: v1.0.2'
-git push
+版本号散在三个文件里,标签名又必须等于版本号 —— 这些约定都收进了 [scripts/bump-version.mjs](scripts/bump-version.mjs):
 
-# 2) 打标签并推 —— 这一步触发 CI
+```powershell
+# 一条命令:改三个文件的版本号 + 按提交记录起草发布说明
+node scripts/bump-version.mjs patch --notes     # 1.0.1 → 1.0.2
+```
+
+| 参数 | 作用 |
+|---|---|
+| `patch` / `minor` / `major` | 自动升版本号 |
+| `x.y.z` | 直接指定版本号 |
+| `--notes` | 顺便按提交记录起草 `docs/RELEASE_NOTES_v<版本>.md` |
+| `--notes-only` | 只起草发布说明,不动版本号 |
+| `--write` | 说明文件已存在时也覆盖(默认保留你手改过的内容) |
+| `--dry-run` | 只预览,不写文件 |
+
+它会改好 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`(只动 `[package]` 段,不碰依赖),
+并按标签名写好发布说明文件。**起草完记得手改成给用户看的话**。
+
+然后照常提交并推标签:
+
+```powershell
+git add -A
+git commit -m "chore: v1.0.2"
+git push
 git tag v1.0.2
 git push origin v1.0.2
 ```
+
+> 想手动改版本号也没问题,但流水线会校验:**三处版本号必须一致,且标签名去掉 `v` 之后必须等于它们**。
 
 > **流水线的第一道闸就是校验版本号**([scripts/check-version.mjs](scripts/check-version.mjs)):
 > 三处版本号必须完全一致,而且**标签名去掉 `v` 之后必须等于它们**。
