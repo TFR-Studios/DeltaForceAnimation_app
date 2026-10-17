@@ -1,0 +1,81 @@
+name: Sync to GitCode
+
+# 补同步工具:当某个版本只在 GitHub 上发了、GitCode 的发行版还缺安装包时,
+# 在 Actions 页面点「Run workflow」,填标签(如 v1.0.2)即可把 GitHub 发行版的附件
+# 原样补传到 GitCode,不用重新打包,也不用在本地准备产物。
+#
+# 需要仓库 Secret:GITCODE_TOKEN(GitCode → 设置 → 访问令牌)。
+# 与 release.yml 里的同步步骤共用 scripts/publish-to-gitcode.mjs(幂等)。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要同步的标签(如 v1.0.2;留空 = 仓库里最新的标签)'
+        required: false
+        default: ''
+
+permissions:
+  # download 附件需要读;顺手用仓库里的 docs/RELEASE_NOTES_<tag>.md 修正 GitHub 发行版说明时需要写
+  contents: write
+
+jobs:
+  sync:
+    name: 同步发行版附件
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: 解析标签
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then TAG="$(git describe --tags --abbrev=0)"; fi
+          case "$TAG" in v*) ;; *) TAG="v$TAG" ;; esac
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "将同步:$TAG"
+
+      - name: 更新 GitHub 发行版说明(仓库里的说明修正后)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f "docs/RELEASE_NOTES_${TAG}.md" ]; then
+            gh release edit "$TAG" --title "$TAG" --notes-file "docs/RELEASE_NOTES_${TAG}.md"
+            echo "已用 docs/RELEASE_NOTES_${TAG}.md 更新 GitHub 发行版说明"
+          fi
+
+      - name: 从 GitHub 发行版下载附件
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p release-assets
+          gh release download "$TAG" --dir release-assets --clobber
+          ls -lh release-assets
+
+      - name: 准备发行版说明
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f "docs/RELEASE_NOTES_${TAG}.md" ]; then
+            echo "RELEASE_NOTES_FILE=docs/RELEASE_NOTES_${TAG}.md" >> "$GITHUB_ENV"
+          else
+            # 旧版本可能没有随仓库保存说明,退回 GitHub 发行版正文
+            gh release view "$TAG" --json body -q .body > "$RUNNER_TEMP/release-notes.md"
+            echo "RELEASE_NOTES_FILE=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_ENV"
+          fi
+
+      - name: 同步到 GitCode
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: |
+          if [ -z "$GITCODE_TOKEN" ]; then
+            echo "::error::没有配置 GITCODE_TOKEN。请到仓库 Settings → Secrets and variables → Actions 添加,再重跑本工作流。"
+            exit 1
+          fi
+          node scripts/publish-to-gitcode.mjs "$TAG" release-assets "$RELEASE_NOTES_FILE"

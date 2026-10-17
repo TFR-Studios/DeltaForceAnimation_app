@@ -4,6 +4,8 @@ setlocal
 title 三角洲行动动画编辑器
 cd /d "%~dp0"
 
+for /f "delims=" %%v in ('node -p "require('./package.json').version"') do set "APPVER=%%v"
+
 set "UNPACKED=release\win-unpacked\三角洲行动动画编辑器.exe"
 if exist "%UNPACKED%" (
     echo  正在启动免安装版...
@@ -11,8 +13,11 @@ if exist "%UNPACKED%" (
     exit /b 0
 )
 
-set "PORTABLE="
-for %%f in ("release\DeltaForceAnimationEditor-Portable-*.exe") do set "PORTABLE=%%~ff"
+set "PORTABLE=release\DeltaForceAnimationEditor-Portable-%APPVER%.exe"
+if not exist "%PORTABLE%" (
+    set "PORTABLE="
+    for %%f in ("release\DeltaForceAnimationEditor-Portable-*.exe") do set "PORTABLE=%%~ff"
+)
 if defined PORTABLE (
     echo  正在启动便携版(首次启动需解压,请稍等)...
     start "" "%PORTABLE%"

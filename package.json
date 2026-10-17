@@ -17,9 +17,10 @@
     "app:smoke": "electron . --smoke --smoke-out=release/smoke",
     "app:smoke:export": "electron . --smoke --smoke-export=mp4 --smoke-out=release/smoke-export",
     "icons": "electron electron/make-icons.mjs",
-    "dist": "npm run build && electron-builder --win --x64",
-    "dist:dir": "npm run build && electron-builder --win dir --x64",
-    "dist:portable": "npm run build && electron-builder --win portable --x64",
+    "dist": "npm run build && electron-builder --win --x64 && node scripts/clean-release.mjs",
+    "dist:dir": "npm run build && electron-builder --win dir --x64 && node scripts/clean-release.mjs",
+    "dist:portable": "npm run build && electron-builder --win portable --x64 && node scripts/clean-release.mjs",
+    "clean:release": "node scripts/clean-release.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {

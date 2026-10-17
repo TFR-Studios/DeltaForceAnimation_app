@@ -92,7 +92,7 @@ release\win-unpacked\三角洲行动动画编辑器.exe
 ### 方式二:便携版单文件
 
 ```text
-release\DeltaForceAnimationEditor-Portable-1.0.0.exe        (87.9 MB)
+release\DeltaForceAnimationEditor-Portable-<版本>.exe        (约 88 MB)
 ```
 
 单个 exe,拷贝/U 盘/发人都方便。**它每次启动都要先把自己解压到 `%TEMP%\DeltaForceAnimationEditor`** ——
@@ -108,7 +108,7 @@ release\DeltaForceAnimationEditor-Portable-1.0.0.exe        (87.9 MB)
 ### 方式三:一键安装包
 
 ```text
-release\DeltaForceAnimationEditor-Setup-1.0.1.exe
+release\DeltaForceAnimationEditor-Setup-<版本>.exe
 ```
 
 双击即装(装到当前用户目录,不需要管理员权限),安装器是标准 NSIS 窗口:**有真实进度条、任务栏有按钮、
@@ -274,7 +274,10 @@ Android 端的导出**不写应用私有目录,而是直接进系统相册**(Med
 
 ### 一键构建
 
-双击 **`构建应用.bat`**,它会依次做:检查 Node → 装依赖 → `npm run build` → 生成图标 → `electron-builder` 打包。
+双击 **`构建应用.bat`**,它会依次做:检查 Node → 装依赖 → `npm run build` → 生成图标 → `electron-builder` 打包 → 清理旧版本安装包。
+
+版本号**只从 `package.json` 读**,构建开始时会打印当前版本,结束时会按这个版本号清理 `release\` 里别的版本
+(1.0.0 / 1.0.1 …)的 exe / zip。所以不会再出现「日志写着 1.0.0、实际产物是 1.0.2」或「点到了旧版 exe」的错位。
 
 ### 命令行分步
 
@@ -285,7 +288,7 @@ npm install        # 装依赖(含 Electron 31.7.7、electron-builder 24.13.3)
 npm run build      # 类型检查 + Vite 构建 → dist/
 npm run icons      # public/logo.svg → build/icon.ico + icon.png;并把 electron/portable-splash.html
                    # 渲染成 build/splash.bmp(便携版解压时那张图)。换 logo / 改那张图后才需要重跑
-npm run dist       # 打包:免安装目录 + 便携版单文件 + 一键安装包
+npm run dist       # 打包:免安装目录 + 便携版单文件 + 一键安装包,结束后清理旧版本包
 ```
 
 `npm run dist` 的产物:
@@ -295,8 +298,8 @@ release\
 ├── win-unpacked\                              # 免安装版(296.6 MB / 479 文件)
 │   ├── 三角洲行动动画编辑器.exe                #   172.8 MB,带自定义图标与版本信息
 │   └── resources\app\{dist,electron,package.json}
-├── DeltaForceAnimationEditor-Portable-1.0.0.exe   # 便携版单文件(87.9 MB,每次启动先解包)
-├── DeltaForceAnimationEditor-Setup-1.0.0.exe      # 一键安装包(88 MB,有进度条、装完启动 1 秒)
+├── DeltaForceAnimationEditor-Portable-<版本>.exe  # 便携版单文件(约 88 MB,每次启动先解包)
+├── DeltaForceAnimationEditor-Setup-<版本>.exe     # 一键安装包(约 88 MB,有进度条、装完启动 1 秒)
 └── smoke\                                     # 自检报告(跑过 app:smoke 才有)
 ```
 
@@ -376,6 +379,9 @@ git push origin v1.0.2
 
 > **流水线的第一道闸就是校验版本号**([scripts/check-version.mjs](scripts/check-version.mjs)):
 > 三处版本号必须完全一致,而且**标签名去掉 `v` 之后必须等于它们**。
+> 还会检查 `docs/RELEASE_NOTES_v<当前版本>.md` 里的安装包文件名 —— 写了别的版本会直接失败
+> (v1.0.2 的说明曾整段沿用 v1.0.1 的文件名,用户照着下会 404)。
+> `README.md` / `docs/FEATURES.md` 里的旧版本示例只提示、不拦截。
 > 对不上会立刻报错并停止 —— 不会白跑十分钟打包,更不会打出「标签叫 v1.0.2、包名却是 1.0.1」的包。
 > 手动触发(`workflow_dispatch`)时没有标签可比,只校验三处版本号互相一致。
 
@@ -428,13 +434,28 @@ GitCode 在这里承担两个角色:**GitHub 的代码镜像**,以及**软件的
 |---|---|
 | `GITCODE_TOKEN` | GitCode 的私人令牌(GitCode 右上角头像 → 设置 → 访问令牌) |
 
-没配也能跑 —— 只是会打一条黄色警告并跳过这一步,不影响 GitHub 那边的发布。
+**没配令牌会让流水线在最后一步失败**(GitHub 发行版仍然会建好,但工作流是红的) ——
+这是故意的:以前缺令牌时只打一条黄色警告就 `exit 0`,于是 **v1.0.2 在 GitHub 上有包、GitCode 一直停在 v1.0.1**,
+而整条流水线看上去还是成功的。
 
 本地也能手动跑(脚本是幂等的:同名附件先删再传,发行版说明就地更新):
 
 ```bash
 GITCODE_TOKEN=xxx node scripts/publish-to-gitcode.mjs v1.0.2 release-assets
 ```
+
+### 已经漏掉的版本怎么补
+
+不用重新打包。三种方式任选:
+
+1. **Actions 页面 → Sync to GitCode → Run workflow**,填标签(如 `v1.0.2`)。
+   它会先用仓库里的 `docs/RELEASE_NOTES_v1.0.2.md` 修正 GitHub 发行版说明,再从 GitHub 下载附件传到 GitCode,
+   见 [.github/workflows/sync-gitcode.yml](.github/workflows/sync-gitcode.yml);
+2. **管理工具.bat → 5「从 GitHub 补同步到 GitCode」**(需要本地有 `GITCODE_TOKEN` 或按提示粘贴令牌);
+3. 手工先把附件下到 `release-assets\`,再跑上面的命令。
+
+> 补同步前先确认 GitCode 的代码镜像里已经有这个标签(`v1.0.2` 的代码是同步过去的);
+> 镜像有延迟时脚本会等待并重试。
 
 ### 软件怎么做更新检查
 
@@ -466,8 +487,8 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 管理工具的菜单长这样:
 
 ```
-  版本 v1.0.1   分支 main   改动 干净
-  最新标签 v1.0.1   与 GitHub 一致
+  版本 v1.0.2   分支 main   改动 干净
+  最新标签 v1.0.2   与 GitHub 一致
 
   1  提交代码
      把改动提交并推送到 GitHub(不含打包)
@@ -480,6 +501,9 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 
   4  检查发布状态
      对比 GitHub 与 GitCode 两边的安装包
+
+  5  从 GitHub 补同步到 GitCode
+     某个版本只在 GitHub 发过、GitCode 缺安装包时,一键下载并补传
 
   0  退出
 ```
@@ -498,7 +522,14 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 比如某个版本当初只在 GitHub 发过、GitCode 上没有包,或者从别处拿到了新的安装包,可以用它手动补齐。
 
 它会:列出本地找到的安装包 → 让你挑 → 问传到哪个版本 → 要 GitCode 令牌 → 上传。
+列表默认只显示**当前版本**的包,避免把 `release\` 里 1.0.0 的旧 exe 误传到新版本发行版。
 令牌建议设成环境变量 `GITCODE_TOKEN`,这样不用每次输入。
+
+### 「从 GitHub 补同步到 GitCode」干什么用
+
+如果本地没有那一版的安装包(换电脑、清理过 `release\`),用它最省事:
+选版本 → 从 GitHub 发行版下载附件到临时目录 → 调同一个上传脚本传到 GitCode。
+它和 Actions 里的 **Sync to GitCode** 工作流是同一套逻辑,区别只是一个在本地跑、一个在云端跑。
 
 ---
 
@@ -706,7 +737,7 @@ npm run app:smoke:export       # 再加一次真实的 MP4 导出与落盘校验
 | 截图 | 1464×901、颜色数 **2728**、平均亮度 28.5、暗像素占比 0.934(深色主题 UI) |
 | **真实导出(打包版)** | MP4 完成;同一份产物两次实测:**13.8 s**(热机)/ **58.3 s**(首次,含显卡预热与着色器编译);`animation.mp4` **0.48 MB**;解析 MP4 box:**2 条轨道、视频 H.264(avc1)609 帧、音频 AAC(mp4a)476 帧、时长 10.155 s** ✅ |
 | 便携版 | 双击 → 解压到 `%TEMP%\DeltaForceAnimationEditor` → 约 20 s 出窗口,标题「三角洲行动动画编辑器」,内存约 155 MB ✅ |
-| exe 图标 | 自定义 ICO 字节确实写进了 `三角洲行动动画编辑器.exe`(版本信息含 ProductName / FileVersion 1.0.0 / Copyright)✅ |
+| exe 图标 | 自定义 ICO 字节确实写进了 `三角洲行动动画编辑器.exe`(版本信息含 ProductName / FileVersion 与 package.json 一致 / Copyright)✅ |
 
 > 导出那 609 帧正好等于这套动画的总帧数,`10.155 s` 也正好等于 609 ÷ 60fps —— 说明导出的是**完整成片**,
 > 不是"文件存在就算过"。

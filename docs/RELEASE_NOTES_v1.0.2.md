@@ -6,9 +6,10 @@
 
 | 文件 | 平台 | 说明 |
 |---|---|---|
-| `DeltaForceAnimationEditor-Portable-1.0.1.exe` | Windows x64 | 便携版单文件,约 88 MB。首次启动会先解压到 `%TEMP%`,先显示加载画面约15s,加载完毕弹出窗口 |
-| `DeltaForceAnimationEditor-1.0.1-win-unpacked.zip` | Windows x64 | 免安装版,解压即用(比便携版启动快) |
-| `dfae-1.0.1-arm64-v8a.apk` | Android 7.0+ | **release 签名包**,27 MB,含 `arm64-v8a`。手机上下载后直接点开安装即可(需允许「安装未知来源应用」) |
+| `DeltaForceAnimationEditor-Setup-1.0.2.exe` | Windows x64 | 一键安装包(**推荐**),约 88 MB。有进度条、任务栏可见,装完启动约 1 秒 |
+| `DeltaForceAnimationEditor-Portable-1.0.2.exe` | Windows x64 | 便携版单文件,约 88 MB。首次启动会先解压到 `%TEMP%`,先显示加载画面约 15s,加载完毕弹出窗口 |
+| `DeltaForceAnimationEditor-1.0.2-win-unpacked.zip` | Windows x64 | 免安装版,解压即用(比便携版启动快) |
+| `dfae-1.0.2-arm64-v8a.apk` | Android 7.0+ | **release 签名包**,27 MB,含 `arm64-v8a`。手机上下载后直接点开安装即可(需允许「安装未知来源应用」) |
 
 > **Windows 首次运行会有 SmartScreen 提示**(产物没有代码签名):点「更多信息」→「仍要运行」。
 

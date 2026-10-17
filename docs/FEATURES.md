@@ -242,7 +242,7 @@
 
 1. 双击 **`启动应用.bat`** —— 它会自动找到免安装版或便携版并启动;
 2. 或者进 `release\win-unpacked\` 双击 **`三角洲行动动画编辑器.exe`**;
-3. 或者双击 `release\` 下的 **`DeltaForceAnimationEditor-Portable-1.0.0.exe`** —— 单个文件,
+3. 或者双击 `release\` 下的 **`DeltaForceAnimationEditor-Portable-<版本>.exe`** —— 单个文件,
    拷到 U 盘/桌面都能直接跑(首次启动要先把自己解压到 `%TEMP%`,实测约十几秒才出窗口)。
 
 不需要装 Node.js,也不需要联网:八套动画的 JSON / 图片 / 音频 / 字体全部打包在应用里。
@@ -257,7 +257,9 @@ npm run app:dev    # 开发模式:改 src/ 热更新,直接在 Electron 窗口�
 npm run dist       # 打包:release/win-unpacked(免安装)+ 便携版单文件 exe
 ```
 
-也可以直接双击 **`构建应用.bat`**,它把"装依赖 → 构建 → 生成图标 → 打包"一次做完。
+也可以直接双击 **`构建应用.bat`**,它把"装依赖 → 构建 → 生成图标 → 打包 → 清理旧版本包"一次做完。
+构建日志里的版本号直接读 `package.json`,不再是写死的 1.0.0;结束后会删掉 `release\` 里其他版本的 exe / zip,
+所以不会出现"构建完了却点开旧版应用"的错位。
 
 > **桌面版永远是 Chromium**:网页版需要"请用 Chrome/Edge 打开"的那些要求
 > (WebCodecs、安全上下文)由内置的 Electron 内核保证,用户不需要选浏览器。
@@ -550,7 +552,7 @@ npm run dist       # 打包:release/win-unpacked(免安装)+ 便携版单文件 
 │                              #   png-to-webp.py 图标素材批量转 WebP
 ├── docs/FEATURES.md           # 本文:上游网页版的功能说明存档
 ├── 启动应用.bat               # 双击运行打包好的应用
-├── 构建应用.bat               # 双击:装依赖 + 构建 + 生成图标 + 打包
+├── 构建应用.bat               # 双击:装依赖 + 构建 + 生成图标 + 打包 + 清理旧版本包
 ├── 开发模式.bat               # 双击:热更新的开发模式
 ├── 应用自检.bat               # 双击:跑自检并输出报告与截图
 ├── index.html

@@ -13,10 +13,13 @@
  *   node scripts/dfae-cli.mjs release    直接发布新版本
  *   node scripts/dfae-cli.mjs upload     直接上传安装包
  *   node scripts/dfae-cli.mjs status     直接查发布状态
+ *   node scripts/dfae-cli.mjs sync       从 GitHub 补同步发行版到 GitCode
  * ========================================================================== */
 import { createInterface } from 'node:readline';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, existsSync, readdirSync, statSync, mkdtempSync, copyFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdtempSync, copyFileSync, rmSync, createWriteStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -243,7 +246,9 @@ function localAssets() {
       found.push({ name, file: f, size: statSync(f).size });
     }
   };
-  add('release', (n) => n.endsWith('.exe') || n.endsWith('.zip'));
+  /* 默认只列出当前版本的包:release\ 里可能还躺着 1.0.0 的旧 exe,
+   * 补传时选错就会把旧版本传到新版本的发行版上。 */
+  add('release', (n) => (n.endsWith('.exe') || n.endsWith('.zip')) && n.includes(pkgVersion()));
   add(path.join('src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk', 'universal', 'release'), (n) => n.endsWith('.apk'));
   add(path.join('src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk', 'universal', 'debug'), (n) => n.endsWith('.apk'));
   return found.sort((a, b) => a.name.localeCompare(b.name));
@@ -352,19 +357,102 @@ async function actionStatus() {
   console.log('');
 
   const missing = ghReal.filter((n) => !gcReal.includes(n));
-  if (!ghErr && !gcErr) {
-    if (!missing.length && ghReal.length) {
+  if (!ghErr && ghReal.length) {
+    if (gcErr === 'HTTP 404') {
+      warn('GitCode 上还没有这个发行版(整个版本都缺)。');
+      console.log('');
+      info('用菜单 5「从 GitHub 补同步到 GitCode」一键补齐,');
+      info('或在 GitHub Actions 里运行 Sync to GitCode 工作流。');
+    } else if (!gcErr && !missing.length) {
       ok('两边的安装包一致。');
-    } else if (missing.length) {
+    } else if (!gcErr && missing.length) {
       warn('GitCode 上缺少这些:');
       for (const n of missing) console.log('      ' + red('✘') + ' ' + n);
       console.log('');
-      info('可以用菜单里的「上传安装包到 GitCode」补上去。');
+      info('可以用菜单 5「从 GitHub 补同步到 GitCode」补上去。');
     }
   }
   console.log('');
   console.log('  GitHub : ' + cyan('https://github.com/' + REPO + '/releases/tag/' + tag));
   console.log('  GitCode: ' + cyan('https://gitcode.com/' + REPO + '/releases'));
+}
+
+/* 从 GitHub 补同步到 GitCode:不依赖本地产物,直接把 GitHub 发行版的附件搬过去。
+ * 适用场景:某个版本当初只在 GitHub 发了(比如 v1.0.2 的 GITCODE_TOKEN 没配),
+ * 或者本地已经没有了那一版的安装包。 */
+async function actionSyncGitHub() {
+  title('从 GitHub 同步发行版到 GitCode');
+  info('用途:某个版本只在 GitHub 发过、GitCode 上缺安装包时,一键补齐。');
+  info('不重新打包,直接下载 GitHub 发行版的附件再上传。');
+  console.log('');
+
+  const tag = (await ask('  同步哪个版本?(回车 = ' + latestTag() + '): ')).trim() || latestTag();
+  if (tag.startsWith('(')) { warn('还没有标签可用。'); return; }
+
+  step('查询 GitHub 发行版 ' + tag + ' ...');
+  const rel = await fetchJson('https://api.github.com/repos/' + REPO + '/releases/tags/' + tag);
+  if (rel.error || !rel.data) {
+    bad('GitHub 上查不到这个发行版:' + (rel.error || '没有数据'));
+    return;
+  }
+  const assets = (rel.data.assets || []).filter((a) => a.name && !a.name.endsWith('.blockmap'));
+  if (!assets.length) { bad('这个发行版没有附件。'); return; }
+
+  console.log(dim('  将下载并上传这些附件:'));
+  for (const a of assets) console.log('    · ' + a.name + '  ' + gray(mb(a.size)));
+
+  let token = process.env.GITCODE_TOKEN || '';
+  if (!token) {
+    info('需要一个 GitCode 访问令牌(GitCode 右上角头像 → 设置 → 访问令牌)。');
+    token = (await ask('  粘贴令牌(输入的内容会显示在屏幕上): ')).trim();
+  }
+  if (!token) { warn('没有令牌,已取消。'); return; }
+
+  const go = (await ask('  确认?(输入 y 回车开始): ')).trim().toLowerCase();
+  if (go !== 'y') { info('已取消。'); return; }
+
+  const tmp = mkdtempSync(path.join(tmpdir(), 'dfae-sync-'));
+  try {
+    step('下载附件...');
+    for (const a of assets) {
+      const res = await fetch(a.browser_download_url, { headers: { 'User-Agent': 'dfae-cli', Accept: 'application/octet-stream' }, redirect: 'follow' });
+      if (!res.ok || !res.body) throw new Error(a.name + ' 下载失败:HTTP ' + res.status);
+      const out = path.join(tmp, a.name);
+      await pipeline(Readable.fromWeb(res.body), createWriteStream(out));
+      console.log('    ✔ ' + a.name);
+    }
+
+    /* 优先用仓库里的发布说明;旧版本可能没有,就退回 GitHub 发行版正文 */
+    const docNotes = path.join(ROOT, 'docs', 'RELEASE_NOTES_' + tag + '.md');
+    let notesFile;
+    if (existsSync(docNotes)) {
+      notesFile = docNotes;
+    } else if (rel.data.body) {
+      notesFile = path.join(tmp, 'RELEASE_NOTES.md');
+      writeFileSync(notesFile, String(rel.data.body), 'utf8');
+    }
+
+    step('上传到 GitCode...');
+    const args = [path.join(ROOT, 'scripts', 'publish-to-gitcode.mjs'), tag, tmp];
+    if (notesFile) args.push(notesFile);
+    const r = spawnSync(process.execPath, args, {
+      cwd: ROOT,
+      stdio: 'inherit',
+      env: { ...process.env, GITCODE_TOKEN: token },
+    });
+    if (r.status === 0) {
+      console.log('');
+      ok('同步完成');
+      info('下载页: https://gitcode.com/' + REPO + '/releases');
+    } else {
+      console.log('');
+      bad('同步失败(退出码 ' + r.status + ')。看上面的输出定位原因。');
+    }
+  } catch (e) {
+    bad('出错了:' + String(e.message || e));
+  } finally {
+    try { rmSync(tmp, { recursive: true, force: true }); } catch {}
+  }
 }
 
 /* ---------- 菜单 ---------- */
@@ -388,6 +476,7 @@ const MENU = [
   ['2', '发布新版本', '改版本号 → 起草说明 → 提交 → 打标签 → 云端自动打包发布', actionRelease],
   ['3', '上传安装包到 GitCode', '把本地打好的包补传到某个版本的发行版', actionUpload],
   ['4', '检查发布状态', '对比 GitHub 与 GitCode 两边的安装包', actionStatus],
+  ['5', '从 GitHub 补同步到 GitCode', '某个版本只在 GitHub 发过、GitCode 缺安装包时,一键下载并补传', actionSyncGitHub],
 ];
 
 function drawMenu() {
@@ -430,6 +519,7 @@ const direct = {
   release: actionRelease,
   upload: actionUpload,
   status: actionStatus,
+  sync: actionSyncGitHub,
 };
 
 if (!existsSync(path.join(ROOT, 'package.json'))) {
