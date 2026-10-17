@@ -1,7 +1,7 @@
 {
   "name": "delta-force-animation-editor-desktop",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "三角洲行动动画编辑器 · Windows 桌面版(Electron):内置八套游戏动画的 Lottie 预览 / 编辑 / 视频导出",
   "author": "TFR-Studios",
   "license": "GPL-3.0",
@@ -65,16 +65,35 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "signAndEditExecutable": true,
       "verifyUpdateCodeSignature": false,
       "artifactName": "DeltaForceAnimationEditor-${version}-${arch}.${ext}"
     },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "DeltaForceAnimationEditor-Setup-${version}.${ext}",
+      "shortcutName": "三角洲行动动画编辑器",
+      "uninstallDisplayName": "三角洲行动动画编辑器 ${version}",
+      "installerIcon": "build/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    },
     "portable": {
       "artifactName": "DeltaForceAnimationEditor-Portable-${version}.exe",
       "unpackDirName": "DeltaForceAnimationEditor",
-      "requestExecutionLevel": "user"
+      "requestExecutionLevel": "user",
+      "splashImage": "build/splash.bmp"
     }
   },
   "dependencies": {

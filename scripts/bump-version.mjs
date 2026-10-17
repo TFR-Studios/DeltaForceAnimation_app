@@ -150,7 +150,8 @@ if (wantNotes) {
   out.push('');
   out.push('| 文件 | 平台 | 说明 |');
   out.push('|---|---|---|');
-  out.push('| DeltaForceAnimationEditor-Portable-' + next + '.exe | Windows x64 | 便携版单文件,首次启动会先解压到 %TEMP% |');
+  out.push('| DeltaForceAnimationEditor-Setup-' + next + '.exe | Windows x64 | 一键安装包(推荐):安装器有进度条,装完启动约 1 秒 |');
+  out.push('| DeltaForceAnimationEditor-Portable-' + next + '.exe | Windows x64 | 便携版单文件,每次启动都要先解压到 %TEMP%(慢) |');
   out.push('| DeltaForceAnimationEditor-' + next + '-win-unpacked.zip | Windows x64 | 免安装版,解压即用 |');
   out.push('| dfae-' + next + '-arm64-v8a.apk | Android | release 签名包,下载后直接点开安装 |');
   out.push('');

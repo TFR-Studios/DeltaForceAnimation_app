@@ -49,6 +49,9 @@ jobs:
           New-Item -ItemType Directory -Force release-assets | Out-Null
           $portable = Get-ChildItem release -Filter 'DeltaForceAnimationEditor-Portable-*.exe' | Select-Object -First 1
           if ($portable) { Copy-Item $portable.FullName "release-assets/$($portable.Name)" }
+          # 一键安装包:推荐形态(安装器有进度条/任务栏可见,装完启动 1 秒)
+          $setup = Get-ChildItem release -Filter 'DeltaForceAnimationEditor-Setup-*.exe' | Select-Object -First 1
+          if ($setup) { Copy-Item $setup.FullName "release-assets/$($setup.Name)" }
           Compress-Archive -Path release/win-unpacked/* -DestinationPath "release-assets/DeltaForceAnimationEditor-$ver-win-unpacked.zip" -CompressionLevel Optimal
           Get-ChildItem release-assets | Select-Object Name,Length
       - uses: actions/upload-artifact@v4

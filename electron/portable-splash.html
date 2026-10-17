@@ -1,0 +1,148 @@
+<!doctype html>
+<!-- ============================================================================
+ * 便携版「解包中」的启动画面 —— 只用来生成 build/splash.bmp,不是运行期窗口。
+ *
+ * 它出现的那段时间里 Electron 还没被启动(便携版 exe 正在把自己解到临时目录),
+ * 所以画它的是 electron-builder 的 NSIS 解包器,不是本应用:
+ *   electron-builder 的 portable.splashImage 只接受一张 **BMP**,窗口尺寸就是图片尺寸;
+ *   它是一张不会动的图 —— NSIS 在解包时是阻塞的,这一阶段做不出动画。
+ * 因此这张图的设计目标是「一眼看懂、不假装有进度」,而不是「像进度条在走」。
+ *
+ * 设计语言必须与软件本体一致(见 DESIGN.md):
+ *   · 底色就是应用加载层的 #242424 —— 解包结束、编辑器第一帧出来时是同一块颜色,不跳;
+ *   · 文字用 --text / --text-3(#f2f2f4 / #9b9ba3),不引入第二族中性色;
+ *   · 左侧 Logo + 名字 + 终端式日志行 + 22 格方块进度条,与应用自己的 #app-loading 同构;
+ *   · 只有状态语义才用彩色,这里没有状态变化,所以整张图是纯中性灰。
+ * 字体用项目自带的产品字体(ProjectD Type),渲染时从 animations/animation_1/fonts 读,
+ * 拿不到就回退系统字体 —— 和界面的 font-display:swap 行为一致。
+ *
+ * 尺寸 460×272 必须与 package.json 的 portable.splashImage 指向的图一致;
+ * 改这里之后要跑一次 npm run icons 重新生成 build/splash.bmp。
+ * ========================================================================== -->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src file:" />
+    <title>三角洲行动动画编辑器</title>
+    <style>
+      @font-face {
+        font-family: 'ProjectD Type';
+        src: url('../animations/animation_1/fonts/ProjectDType-Medium.woff2') format('woff2');
+        font-weight: 500;
+        font-display: block; /* 这张图只渲染一次:等字体到位,不要拍下回退字体的那一帧 */
+      }
+      @font-face {
+        font-family: 'ProjectD Type Curve';
+        src: url('../animations/animation_1/fonts/ProjectDTypeCurve-Bold.woff2') format('woff2');
+        font-weight: 700;
+        font-display: block;
+      }
+
+      :root {
+        /* 与应用同一套锚点色(见 DESIGN.md 的 Theme 表),这里只用到深色那一列 */
+        --bg: #242424;
+        --text: #f2f2f4;
+        --text-2: #c3c3c9;
+        --text-3: #9b9ba3;
+        --track: rgba(128, 128, 132, 0.34);
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        /* 与 index.html 的 #app-loading 同一串字体与字重(界面默认 500,写 400 会发虚) */
+        font-family: 'ProjectD Type', 'Segoe UI Variable Text', 'Segoe UI', system-ui, 'Microsoft YaHei', sans-serif;
+        font-weight: 500;
+        -webkit-font-smoothing: antialiased;
+        overflow: hidden;
+        cursor: default;
+        user-select: none;
+      }
+
+      .term {
+        height: 100%;
+        padding: 26px 28px 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      /* 标题行:标志与软件里顶栏 / 加载层用的是同一张 logo.svg(近白 #e2e2e8) */
+      .title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 15px;
+        letter-spacing: 0.2px;
+      }
+      .logo { width: 27px; height: auto; flex: none; display: block; }
+
+      /* 日志行:与应用加载层 .ld-log 同字号、同灰度层级 —— 解包结束接着画的就是它 */
+      .log {
+        font-size: 12.5px;
+        line-height: 1.62;
+        color: var(--text-2);
+        font-variant-numeric: tabular-nums;
+      }
+      .log b { font-weight: 600; color: var(--text); }
+      .log .quiet { color: var(--text-3); }
+
+      /* 22 格方块条:和 #app-loading 的 .ld-bar 一模一样的形态(flex + 2px 间隙 + 2px 圆角)。
+         这一阶段读不到任何进度,所以**所有格子都停在"未点亮"**,不画假进度;
+         为什么没有进度由下一行文案说清楚 —— 静止的条 + 一行解释,比一根永远不动却装成
+         在走的进度条诚实得多。 */
+      .bar { display: flex; gap: 2px; height: 4px; }
+      .bar i { flex: 1; height: 100%; border-radius: 2px; background: var(--track); }
+
+      .note {
+        font-size: 11.5px;
+        line-height: 1.7;
+        color: var(--text-3);
+        max-width: 360px;
+      }
+
+      .foot {
+        margin-top: auto;
+        padding-top: 11px;
+        border-top: 1px solid rgba(255, 255, 255, 0.09);
+        display: flex;
+        align-items: baseline;
+        font-size: 10.5px;
+        letter-spacing: 0.4px;
+        color: var(--text-3);
+      }
+      .foot .right { margin-left: auto; }
+    </style>
+  </head>
+  <body>
+    <div class="term">
+      <div class="title">
+        <!-- 与 public/logo.svg 同一份 polygon:这里内联,免得生成 BMP 时还要多读一个文件 -->
+        <svg class="logo" viewBox="0 0 385.48 322.72" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <polygon
+            fill="#e2e2e8"
+            points="195.13 0 195.13 101.12 92.12 272.9 296.26 272.9 225.4 153.24 203.36 189.64 241.99 189.64 152.7 263.97 183.13 211.48 142.28 211.48 231.67 63.24 385.48 322.72 0 322.72 195.13 0"
+          />
+        </svg>
+        <span>三角洲行动动画编辑器</span>
+      </div>
+
+      <p class="log">正在解包运行文件 <b>·</b> <span class="quiet">首次启动请稍候</span></p>
+
+      <div class="bar" aria-hidden="true">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+
+      <!-- 这一行是整张图里最重要的一句:把"为什么没有进度条在动"说在前面,
+           用户才不会把静止读成卡死。文案给区间不写死秒数(与机器有关)。 -->
+      <p class="note">便携版每次启动都要先把运行文件解到临时目录。这一步由 Windows 安装器执行,读不到进度 —— 完成后会自动打开编辑器。</p>
+
+      <div class="foot">
+        <span>TFR-Studios</span>
+        <span class="right">便携版 · 单文件</span>
+      </div>
+    </div>
+  </body>
+</html>

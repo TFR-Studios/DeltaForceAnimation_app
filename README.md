@@ -6,7 +6,7 @@
 
 | 平台 | 外壳 | 发布形态 | 入口 |
 |---|---|---|---|
-| **Windows**(主推) | Electron 31.7.7 / Chromium 126 | 免安装目录 **296 MB** / 便携版单文件 **~88 MB** | 双击 **`启动应用.bat`**,或直接跑 `release\win-unpacked\三角洲行动动画编辑器.exe` |
+| **Windows**(主推) | Electron 31.7.7 / Chromium 126 | 免安装目录 **296 MB** / 便携版单文件 **~88 MB** / 一键安装包 **~88 MB** | 双击 **`启动应用.bat`**,或直接跑 `release\win-unpacked\三角洲行动动画编辑器.exe` |
 | **Android 手机 / 平板** | Tauri v2 / 系统 WebView | debug APK(内测包,**288 MB**) | `npm run tauri android build -- --apk`(见 [Android 端](#android-端tauri-v2)) |
 | Windows(Tauri 外壳) | Tauri v2 / WebView2 | 与 Android 同一份 Rust 外壳 | `npm run tauri build` —— **不是发布形态**,桌面请用 Electron 那套 |
 
@@ -95,9 +95,27 @@ release\win-unpacked\三角洲行动动画编辑器.exe
 release\DeltaForceAnimationEditor-Portable-1.0.0.exe        (87.9 MB)
 ```
 
-单个 exe,拷贝/U 盘/发人都方便。**首次启动会先把自己解压到 `%TEMP%\DeltaForceAnimationEditor`(实测约 15 秒后出窗口)**,之后再启动就快了。
+单个 exe,拷贝/U 盘/发人都方便。**它每次启动都要先把自己解压到 `%TEMP%\DeltaForceAnimationEditor`** ——
+这台机器上实测 **65 秒**才出界面(解压 170 MB + 杀软扫描,机器不同差别很大),所以:
 
-### 方式三:开发模式(改代码时用)
+- 想要「双击就开、有进度条、能 Alt+Tab」→ 用下面的**一键安装包**(装一次,之后启动约 1 秒);
+- 只想解压一次、以后都快 → 用**免安装版**(上面方式一)。
+
+> 解压那段时间屏幕上那张 460×272 的图由 NSIS 解包器显示(`build/splash.bmp`),**它不会有动画**:
+> NSIS 解压是阻塞的,这一阶段没有任何东西能重绘窗口;而且它的窗口是 toolwindow —— 任务栏没有按钮、
+> Alt+Tab 里也看不到。这是便携版形态的固有限制,不是漏做。
+
+### 方式三:一键安装包
+
+```text
+release\DeltaForceAnimationEditor-Setup-1.0.1.exe
+```
+
+双击即装(装到当前用户目录,不需要管理员权限),安装器是标准 NSIS 窗口:**有真实进度条、任务栏有按钮、
+Alt+Tab 可见**;装完自动启动,之后从开始菜单/桌面快捷方式打开约 1 秒 —— 不再有解压等待。
+不想用了在「设置 → 应用」里正常卸载(用户数据目录默认保留)。
+
+### 方式四:开发模式(改代码时用)
 
 ```bash
 npm install      # 首次:装依赖(Electron 约 110 MB)
@@ -106,7 +124,7 @@ npm run app:dev  # 起 vite dev server + Electron,改 src/ 热更新
 
 或者直接双击 `开发模式.bat`。
 
-### 方式四:Android(手机 / 平板)
+### 方式五:Android(手机 / 平板)
 
 现阶段还没有签名好的 release 包,APK 要自己构建(完整步骤见 [Android 端](#android-端tauri-v2))。最短路径:
 
@@ -145,6 +163,7 @@ adb install -r -t src-tauri\gen\android\app\build\outputs\apk\universal\debug\ap
 | **导出完成有系统通知** | 存完发一条 Windows 通知,**点通知直接在资源管理器里定位到文件**。 |
 | **窗口大小记忆** | 下次打开还是上次的位置和尺寸(含是否最大化),记在 `%APPDATA%\三角洲行动动画编辑器\window-state.json`。 |
 | **单实例** | 重复双击只把已有窗口拿到前台,不会开出第二个应用。 |
+| **启动第一屏只有两处图形** | 不做"Electron 启动后再弹一个自己的悬浮窗":Electron 一起来、窗口第一帧画出来,屏幕上直接就是编辑器自带的加载层(`#app-loading`:终端式日志 + 22 格方块进度条),那才是真正的加载反馈。唯一在它之前出现的是**便携版解包期的一张静态图**(`build/splash.bmp`)—— 它由 NSIS 解包器显示,和应用加载层同一套配色/字体/方块条,所以两屏接得上;那张图没有动画、也没有任务栏按钮(工具窗口),这是 NSIS 解包的固有限制,想避开就用安装包或免安装版。 |
 | **中文菜单(Alt 唤出)** | 文件(打开导出文件夹 / 数据目录 / 退出)、视图(重载 / 开发者工具 F12 / 缩放 / 全屏)、帮助(在线站点 / 关于)。 |
 | **导出不被后台节流** | `backgroundThrottling: false`:窗口被最小化或挡在后面时,Chromium 不会把渲染/计时器降频 —— 长导出不会被拖慢。 |
 | **音频不被自动播放策略拦** | 加了 `autoplay-policy=no-user-gesture-required`:桌面应用没有"用户手势"语义,不加这条预览音效会静默拒播。 |
@@ -264,8 +283,9 @@ Android 端的导出**不写应用私有目录,而是直接进系统相册**(Med
 ```bash
 npm install        # 装依赖(含 Electron 31.7.7、electron-builder 24.13.3)
 npm run build      # 类型检查 + Vite 构建 → dist/
-npm run icons      # 由 public/logo.svg 生成 build/icon.ico + icon.png(换 logo 后才需要重跑)
-npm run dist       # 打包:免安装目录 + 便携版单文件
+npm run icons      # public/logo.svg → build/icon.ico + icon.png;并把 electron/portable-splash.html
+                   # 渲染成 build/splash.bmp(便携版解压时那张图)。换 logo / 改那张图后才需要重跑
+npm run dist       # 打包:免安装目录 + 便携版单文件 + 一键安装包
 ```
 
 `npm run dist` 的产物:
@@ -275,7 +295,8 @@ release\
 ├── win-unpacked\                              # 免安装版(296.6 MB / 479 文件)
 │   ├── 三角洲行动动画编辑器.exe                #   172.8 MB,带自定义图标与版本信息
 │   └── resources\app\{dist,electron,package.json}
-├── DeltaForceAnimationEditor-Portable-1.0.0.exe   # 便携版(87.9 MB)
+├── DeltaForceAnimationEditor-Portable-1.0.0.exe   # 便携版单文件(87.9 MB,每次启动先解包)
+├── DeltaForceAnimationEditor-Setup-1.0.0.exe      # 一键安装包(88 MB,有进度条、装完启动 1 秒)
 └── smoke\                                     # 自检报告(跑过 app:smoke 才有)
 ```
 
@@ -290,7 +311,10 @@ release\
 
 | 配置 | 值 | 为什么 |
 |---|---|---|
-| `win.target` | `dir` + `portable` | 只出"免安装目录"和"便携版单文件";没有做 NSIS 安装包(不需要装进 Program Files)。 |
+| `win.target` | `dir` + `portable` + `nsis` | 三种形态各管一件事:**dir** = 免安装目录(解压即用、启动快),**portable** = 单文件随身带(代价是每次启动先解包),**nsis** = 一键安装包(装一次之后启动 1 秒,安装器有真实进度条、任务栏可见)。 |
+| `nsis.oneClick` / `perMachine` | `true` / `false` | 一键安装、装到当前用户(`%LOCALAPPDATA%\Programs\…`,不弹 UAC),装完自动启动;卸载走系统「应用和功能」。 |
+| `portable.splashImage` | `build/splash.bmp` | 便携版解包时那张静态图。NSIS 解包是阻塞的,所以只能是静态图(详见[快速上手](#方式二便携版单文件))。 |
+| `portable.splashImage` 的尺寸 | 460×272 | NSIS 会把 BgImage 窗口调成图片尺寸;图由 `electron/portable-splash.html` 按这个尺寸渲染(见 `electron/make-icons.mjs`),改一边必须同步另一边。 |
 | `asar` | `false` | ⚠️ electron-builder 会警告"不建议关闭 asar"。这里是有意为之:产物是 400+ 个静态资源文件,关掉 asar 后 `resources\app\dist\` 保持普通目录,方便核对/热替换产物,也避开 asar 路径下的一些边角问题。 |
 | `signAndEditExecutable` | `true` | 需要它才能把 `build/icon.ico` 与版本信息写进 exe。**代价**:构建时要下载 winCodeSign 辅助包(约 5.6 MB)。 |
 | `productName` | `三角洲行动动画编辑器` | 决定 exe 名、任务栏名、通知来源名。 |
@@ -355,11 +379,12 @@ git push origin v1.0.2
 > 对不上会立刻报错并停止 —— 不会白跑十分钟打包,更不会打出「标签叫 v1.0.2、包名却是 1.0.1」的包。
 > 手动触发(`workflow_dispatch`)时没有标签可比,只校验三处版本号互相一致。
 
-CI 产出三个附件:
+CI 产出四个附件:
 
 | 附件 | 说明 |
 |---|---|
-| `DeltaForceAnimationEditor-Portable-<版本>.exe` | Windows 便携版单文件(约 88 MB) |
+| `DeltaForceAnimationEditor-Portable-<版本>.exe` | Windows 便携版单文件(约 88 MB,每次启动先解包) |
+| `DeltaForceAnimationEditor-Setup-<版本>.exe` | Windows 一键安装包(约 88 MB,**推荐**,有进度条、装完启动 1 秒) |
 | `DeltaForceAnimationEditor-<版本>-win-unpacked.zip` | Windows 免安装版 |
 | `dfae-<版本>-arm64-v8a.apk` | Android **release 签名包**(约 27 MB,含 `arm64-v8a`) |
 
@@ -511,7 +536,8 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 │   ├── measure.cjs            #   界面布局审计(--measure:在真实窗口里量几何/对齐/对比度/比例)
 │   ├── preload.cjs            #   预加载:暴露 window.dfaeDesktop 与 window.dfaeDownloads
 │   ├── smoke.cjs              #   自检逻辑(能力探测 + 资源健康 + 截图 + 可选真导出 + 下载列表核查)
-│   └── make-icons.mjs         #   logo.svg → icon.ico / icon.png(用 Electron 自己光栅化,零额外依赖)
+│   ├── portable-splash.html   #   便携版解包期那张图的**源文件**(460×272;样式/标志全内联)
+│   └── make-icons.mjs         #   logo.svg → icon.ico / icon.png,以及便携版解包图 splash.bmp
 ├── scripts/
 │   └── dev-app.mjs            #   npm run app:dev 的启动器(起 vite → 等端口 → 拉起 Electron)
 ├── src-tauri/                 # ← Android 端外壳(Tauri v2 / Rust),桌面端也可用但不是发布形态
@@ -521,7 +547,7 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 │   ├── gen/android/           #   Android 工程(**已提交**:含平板锁横屏与权限声明等定制)
 │   ├── tauri.conf.json        #   桌面端配置(app.windows 为空 —— 窗口由 main.rs 手建)
 │   └── tauri.android.conf.json#   Android 专用覆盖(在这里声明移动端主窗口)
-├── build/                     # 应用图标产物
+├── build/                     # 应用图标与便携版启动图(icon.ico / icon.png / splash.bmp)
 ├── release/                   # 打包产物 + 自检报告(已 gitignore)
 ├── dist/                      # Vite 构建产物 = 站点本体(已 gitignore)
 ├── src/
@@ -551,10 +577,11 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 | `main.cjs` → `installDownloadHandler` | 接管导出落盘 | 默认**自动保存**:直接落到下载目录并登记下载历史,不再弹「另存为」;在下载列表面板里勾选「每次询问保存位置」就退回原来的原生另存为。完成后发系统通知(点通知定位文件),并通知页面刷新列表;`--smoke` 下静默落盘到指定目录,但**依然登记历史**(自检要证明这条链路通)。 |
 | `downloads.cjs` | 下载列表 / 下载历史 | 产物落在**系统「下载」文件夹的应用子目录**(卸载/搬走软件都不会丢),清单落在 `%APPDATA%` 下的 `download-history.json`(所以删掉软件重装、甚至换台机器放回目录,历史都还在)。重名自动加 `(1)(2)`;清单坏了或丢了就扫描产物目录重建;文件被挪走时按「相对路径 → 文件名+体积(+帧数)」两级找回来,找不到也**只标记不删记录**。 |
 | `main.cjs` → `createWindow` | 窗口与安全 | `contextIsolation: true` / `nodeIntegration: false` / `sandbox: true`;外链与 `window.open` 全部交给系统浏览器;窗口尺寸写入 `userData`。 |
-| `main.cjs` → `bootstrap` | 启动编排 | 先起服务 → 再建窗口 → 装诊断收集(控制台告警 + 4xx/5xx)→ `loadURL`;`--smoke` 时跑自检并 `app.exit(code)`。 |
+| `portable-splash.html` → `make-icons.mjs` → `build/splash.bmp` | 便携版解包图 | 只出现在 Electron 起来之前、NSIS 解包的那几十秒里。设计上刻意与应用 `#app-loading` 同构(同底色 #242424、同产品字体、同 22 格方块条),但**不画假进度**:这一阶段读不到任何进度,所以方块全灭 + 一行文案说明原因。渲染走离屏(OSR)`paint` 事件取帧,再手写 24bpp BMP(NSIS 的 BgImage 只吃 BMP)。 |
+| `main.cjs` → `bootstrap` | 启动编排 | 先开悬浮窗 → 起服务(46%)→ 建窗口 / 首屏(74%)→ 装诊断收集(控制台告警 + 4xx/5xx)→ `loadURL` → 主窗口第一帧画出来后淡出悬浮窗;`--smoke` 时跑自检并 `app.exit(code)`。 |
 | `preload.cjs` | 渲染进程接口 | 暴露两个具名桥:`window.dfaeDesktop`(版本信息 / `openExternal` / `revealFile`)与 `window.dfaeDownloads`(下载列表:list / save / rename / remove / reveal / open / 自动保存开关 / 变更事件)。三条红线写在文件头:不暴露 `ipcRenderer`、只做登记目录内的文件操作、保持 contextIsolation。 |
 | `dev-app.mjs` | 开发启动器 | 用 `process.execPath` + `node_modules/vite/bin/vite.js` 直接起 vite(避开 Windows 下 `.cmd` 的 shell 问题),轮询端口真的通了再拉 Electron;关窗即回收 vite。 |
-| `make-icons.mjs` | 图标生成 | 不依赖 ImageMagick/Inkscape:开个隐藏窗口把 SVG 画进 canvas 取像素,再**手写 ICO 容器**(32bpp BMP DIB + AND 掩码,7 档尺寸 256→16)。 |
+| `make-icons.mjs` | 图标生成 | 不依赖 ImageMagick/Inkscape:开个隐藏窗口把 SVG 画进 canvas 取像素,再**手写 ICO 容器**(32bpp BMP DIB + AND 掩码,7 档尺寸 256→16)。顺带把 `portable-splash.html` 离屏渲染成 `build/splash.bmp`(便携版解包时那张图,必须是 BMP)—— 图和页面共用同一份源,不会长得不一样。 |
 
 ---
 
@@ -706,11 +733,13 @@ npm run app:smoke:export       # 再加一次真实的 MP4 导出与落盘校验
 忘了的话有三个入口:顶栏「下载列表」(里面能搜索、定位、重命名)、菜单「文件 → 打开导出文件夹」、导出完成那条系统通知(点一下直接定位到文件)。
 如果你是勾选了「每次询问保存位置」导出的,那就在你当时在保存对话框里选的位置。
 
-**Q:便携版为什么第一次启动慢?**
-它要先把自己(296 MB)解压到 `%TEMP%\DeltaForceAnimationEditor`,实测约 15 秒后才出窗口。常用的话建议用免安装版。
+**Q:便携版为什么每次启动都慢?**
+它**每次**都要先把自己(约 170 MB 文件)解压到 `%TEMP%\DeltaForceAnimationEditor` —— 这台机器上实测 **65 秒**才出界面(解压 + 杀软扫描,机器差异很大)。
+着急用就别用便携版:装一次**一键安装包**(之后启动约 1 秒),或者解压一次**免安装版**(之后双击 exe 就是 1 秒级)。
 
-**Q:为什么没有安装包 / 开始菜单快捷方式?**
-只需要"拷走就能用"这两种形态。要安装包的话在 `package.json` 的 `win.target` 里加一项 `nsis` 再 `npm run dist` 即可。
+**Q:便携版解压时那张图为什么不动?能不能让它出现在任务栏?**
+不能,这是 NSIS 解包器的固有限制(不是本应用画的):解压期间是阻塞执行的,没有任何东西能重绘那个窗口,所以它只能是一张静态图;它的窗口是 toolwindow,任务栏没有按钮、Alt+Tab 里也没有。
+要"有进度条、能 Alt+Tab",用**一键安装包** —— 那是标准 NSIS 安装窗口,进度条是真在动的,装完就不用再解包了。
 
 **Q:能出 macOS / Linux 版吗?**
 外壳代码是跨平台的(Electron),但图标与打包配置目前只做了 Windows。在对应平台上改 `build` 里的 target 即可,`make-icons.mjs` 生成的 ICO 也需要换成 icns/png。
