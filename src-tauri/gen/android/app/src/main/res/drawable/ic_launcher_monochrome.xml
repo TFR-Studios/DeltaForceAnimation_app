@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 品牌标志(与 public/logo.svg 同一条路径)。108dp 视口里标志宽 54,
+     居中:translate 27,31.395,scale 0.140088。
+     用途:Android 13 主题图标(monochrome),系统按主题给这个单色形状上色。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:translateX="27"
+        android:translateY="31.395"
+        android:scaleX="0.140088"
+        android:scaleY="0.140088">
+        <path
+            android:fillColor="#E2E2E8"
+            android:pathData="M195.13,0 L195.13,101.12 L92.12,272.9 L296.26,272.9 L225.4,153.24 L203.36,189.64 L241.99,189.64 L152.7,263.97 L183.13,211.48 L142.28,211.48 L231.67,63.24 L385.48,322.72 L0,322.72 Z" />
+    </group>
+</vector>

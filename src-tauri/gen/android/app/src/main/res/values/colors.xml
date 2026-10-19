@@ -7,4 +7,6 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- 自适应图标的底板:与桌面/网页图标同一族的深灰(#242424,品牌锚点色) -->
+    <color name="ic_launcher_background">#FF242424</color>
 </resources>

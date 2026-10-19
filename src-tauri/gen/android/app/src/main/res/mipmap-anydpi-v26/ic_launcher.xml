@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标(Android 8+):背景 = 品牌深灰纯色,前景 = 生成脚本产出的品牌标志 PNG。
+     没有这两份 XML 时,Android 会一直用旧版 mipmap 里的方形图 —— 那正是 Tauri 模板的黄+青默认图标。
+     同一个 foreground 交给 ic_launcher_round,系统会自己套圆形/圆角遮罩。 -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>

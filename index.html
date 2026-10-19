@@ -9,8 +9,19 @@
     <meta charset="UTF-8" />
     <!-- viewport 只设 initial-scale=1,不锁定缩放:移动端允许用户双指放大查看画布细节 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <!-- 站点图标:DFAED 矢量标志(public/logo.svg,构建时原样拷贝到站点根目录) -->
-    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <!-- 站点图标:品牌标志栅格化后的 PNG 套图(public/icons/*)。
+         为什么不再只挂 logo.svg:iOS 不认 SVG favicon、Android 的"添加到主屏幕"要 manifest,
+         只挂一张透明底的白色 SVG 时,手机端会退回浏览器默认的链接图标。
+         16/32 是标签页,180 是 iOS 主屏,192/512 是 PWA/Android 主屏,maskable 给小尺寸圆形裁切。 -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- 移动端浏览器地址栏 / 任务卡片的主题色:跟随应用主题,由 src/ui-theme.ts 在切换时改写 -->
+    <meta name="theme-color" content="#242424" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="三角洲编辑器" />
     <title>三角洲行动动画编辑器</title>
     <!-- 首屏主题:必须内联且早于任何样式生效。样式表还没加载时,先按"深色为主"落
          data-theme;用户上次选了浅色就换成浅色。这样首屏不会先亮一下深色再切浅色。 -->
@@ -414,10 +425,10 @@
     <!-- 切换动画时按需下载数据包的加载浮层(实时进度) -->
     <!-- 数据加载浮层:层级 9999(见 style.css),与启动加载层同层,保证盖在所有内容之上 -->
     <!-- 拿不到总长度时进度条会退化为来回滑动的不确定态(main.ts 加 indet 类) -->
-    <div id="dataLoading" hidden>
+    <div id="dataLoading" hidden role="status" aria-live="polite" aria-atomic="true" aria-label="正在加载动画数据">
       <div class="dl-card">
-        <div class="dl-title"><b id="dlTitle">正在加载动画数据…</b><span id="dataLoadingPct" class="dl-pct">0%</span></div>
-        <div class="dl-bar"><div class="dl-fill" id="dataLoadingFill"></div></div>
+        <div class="dl-title"><b id="dlTitle">正在加载动画数据…</b><span id="dataLoadingPct" class="dl-pct" aria-hidden="true">0%</span></div>
+        <div class="dl-bar" role="progressbar" aria-label="数据加载进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="dl-fill" id="dataLoadingFill"></div></div>
         <div class="dl-note">首次进入该动画需下载对应数据包,之后浏览器会缓存,再切换即秒开</div>
       </div>
     </div>
@@ -425,10 +436,12 @@
     <!-- 导出进度浮层:状态文案 + 大号百分比 + 进度条 + 明细 + 告警 + 取消按钮 -->
     <!-- 成功 / 失败 / 取消三态只改百分比的颜色类与文案;非错误态在若干秒后自动关闭(见 main.ts 的 finishExportOverlay) -->
     <!-- 导出进行中按钮文案是「取消导出」,结束后变成「关闭」 -->
-    <div class="export-overlay" id="exportOverlay" hidden>
+    <!-- 导出浮层是模态的:role/aria-modal/aria-labelledby 让读屏知道"现在只在跟这一层交互",
+         键盘焦点由 main.ts 的 holdFocusInside 锁在浮层内(否则 Tab 会跑到被盖住的页面上)。 -->
+    <div class="export-overlay" id="exportOverlay" hidden role="dialog" aria-modal="true" aria-labelledby="exportTitle" tabindex="-1">
       <div class="export-card">
         <div class="export-head">
-          <span class="export-title">
+          <span class="export-title" id="exportTitle">
             <svg class="bi bi-lg" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
               <path d="M1.6 3.6h12.8a1.6 1.6 0 0 1 1.6 1.6v5.6a1.6 1.6 0 0 1-1.6 1.6H1.6A1.6 1.6 0 0 1 0 10.8V5.2a1.6 1.6 0 0 1 1.6-1.6zm3.7 2.1a.7.7 0 0 0-1.06.6v3.4a.7.7 0 0 0 1.06.6l2.9-1.7a.7.7 0 0 0 0-1.2zM4.5 0h7l-.6 2.4h-7z" opacity=".95"/>
             </svg>
@@ -438,7 +451,8 @@
         </div>
         <div class="export-status" id="exportStatus">正在准备…</div>
         <div class="export-percent" id="exportPercent">0%</div>
-        <div class="export-bar"><div class="export-bar-fill" id="exportBarFill"></div></div>
+        <!-- 进度用 progressbar 语义表达:读屏读"导出进度 42%",而不是每秒重播一句状态文案 -->
+        <div class="export-bar" role="progressbar" aria-label="导出进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="export-bar-fill" id="exportBarFill"></div></div>
         <div class="export-detail" id="exportDetail"></div>
         <!-- 正在导出的这个文件本身(用户要求:点了导出视频就能看到"下载列表 + 下载进度条")。
              结构与下载列表里的一行一致(类型图标 + 文件名 + 元信息 + 状态),它由 main.ts 在导出期间
@@ -473,7 +487,7 @@
          滚轮落在面板任意位置都能滚动网格;选完动画会把焦点交还给页面,所以紧接着按空格是播放/暂停。 -->
     <!-- 若要新增/增删卡片上的字段,只需要改 main.ts 的 renderAnimGallery —— 卡片是整段 innerHTML 重画的,
          这里不用加任何节点。卡片数量随 ANIMATIONS 注册表自动增长,顶栏那条触发器长度不变。 -->
-    <div class="anim-picker" id="animPicker" hidden role="dialog" aria-modal="true" aria-labelledby="animPickerTitle">
+    <div class="anim-picker" id="animPicker" hidden role="dialog" aria-modal="true" aria-labelledby="animPickerTitle" aria-describedby="animPickerSub" tabindex="-1">
       <div class="ap-backdrop" id="animPickerBackdrop"></div>
       <div class="ap-panel">
         <div class="ap-head">
@@ -525,7 +539,7 @@
          所以软件被删掉 / 搬到别的盘之后再打开,这里依然能看到当初导出的记录。
          「下载历史」不是浏览器下载记录 —— 它是本应用自己维护的 json(存在用户数据目录,不在软件目录里)。
          面板内的交互(点遮罩关闭、Esc 关闭、搜索、重命名、定位)实现在 main.ts 的「下载列表」区块。 -->
-    <div class="dw-picker" id="downloadsPanel" hidden role="dialog" aria-modal="true" aria-labelledby="downloadsTitle">
+    <div class="dw-picker" id="downloadsPanel" hidden role="dialog" aria-modal="true" aria-labelledby="downloadsTitle" aria-describedby="downloadsSub" tabindex="-1">
       <div class="dw-backdrop" id="downloadsBackdrop"></div>
       <div class="dw-panel">
         <div class="dw-head">
@@ -576,7 +590,7 @@
     <!-- 状态栏:显示最近一次操作的结果或错误,出错时加 error 类变红(文案由 main.ts 的 setStatus 写入)
          文案写在内层 span 上:flex 容器上的 text-overflow 画不出省略号,长文案会被硬切掉;
          包一层之后 #statusbar.textContent 仍然读出同一段文本,校验脚本不受影响。 -->
-    <footer class="statusbar" id="statusbar"><span class="statusbar-text" id="statusbarText">就绪</span></footer>
+    <footer class="statusbar" id="statusbar" role="status" aria-live="polite"><span class="statusbar-text" id="statusbarText">就绪</span></footer>
     <!-- 模块入口:main.ts 会 import style.css 以及 lottie-web / mp4-muxer,最终由 Vite 打包成纯静态资源 -->
     <!-- 除动画数据包按需下载外不依赖后端;仅开发模式下有 /save-avi 中间件,用于把本地导出的文件取回 tools 目录 -->
     <script type="module" src="/src/main.ts"></script>

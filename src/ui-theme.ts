@@ -44,6 +44,10 @@ export function applyTheme(theme: DfTheme, persist = true): void {
   const previous: DfTheme = root.dataset.theme === 'light' ? 'light' : 'dark';
   root.dataset.theme = theme;
   window.__DFAE_THEME = theme;
+  /* 手机浏览器的地址栏 / 任务卡片跟着主题走。meta[name=theme-color] 是浏览器唯一认的那处;
+   * 固定写死深色的话,切到浅色后地址栏还是黑的,看起来像没切干净(这正是本轮修的图标/外观一类问题)。 */
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', theme === 'light' ? '#eaeaf0' : '#242424');
   if (persist) {
     try { window.localStorage.setItem(THEME_KEY, theme); } catch { /* 存不了就算了,本次会话仍然生效 */ }
   }

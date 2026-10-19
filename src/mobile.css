@@ -127,10 +127,20 @@ html[data-ui='mobile'] .anim-switch {
 html[data-ui='mobile'] .anim-trigger {
   width: 100%;
   min-width: 0;
-  /* 选择动画是移动端的主入口之一,给它一个触摸友好的高度 */
-  min-height: 38px;
+  /* 选择动画是移动端的主入口之一,给它一个触摸友好的高度。
+   * 顶栏这一行有 46px,40 是 PRODUCT.md「触屏命中区 >= 40px」的下限,不再留 2px 的缺口。 */
+  min-height: 40px;
 }
 html[data-ui='mobile'] .theme-switch { margin-left: 0; }
+/* 主题开关的两格只有 29×24(外壳 68×32),而顶栏这一行有 46px 高 —— 手机上按不准。
+ * 不改外观,只把命中区上下各扩 8px(有效 29×40),与 fluent-switch 的外扩是同一套做法。
+ * 横向不扩:两格之间只有 2px,左右各扩 2px 会互相重叠,反而更容易点错主题。 */
+html[data-ui='mobile'] .theme-btn::before {
+  content: '';
+  position: absolute;
+  inset: -8px 0;
+  border-radius: inherit;
+}
 
 /* 制作声明压到 10.5px:它要一直在,但不该跟主任务抢注意力 */
 html[data-ui='mobile'] .craft-note {
@@ -455,6 +465,10 @@ html[data-ui='mobile'] .m-sec-toggle[aria-expanded='true'] svg { transform: rota
 html[data-ui='mobile'] .side-panel input[type='range'] { height: 34px; }
 html[data-ui='mobile'] .side-panel fluent-button,
 html[data-ui='mobile'] .side-panel button { min-height: 38px; }
+/* 芯片条例外:它是主分区导航,不属于"密集检查器行"的 38px 口径,按触屏下限 40px。
+ * 选择器必须比上面那条 .side-panel button 更具体才压得住(同为 38 时后者在文件更靠后,
+ * 而 .m-tab 的基础规则在前面 —— 只改基础规则会被这一条静默覆盖,实测卡在 38)。 */
+html[data-ui='mobile'] .m-tabs .m-tab { min-height: 40px; }
 html[data-ui='mobile'] .side-panel fluent-text-field,
 html[data-ui='mobile'] .side-panel input[type='text'],
 html[data-ui='mobile'] .side-panel textarea { min-height: 38px; }

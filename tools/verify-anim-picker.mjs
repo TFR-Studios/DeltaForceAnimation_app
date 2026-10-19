@@ -73,13 +73,16 @@ const trig = await page.evaluate(() => ({
   name: document.getElementById('animTriggerName').textContent,
   meta: document.getElementById('animTriggerMeta').textContent,
   count: document.getElementById('animTriggerCount').textContent,
-  thumb: document.getElementById('animTriggerThumb').getAttribute('src') || '',
+  imgs: document.querySelectorAll('.anim-trigger img').length,
   expanded: document.getElementById('animTrigger').getAttribute('aria-expanded'),
 }));
 check('触发器显示当前动画名', trig.name === '撤离动画', JSON.stringify(trig));
 check('触发器显示分辨率/帧率', /1920×1080.*60fps/.test(trig.meta), trig.meta);
 check('触发器显示动画总数', trig.count === total + ' 套', trig.count);
-check('触发器带预览图', trig.thumb.length > 0, trig.thumb.slice(-40));
+/* 触发器上的 30×22 缩略图是更早一版移除的(顶栏改成"名称 + 规格 + 总数"三件事一行读完)。
+ * 这条断言原来读 #animTriggerThumb,元素没了之后脚本直接在 getAttribute 上空指针崩掉,
+ * 整份回归失效 —— 现在改成"触发器里不该再有 img",把移除这件事本身当成不变量。 */
+check('触发器不再带缩略图(有意移除,不是丢失)', trig.imgs === 0, trig.imgs);
 check('初始 aria-expanded=false', trig.expanded === 'false');
 
 /* ---------- 2. 打开画廊:卡片与「已去掉的三个东西」 ---------- */

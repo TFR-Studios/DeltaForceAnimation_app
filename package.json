@@ -1,7 +1,7 @@
 {
   "name": "delta-force-animation-editor-desktop",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "三角洲行动动画编辑器 · Windows 桌面版(Electron):内置八套游戏动画的 Lottie 预览 / 编辑 / 视频导出",
   "author": "TFR-Studios",
   "license": "GPL-3.0",
@@ -17,6 +17,7 @@
     "app:smoke": "electron . --smoke --smoke-out=release/smoke",
     "app:smoke:export": "electron . --smoke --smoke-export=mp4 --smoke-out=release/smoke-export",
     "icons": "electron electron/make-icons.mjs",
+    "icons:app": "electron scripts/build-app-icons.mjs",
     "dist": "npm run build && electron-builder --win --x64 && node scripts/clean-release.mjs",
     "dist:dir": "npm run build && electron-builder --win dir --x64 && node scripts/clean-release.mjs",
     "dist:portable": "npm run build && electron-builder --win portable --x64 && node scripts/clean-release.mjs",

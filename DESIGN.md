@@ -201,6 +201,27 @@ prefers-reduced-motion: reduce 下全部过渡与动画降为 0.001ms,功能不�
 聚焦期间被压成 6px,是个看得见但很难归因的跳动。原生控件(滑杆 / 下拉 / 取色器)的自绘
 同样属于这一层:它们的外观也是"产品的一部分",不能留给系统默认。
 
+## App icons
+
+应用图标是同一张品牌标志的三套落地,源图永远是 public/logo.svg,由 npm run icons:app
+(scripts/build-app-icons.mjs)用 Electron 自带的 Chromium 栅格化 —— 机器上不保证有
+sharp / ImageMagick,而应用本身就带着一整个渲染引擎。
+
+- 网页:16/32/48 + 180(apple-touch)+ 192/512 + maskable 512,外加 public/favicon.ico;
+  index.html 的 link rel=manifest 指向 public/manifest.webmanifest。
+  **不能只挂 logo.svg**:iOS 不认 SVG favicon、Android 的"添加到主屏幕"只认 manifest /
+  apple-touch-icon,而透明底的白色标志在浅色标签页上还会直接消失。
+- Android:旧版用各密度 mipmap 的 ic_launcher / ic_launcher_round;Android 8+ 走
+  mipmap-anydpi-v26 的自适应图标(背景 = values/colors.xml 的 #242424,前景 = 各密度
+  ic_launcher_foreground);Android 13 主题图标用 drawable/ic_launcher_monochrome。
+  **模板自带的黄+青 Tauri 图标已全部替换** —— 它就是"手机端图标不对"的根因
+  (旧像素 rgb(255,193,49) + rgb(36,200,219)),tools/verify-app-icons.mjs 对这两族颜色
+  做像素断言,出现一个都算 FAIL。
+- 小尺寸取舍:16px 的 favicon 用 82% 的标志宽度(0.66 时只有 8% 的像素是标志色,糊成一团),
+  32px 用 74%,48px 用 70%。
+- 主题色:index.html 的 meta[name=theme-color] 由 src/ui-theme.ts 在切换时同步
+  (#242424 / #eaeaf0),移动端浏览器地址栏跟着应用主题走,不做"界面浅了、地址栏还是黑"的半截事。
+
 ## Canvas stage
 
 预览舞台(.preview-stage)的底纹是**量具而不是装饰**:24px 网格给缩放后的画布一个尺度参照,
@@ -278,6 +299,62 @@ pulseStage 挂 420ms 的 `is-registering` 触发):它是 6.1 那个作者时刻�
 - 窄屏(<=430px)的画布按舞台高度缩放,在超矮的预览区里仍会很小 —— 这是既有适配算法
   (contain + 舞台高度)的行为,不是这次改版引入的;本次只保证舞台不被压塌、画布居中可见、
   触屏命中区 >= 40px。要真正解决应改“窄屏用画布宽度而非高度定标”的适配策略。
+- **2026-10 第三轮(UI bug 修复 + 浮层可访问性)**:这一轮修的是三类"只在特定宽度或键盘流里
+  才出现"的问题 —— 截图看不出来,但都能量,常驻断言在 tools/verify-dialog-a11y.mjs。
+  **先分清两套前端**:手机 / 平板走 src/mobile.ts + src/mobile.css(html[data-ui="mobile"],
+  按硬件信号判定,顶栏是显式两行 grid);桌面走 src/style.css(网页版与 Electron)。这一轮里
+  只有第 1 条与触屏尺寸同时服务两端,第 2 条**只对桌面前端的窄窗口**生效。
+  1) 画廊 / 下载列表的头部(**两端共用同一个 #animPicker**)在 <=479px 会把关闭按钮挤出面板:
+     标题 + 220px 搜索框 + 关闭按钮放不进一行,390px 实测面板 scrollWidth 比宽度大 48px,
+     关闭按钮整体不可见(不在视口里);逐像素扫过一遍,470px 还差 2px、480px 才刚好放下。
+     现在 <=480px 折成两行:标题一行、搜索框 + 关闭按钮一行,关闭仍在最右。
+  2) 桌面前端的顶栏在 <=480px 主次反了:动画触发器被制作声明徽标挤到只剩 124px
+     (名字被省略号吃掉),而"未使用 AI"那枚徽标占 222px。现在选择器独占一整行
+     (390px 下 358px),品牌与主题开关同排,声明落到第三行;顺序用 order 而不是改 DOM,
+     Tab 顺序不变。顶栏高度 113 -> 107px。Electron 窗口最小宽 1024,所以这条只会在
+     网页版被拖窄、或开发期 ?ui=desktop 调试时命中;**手机端不受影响** —— 那边
+     mobile.css 的 .topbar 是显式的两行网格,实测 390px 下动画触发器 245px、
+     制作声明独占第二行 24px,本来就是对的。这一条最初被误写成"手机端顶栏",
+     是把「桌面前端在 390px 的表现」当成了手机。
+  3) 三个浮层都声明了 aria-modal,但键盘焦点没有被约束:画廊里第 10 次 Tab 就跑到浮层背后
+     (被盖住的顶栏与播放条),导出浮层则完全没有焦点管理,读屏也拿不到它的角色。
+     现在 src/main.ts 的 holdFocusInside 用"Tab 两端收口 + focusin 兜底"把焦点锁在浮层内
+     (浮层里有 Fluent 自定义元素,焦点节点在 shadow DOM 里,自己算 Tab 顺序一定算错);
+     导出浮层补上 role=dialog / aria-modal / aria-labelledby / tabindex=-1,打开时接管焦点,
+     关闭时只在"焦点还在这一层"时交还给导出按钮;导出成功自动打开下载列表时焦点归最上面那层
+     (列表),列表关掉而导出浮层还开着时再交回给浮层 —— 两层模态重叠是这条真实路径带来的。
+  4) 两个进度条(数据加载 / 导出)补上 role=progressbar + aria-valuenow;总长度未知时用
+     aria-valuetext="正在加载",不留一个假的 0%。状态栏补 role=status;数据加载浮层是 live region,
+     百分比数字对读屏隐藏(值由进度条承担,避免每 5% 念一遍)。
+  5) 测试工具:tools/verify-anim-picker.mjs 读的 #animTriggerThumb 早已随缩略图一起删除,
+     脚本在 getAttribute 上空指针崩掉、整份 35 项回归失效;已改成断言"触发器里不该再有 img",
+     把"缩略图是有意移除"写成不变量。
+  6) 两个"浅色主题"工具其实一直在量深色(这一轮一并修掉):
+     · tools/ui-audit.mjs 的浅色分支点的是 .theme-switch fluent-toggle-button,而开关早换成
+       自绘的 .theme-btn[data-theme] —— 一个都点不到,于是 DARK / LIGHT 两段报告一字不差。
+       现在点真正的按钮并回读 data-theme 确认,修完之后浅色段的令牌与对比度样本才是浅色的
+       (0/16 fail,最低 6.32:1)。
+     · tools/shot.mjs 的 --theme 原来只 emulate prefers-color-scheme,而本应用的主题是
+       显式存下来的、不跟系统走 —— 传 --theme light 拍出来仍是深色,且不报错。
+       现在改成点开关本身(与用户操作同一条路径),拍完回读 bodyBg 可以核对。
+       同一条命令加了 --ui mobile:带 ?ui=mobile 并把 isMobile/hasTouch 一起设上,
+       否则 390px 拍到的只是"被挤窄的桌面布局",不是手机壳。拍完会回读 data-ui 供核对。
+  7) 手机端(html[data-ui="mobile"])的触屏命中区补到 PRODUCT.md 的下限 40px:
+     · 主题开关两格实测只有 29×24(外壳 68×32),而顶栏这一行 46px 高。不动外观,
+       只把命中区上下各扩 8px(有效 29×40,做法与 fluent-switch 的外扩一致);
+       横向不扩 —— 两格之间只有 2px,左右扩会互相重叠,更容易点错主题。
+     · 动画触发器 38 -> 40px、分区芯片 .m-tab 38 -> 40px(芯片条本身 46px 高,放得下)。
+       侧栏里那批 38px 的控件不动:它们挤在密集的检查器行里,统一抬到 40 会把每行再拉高,
+       收益不抵代价(这是 DESIGN 的取舍,不是遗漏)。
+- 两套前端的判定与调试入口(2026-10 记录):桌面 / 手机的切换靠 main.ts 的 IS_MOBILE
+  (UA-CH、粗指针、多触点、iPad 桌面模式、小屏触屏兜底),不是一个 width 断点;
+  URL 参数 ?ui=mobile / ?ui=desktop 与 localStorage dfae.ui.mobile 用于在桌面上调试两端。
+  **做移动端结论必须用 ?ui=mobile + isMobile/hasTouch 复现**,只在 390px 桌面窗口量出来的
+  几何是桌面前端的答案,不能拿来描述手机。
+- 响应式阈值(第三轮新增):<=480px 触发桌面前端顶栏与**两端共用**的浮层头部重排;
+  保持原样(768px 实测画廊头部仍是单行)。改阈值前先量 .ap-head 的自然宽度
+  (标题 + 搜索 + 关闭约 468px)与面板内宽(视口 - 34px),不要凭感觉调:
+  470px 的关闭按钮只差 2px 就出界,截图看不出,量得出来。
 - impeccable detect 剩余 5 条,均已在代码注释与规范里说明理由,不要为了让它变绿而改设计:
   1) 三条 layout-transition:两条是进度条 `transition: width` —— 进度填充表达的就是「完成度」
      这个量本身,无法用 transform 等价表达,且每秒只更新数次(数据加载 / 导出进度条);

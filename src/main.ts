@@ -1361,6 +1361,8 @@ let downloadsLoading = 0;
 let downloadsSeq = 0;
 
 const downloadsOpen = () => !downloadsPanel.hidden;
+/** 面板打开期间的焦点防线(见 holdFocusInside);关闭时先释放再交还焦点。 */
+let releaseDownloadsFocus: (() => void) | null = null;
 const isMissingEntry = (e: any) => e.missing === true;
 /** 面板开着时才整段重绘;关着时只刷新顶栏角标。 */
 function refreshDownloadsIfOpen() {
@@ -1535,6 +1537,76 @@ async function refreshDownloadsCount() {
   } catch { /* 主进程未就绪:角标保持隐藏即可 */ }
 }
 
+/* ---------- 模态浮层的键盘边界 ----------
+ * 画廊 / 下载列表 / 导出进度三个浮层都声明了 aria-modal,但声明不等于真的"模态":
+ * 实测在画廊里连按 Tab,第 10 下焦点就跑到浮层后面的顶栏与播放条上了 —— 用户看不见焦点在哪,
+ * 还可能在浮层盖着的时候按回车触发别的控件。
+ *
+ * 为什么用 focusin 防线而不是自己算 Tab 顺序:浮层里的控件一半是原生控件、一半是 Fluent 自定义元素
+ * (真正的焦点节点在 shadow DOM 里,querySelectorAll 数不到),自己算 Tab 顺序早晚会算错。
+ * 这里只回答一个问题:"焦点跑到浮层外面了吗?" —— 跑了就拉回来。
+ */
+const MODAL_FOCUSABLE =
+  'a[href], button, input, select, textarea, fluent-button, fluent-switch, fluent-toggle-button, [tabindex]:not([tabindex="-1"])';
+
+function modalFocusables(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE)).filter(
+    (el) =>
+      !el.hasAttribute('disabled') &&
+      !el.hidden &&
+      el.getClientRects().length > 0 &&
+      el.getAttribute('aria-hidden') !== 'true',
+  );
+}
+
+/* 返回一个释放函数:关闭浮层时必须先调用它,再交还焦点 ——
+ * 顺序反了的话,交还焦点会被防线当成"逃出浮层"又拉回来。 */
+function holdFocusInside(root: HTMLElement): () => void {
+  let lastInside: HTMLElement | null = null;
+  /* 第一道:在 Tab 的默认行为发生之前收住两端。
+   * 只有 focusin 防线是不够的 —— 从最后一个控件按 Tab,浏览器的下一步是"浏览器 UI",
+   * 焦点会变成 body 而不是某个元素,根本不会有 focusin 事件可拦(实测 30 次 Tab 里漏 2 次)。 */
+  const wrapTab = (ev: KeyboardEvent) => {
+    if (ev.key !== 'Tab' || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+    const list = modalFocusables(root);
+    if (!list.length) return;
+    const first = list[0];
+    const last = list[list.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    if (ev.shiftKey) {
+      if (active === first || !active || !root.contains(active)) {
+        ev.preventDefault();
+        try { last.focus(); } catch { /* 忽略 */ }
+      }
+    } else if (active === last || !active || !root.contains(active)) {
+      ev.preventDefault();
+      try { first.focus(); } catch { /* 忽略 */ }
+    }
+  };
+  /* 第二道:任何以其它方式(鼠标、脚本、焦点被外部代码抢走)跑出去的焦点都拉回来。 */
+  const onFocusIn = (ev: FocusEvent) => {
+    const target = ev.target as HTMLElement | null;
+    if (target && root.contains(target)) {
+      lastInside = target;
+      return;
+    }
+    const list = modalFocusables(root);
+    if (!list.length) {
+      try { root.focus(); } catch { /* 忽略 */ }
+      return;
+    }
+    const back = lastInside === list[list.length - 1] ? list[0] : list[list.length - 1];
+    try { back.focus(); } catch { /* 忽略 */ }
+    lastInside = back;
+  };
+  document.addEventListener('keydown', wrapTab, true);
+  document.addEventListener('focusin', onFocusIn, true);
+  return () => {
+    document.removeEventListener('keydown', wrapTab, true);
+    document.removeEventListener('focusin', onFocusIn, true);
+  };
+}
+
 /* highlightId:刚导出完自动打开列表时,把新出现的那一条标出来 ——
  * 列表可能有几十条,不指出是哪一条就等于让用户自己找。 */
 async function openDownloads(highlightId?: string) {
@@ -1550,6 +1622,14 @@ async function openDownloads(highlightId?: string) {
   downloadsSearch.value = '';
   downloadsQuery = '';
   btnDownloads.setAttribute('aria-expanded', 'true');
+  /* 导出成功后会自动打开这个列表(openDownloadsAfterExport),而"导出完成"浮层还会再留 2.6s。
+   * 两层模态同时开着时,焦点只归**最上面那层**(列表盖在导出浮层之上);
+   * 不然导出浮层的防线会把焦点从列表里一次次抢回它自己那个被盖住的取消按钮。
+   * 导出浮层在列表关闭后若还开着,会在 closeDownloads 里重新接管。 */
+  releaseExportFocus?.();
+  releaseExportFocus = null;
+  releaseDownloadsFocus?.();
+  releaseDownloadsFocus = holdFocusInside(downloadsPanel);
   /* 先显示再取数据:面板立刻出现,列表随后填上,不会让人对着空面板等 */
   await reloadDownloads();
   if (highlightId) highlightDownloadRow(highlightId);
@@ -1582,10 +1662,20 @@ function highlightDownloadRow(id: string) {
 
 function closeDownloads() {
   if (downloadsPanel.hidden) return;
+  /* 先释放焦点防线,再把焦点交还触发按钮 —— 顺序反了会被防线当成"逃出浮层"又拉回来。 */
+  releaseDownloadsFocus?.();
+  releaseDownloadsFocus = null;
   downloadsPanel.hidden = true;
   btnDownloads.setAttribute('aria-expanded', 'false');
   // 焦点交还触发按钮,关闭后紧接着按空格是播放/暂停而不是「又打开列表」
   try { btnDownloads.focus(); } catch { /* 忽略 */ }
+  /* 列表关掉时"导出完成"浮层可能还在(auto-close 的 2.6s 窗口内):
+   * 那时它重新成为最上面那层模态,焦点防线要重新架起来,焦点也回到它身上。 */
+  if (!exportOverlay.hidden) {
+    releaseExportFocus?.();
+    releaseExportFocus = holdFocusInside(exportOverlay);
+    try { exportOverlay.focus(); } catch { /* 忽略 */ }
+  }
 }
 
 /* 事件委托:行上的操作按钮与工具条都挂在这里,列表整段重绘后不必重新绑定。
@@ -5508,6 +5598,20 @@ const dataLoadingFill = $<HTMLDivElement>('dataLoadingFill');
 const dataLoadingPct = $<HTMLSpanElement>('dataLoadingPct');
 const dlTitle = $<HTMLElement>('dlTitle');
 
+/* 进度条的读屏数值:role=progressbar 写在外框上(index.html),值跟填充同步写一次。
+ * 不确定态(总长度未知)不能留一个假的 0%,改成 aria-valuetext —— 读屏会念"正在加载"而不是"0%"。 */
+function syncProgressAria(fill: HTMLElement, pct: number | null) {
+  const bar = fill.parentElement;
+  if (!bar || bar.getAttribute('role') !== 'progressbar') return;
+  if (pct === null) {
+    bar.removeAttribute('aria-valuenow');
+    bar.setAttribute('aria-valuetext', '正在加载');
+  } else {
+    bar.removeAttribute('aria-valuetext');
+    bar.setAttribute('aria-valuenow', String(Math.max(0, Math.min(100, Math.round(pct)))));
+  }
+}
+
 /* 数据加载浮层：大体积 JSON 按需下载时显示，进度条支持确定/不确定两种形态
  *（.indet class = 拿不到 Content-Length 时来回滑动的动画）。 */
 function showDataLoading(label: string) {
@@ -5515,6 +5619,7 @@ function showDataLoading(label: string) {
   dataLoadingFill.classList.remove('indet');
   dataLoadingFill.style.width = '0%';
   dataLoadingPct.textContent = '0%';
+  syncProgressAria(dataLoadingFill, 0);
   dataLoadingEl.hidden = false;
 }
 /* p 为 0..1 的下载比例；null / undefined / NaN 表示总长度未知（HEAD 未返回 Content-Length），
@@ -5525,12 +5630,14 @@ function setDataLoadingProgress(p: number | null | undefined) {
     // 拿不到总长度时显示不确定进度动画
     dataLoadingFill.classList.add('indet');
     dataLoadingPct.textContent = '…';
+    syncProgressAria(dataLoadingFill, null);
     return;
   }
   dataLoadingFill.classList.remove('indet');
   const v = Math.max(0, Math.min(100, Math.round(p * 100)));
   dataLoadingFill.style.width = v + '%';
   dataLoadingPct.textContent = v + '%';
+  syncProgressAria(dataLoadingFill, v);
 }
 function hideDataLoading() {
   dataLoadingEl.hidden = true;
@@ -7871,6 +7978,14 @@ function showExportOverlay(opts: { formatLabel: string; warn?: string }) {
   exportOverlayClosing = false;
   window.clearTimeout(exportOverlayTimer);
   exportOverlay.hidden = false;
+  /* 浮层是模态的:当作一个对话框接管焦点。打开前记住是谁触发的,关闭后交还;
+   * 打开期间 Tab 不会跑到被浮层盖住的页面上(防线见 holdFocusInside)。
+   * 首焦点放在浮层本身而不是"取消导出":读屏先读到对话框的名字与当前状态,
+   * 再按一次 Tab 才落到按钮上 —— 不会一打开就被"取消"抢到焦点。 */
+  exportReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  releaseExportFocus?.();
+  releaseExportFocus = holdFocusInside(exportOverlay);
+  try { exportOverlay.focus(); } catch { /* 忽略 */ }
   exportFormatTag.textContent = opts.formatLabel;
   exportWarn.hidden = !opts.warn;
   exportWarn.textContent = opts.warn ?? '';
@@ -7890,6 +8005,7 @@ function updateExportProgress(pct: number, status: string, detail = '') {
   exportLastPct = p;
   exportPercent.textContent = p + '%';
   exportBarFill.style.width = p + '%';
+  syncProgressAria(exportBarFill, p);
   exportStatus.textContent = status;
   exportStageDetail = detail;
   paintExportDetail();
@@ -7937,6 +8053,9 @@ function finishExportOverlay(kind: 'done' | 'error' | 'cancel', status: string, 
  *   · 退场动画在 prefers-reduced-motion 下被压到 0.001ms,animationend 仍会触发,
  *     所以走 animationend 而不是"猜一个 140ms 定时器",少一个会漂移的常量。 */
 let exportOverlayClosing = false;
+/** 导出浮层的焦点防线与"打开前的那枚控件"(见 holdFocusInside)。 */
+let releaseExportFocus: (() => void) | null = null;
+let exportReturnFocus: HTMLElement | null = null;
 function closeExportOverlay() {
   if (exportOverlayClosing || exportOverlay.hidden) return;
   exportOverlayClosing = true;
@@ -7944,8 +8063,21 @@ function closeExportOverlay() {
   const finish = () => {
     exportOverlay.removeEventListener('animationend', onEnd);
     exportOverlay.classList.remove('is-closing');
+    /* 交还焦点只在"焦点仍在这一层里"时做:自动关闭发生在 2.6s 之后,
+     * 如果用户已经去别处输入,抢回焦点比不还更糟。 */
+    const giveBack =
+      exportOverlay.contains(document.activeElement) ||
+      document.activeElement === document.body ||
+      document.activeElement === null;
+    releaseExportFocus?.();
+    releaseExportFocus = null;
     exportOverlay.hidden = true;
     exportOverlayClosing = false;
+    const back = exportReturnFocus;
+    exportReturnFocus = null;
+    if (giveBack && back && document.contains(back)) {
+      try { back.focus(); } catch { /* 忽略 */ }
+    }
   };
   /* animationend 会从子元素冒泡上来(终态落定的 220ms pop、进度条流光都挂在这棵子树里),
    * 谁先到都算数的话,退场会在半途被打断 —— 只认浮层自己那一层上的退场动画
@@ -10093,6 +10225,8 @@ let animLastFocus: HTMLElement | null = null;
  * 键盘处理与重复点击会看到一个"还开着"的画廊。 */
 let animPickerClosing = false;
 let animPickerCloseTimer: number | undefined;
+/** 画廊打开期间的焦点防线(见 holdFocusInside);关闭时先释放再交还焦点。 */
+let releaseAnimPickerFocus: (() => void) | null = null;
 function animPickerOpen() { return animPickerClosing ? false : !animPicker.hidden; }
 
 /* 过滤 + 排序:搜索命中 → 最近用过的排前面(其余保持注册表顺序)。
@@ -10250,6 +10384,8 @@ function openAnimPicker() {
   animCursor = idx >= 0 ? idx : 0;
   animPicker.hidden = false;
   animTrigger.setAttribute('aria-expanded', 'true');
+  releaseAnimPickerFocus?.();
+  releaseAnimPickerFocus = holdFocusInside(animPicker);
   /* 卡片错峰入场只在"刚打开"这一次播:搜索时每次输入都会重画,
    * 每次都播等于把输入变成闪烁。 */
   playGalleryEntrance();
@@ -10285,9 +10421,16 @@ function closeAnimPicker(restoreFocus = true) {
     animPickerClosing = false;
   }, 140);
   animTrigger.setAttribute('aria-expanded', 'false');
+  /* 释放焦点防线必须早于交还焦点:否则交还的那一下会被当成"逃出浮层"再拉回面板。 */
+  releaseAnimPickerFocus?.();
+  releaseAnimPickerFocus = null;
   if (restoreFocus) {
-    const back = animLastFocus && document.contains(animLastFocus) ? animLastFocus : animTrigger;
+    /* 打开画廊的元素可能已经被移除(例如从下载列表里跳回来),也可能根本不可聚焦
+     * (合成点击 / 触屏点击时 activeElement 会停在 body)。两种情况都退回触发器,
+     * 并且以"焦点真的落上去了"为准再兜一次 —— focus() 对不可聚焦节点是静默失败的。 */
+    const back = animLastFocus && animLastFocus !== document.body && document.contains(animLastFocus) ? animLastFocus : animTrigger;
     back.focus();
+    if (document.activeElement !== back) animTrigger.focus();
   } else {
     (document.activeElement as HTMLElement | null)?.blur();
   }

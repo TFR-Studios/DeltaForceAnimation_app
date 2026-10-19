@@ -185,11 +185,19 @@ try {
     await page.waitForFunction(() => document.querySelectorAll('fluent-button').length > 5, { timeout: 15000, polling: 100 })
       .catch(() => errs.push('fluent-upgrade-timeout'));
     if (theme === 'light') {
-      await page.evaluate(() => {
-        const btns = document.querySelectorAll('.theme-switch fluent-toggle-button');
-        if (btns[0]) btns[0].click();
+      /* 主题开关现在是自绘的分段控件 .theme-btn[data-theme](外壳 + 滑动指示器),
+       * 不是 fluent-toggle-button。旧选择器一个都点不到,于是"浅色"这一轮其实一直在量深色:
+       * 两段报告的颜色一字不差,还被标成 DARK / LIGHT 各一份 —— 最糟的一种测试。
+       * 这里点真正的按钮,并用 data-theme 回读确认真的切过去了,没切就记一条错误。 */
+      const switched = await page.evaluate(() => {
+        const btn = document.querySelector('.theme-btn[data-theme="light"]');
+        if (!btn) return false;
+        btn.click();
+        return true;
       });
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 500));
+      const applied = await page.evaluate(() => document.documentElement.dataset.theme);
+      if (!switched || applied !== 'light') errs.push('theme-switch-failed:' + switched + '/' + applied);
     }
     await new Promise((r) => setTimeout(r, 900));
     const data = await page.evaluate(PROBE);

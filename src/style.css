@@ -2729,10 +2729,35 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   .ap-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); padding: var(--sp-3); }
 }
 
+/* 窄窗口档(<=480px):两处"一行放不下"的重排(2026-10 修复)。
+ *
+ * 先说清楚这一块管的是谁 —— 这个项目有**两套前端**,不是一套响应式:
+ *   · 手机 / 平板:src/mobile.ts + src/mobile.css,<html data-ui="mobile">,
+ *     由硬件信号(UA / 粗指针 / 多触点)判定,顶栏在那边是显式的两行 grid(grid-area 定位),
+ *     与下面的 order/flex 无关。手机端的触屏尺寸也在 mobile.css 里。
+ *   · 桌面:src/style.css(就是本文件),浏览器里的网页版与 Electron 窗口。
+ * @media 只按视口宽度命中,不认前端 —— 所以下面这 6 行**只对桌面前端的窄窗口生效**
+ * (网页版被拖到很窄,或开发期用 ?ui=desktop 调试);手机上它们被 mobile.css 的 grid-area 覆盖。
+ * 480 这个阈值是量出来的:画廊头部「标题 + 220px 搜索框 + 关闭按钮」自然宽约 468px,
+ * 面板内宽 = 视口 - 34px,470px 时关闭按钮还差 2px 出界,480px 才刚好放下。
+ * 1) 顶栏(仅桌面前端):动画选择器是主角,但 <=900px 的排法会让它和制作声明徽标挤在同一行。
+ *    桌面前端 390px 实测触发器只剩 124px,而"未使用 AI"那枚徽标占 222px —— 主控比声明小,
+ *    层级反了。这里让选择器独占一整行,品牌与主题开关同排,声明落到第三行;
+ *    顺序靠 order 不动物理 DOM,Tab 顺序保持"品牌 -> 选择器 -> 主题开关"。
+ * 2) 画廊 / 下载列表头部(**两套前端共用**同一个 #animPicker 与 .ap-* 结构):
+ *    标题 + 搜索框 + 关闭按钮放不进一行时,关闭按钮会被挤出面板外
+ *    (390px 实测面板 scrollWidth 比宽度大 48px,按钮整体不可见)。折成两行后
+ *    第一行标题、第二行搜索框 + 关闭按钮,关闭按钮仍在最右。 */
 @media (max-width: 480px) {
   .ap-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .export-card, .dl-card { width: 94vw; padding: var(--sp-4); }
   .export-percent { font-size: 28px; }
+  .anim-switch { order: 1; flex: 1 1 100%; }
+  .craft-note { order: 2; }
+  .ap-head, .dw-head { flex-wrap: wrap; row-gap: 10px; }
+  .ap-title-wrap, .dw-title-wrap { flex: 1 1 100%; }
+  .ap-head-actions { flex: 1 1 100%; margin-left: 0; }
+  .ap-search, .dw-search { flex: 1 1 auto; min-width: 0; }
 }
 
 /* ============================================================================
