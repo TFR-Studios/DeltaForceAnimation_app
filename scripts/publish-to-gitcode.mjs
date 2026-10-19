@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /* ============================================================================
- * 把一次发布的产物同步到 GitCode(把 GitCode 当作 GitHub 的镜像 + 更新源)
+ * 把一次发布的产物同步到 GitCode 的**发行版仓库**。
  *
- * 为什么要这一步:GitCode 的「仓库镜像」只同步**代码**(分支/标签/提交),
- * 不同步 Release 的附件。而软件的更新检查要靠 GitCode 上的附件下载地址,
- * 所以每次发布都要把安装包也传一份上去。
+ * 为什么要拆成两个仓库:
+ *   · DeltaForceAnimation_app          —— 代码镜像仓库,只读,自动从 GitHub 拉代码;
+ *   · DeltaForceAnimation_releases     —— 普通仓库,专门放发行版和安装包。
+ * GitCode 的镜像仓库不允许创建新标签,给新版本建发行版会报
+ * “this operation is not allowed because the repository is an image repository”。
+ * 所以安装包不能传到镜像仓库,只能传到独立的发行版仓库。
  *
  * 用法(node ≥ 20):
  *   GITCODE_TOKEN=xxx node scripts/publish-to-gitcode.mjs <tag> <产物目录> [说明文件]
@@ -24,7 +27,7 @@ import https from 'node:https';
 const [tag, assetsDir, notesArg] = process.argv.slice(2);
 const token = process.env.GITCODE_TOKEN;
 const owner = process.env.GITCODE_OWNER || 'TFR-Studios';
-const repo = process.env.GITCODE_REPO || 'DeltaForceAnimation_app';
+const repo = process.env.GITCODE_REPO || 'DeltaForceAnimation_releases';
 
 if (!tag || !assetsDir) { console.error('用法: GITCODE_TOKEN=xxx node scripts/publish-to-gitcode.mjs <tag> <产物目录> [说明文件]'); process.exit(2); }
 if (!token) { console.error('缺少环境变量 GITCODE_TOKEN(到 GitCode → 设置 → 访问令牌 生成)'); process.exit(2); }
@@ -120,7 +123,8 @@ if (body) console.log('[GitCode] 使用说明文件:', nf);
 else console.log('[GitCode] 没有找到说明文件(' + nf + '),发行版说明留空');
 
 /* 1) 找发行版;没有就建。
- * 新建时 GitCode 要求 tag 已经在镜像里 —— 代码镜像有延迟,所以对 404 做几次等待。 */
+ * 发行版仓库是普通仓库,tag 由 GitCode 按 tag_name 自动创建;不需要等代码镜像。
+ * 如果 GITCODE_REPO 误指到镜像仓库,创建会返回 image repository,下面会给出明确提示。 */
 let release = null;
 let got = await apiRetry('/releases/tags/' + encodeURIComponent(tag));
 if (got.status === 200) {
@@ -141,6 +145,12 @@ if (got.status === 200) {
       console.log('[GitCode] 标签 ' + tag + ' 还没镜像过来,10 秒后重试(' + attempt + '/6)...');
       await sleep(10000);
       continue;
+    }
+    if (/image repository|镜像仓库/i.test(text)) {
+      console.error('[GitCode] 目标仓库是镜像仓库,不能创建新标签/发行版:', owner + '/' + repo);
+      console.error('[GitCode] 发行版必须传到普通仓库,默认是 ' + owner + '/DeltaForceAnimation_releases。');
+      console.error('[GitCode] 如果你改过 GITCODE_REPO,请确认它指向发行版仓库而不是代码镜像仓库。');
+      process.exit(1);
     }
     console.error('[GitCode] 建发行版失败:', created.status, text);
     process.exit(1);

@@ -24,7 +24,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const ROOT = process.cwd();
-const REPO = 'TFR-Studios/DeltaForceAnimation_app';
+/* 代码仍放在 GitCode 的镜像仓库(只读、自动从 GitHub 拉);
+ * 发行版放在单独的普通仓库 —— GitCode 的镜像仓库不允许创建新标签,
+ * 新版本没法建发行版(报 image repository),所以必须拆开。 */
+const GH_REPO = 'TFR-Studios/DeltaForceAnimation_app';
+const GITCODE_REPO = 'TFR-Studios/DeltaForceAnimation_releases';
 const NL = String.fromCharCode(10);
 const ESC = String.fromCharCode(27);
 
@@ -223,13 +227,13 @@ async function actionRelease() {
   console.log('');
   console.log('  你可以关掉这个窗口,关掉不影响打包。');
   console.log('');
-  console.log('  进度: ' + cyan('https://github.com/' + REPO + '/actions'));
-  console.log('  结果: ' + cyan('https://github.com/' + REPO + '/releases'));
-  console.log('        ' + cyan('https://gitcode.com/' + REPO + '/releases'));
+  console.log('  进度: ' + cyan('https://github.com/' + GH_REPO + '/actions'));
+  console.log('  结果: ' + cyan('https://github.com/' + GH_REPO + '/releases'));
+  console.log('        ' + cyan('https://gitcode.com/' + GITCODE_REPO + '/releases'));
   console.log('');
   const open = (await ask('  现在打开进度页吗?(输入 y 打开): ')).trim().toLowerCase();
   if (open === 'y') {
-    spawnSync('cmd', ['/c', 'start', '', 'https://github.com/' + REPO + '/actions'], { stdio: 'ignore' });
+    spawnSync('cmd', ['/c', 'start', '', 'https://github.com/' + GH_REPO + '/actions'], { stdio: 'ignore' });
   }
 }
 
@@ -257,8 +261,8 @@ function localAssets() {
 const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
 
 async function actionUpload() {
-  title('上传安装包到 GitCode');
-  info('用途:当某个版本只发过 GitHub、GitCode 上还没有安装包时,用这个补上去。');
+  title('上传安装包到 GitCode 发行版仓库');
+  info('用途:当某个版本只发过 GitHub、GitCode 发行版仓库还没有安装包时,用这个补上去。');
   console.log('');
 
   const files = localAssets();
@@ -293,7 +297,7 @@ async function actionUpload() {
   if (!token) { warn('没有令牌,已取消。'); return; }
 
   console.log('');
-  console.log(dim('  将上传到 GitCode 的 ' + tag + ' 发行版:'));
+  console.log(dim('  将上传到 GitCode 发行版仓库的 ' + tag + ' 发行版:'));
   for (const f of chosen) console.log(dim('    · ' + f.name + '  ' + mb(f.size)));
   console.log('');
   const go = (await ask('  确认?(输入 y 回车开始): ')).trim().toLowerCase();
@@ -312,7 +316,7 @@ async function actionUpload() {
     if (r.status === 0) {
       console.log('');
       ok('上传完成');
-      info('下载页: https://gitcode.com/' + REPO + '/releases');
+      info('下载页: https://gitcode.com/' + GITCODE_REPO + '/releases');
     } else {
       console.log('');
       bad('上传失败(退出码 ' + r.status + ')。看上面的输出定位原因。');
@@ -337,9 +341,9 @@ async function actionStatus() {
   if (tag.startsWith('(')) { warn('还没有标签。'); return; }
   console.log('');
   step('查询 GitHub ...');
-  const gh = await fetchJson('https://api.github.com/repos/' + REPO + '/releases/tags/' + tag);
+  const gh = await fetchJson('https://api.github.com/repos/' + GH_REPO + '/releases/tags/' + tag);
   step('查询 GitCode ...');
-  const gc = await fetchJson('https://api.gitcode.com/api/v5/repos/' + REPO + '/releases/tags/' + tag);
+  const gc = await fetchJson('https://api.gitcode.com/api/v5/repos/' + GITCODE_REPO + '/releases/tags/' + tag);
 
   const ghNames = gh.data ? (gh.data.assets || []).map((a) => a.name) : [];
   const gcNames = gc.data ? (gc.data.assets || []).map((a) => a.name) : [];
@@ -373,16 +377,16 @@ async function actionStatus() {
     }
   }
   console.log('');
-  console.log('  GitHub : ' + cyan('https://github.com/' + REPO + '/releases/tag/' + tag));
-  console.log('  GitCode: ' + cyan('https://gitcode.com/' + REPO + '/releases'));
+  console.log('  GitHub : ' + cyan('https://github.com/' + GH_REPO + '/releases/tag/' + tag));
+  console.log('  GitCode: ' + cyan('https://gitcode.com/' + GITCODE_REPO + '/releases'));
 }
 
 /* 从 GitHub 补同步到 GitCode:不依赖本地产物,直接把 GitHub 发行版的附件搬过去。
  * 适用场景:某个版本当初只在 GitHub 发了(比如 v1.0.2 的 GITCODE_TOKEN 没配),
  * 或者本地已经没有了那一版的安装包。 */
 async function actionSyncGitHub() {
-  title('从 GitHub 同步发行版到 GitCode');
-  info('用途:某个版本只在 GitHub 发过、GitCode 上缺安装包时,一键补齐。');
+  title('从 GitHub 同步发行版到 GitCode 发行版仓库');
+  info('用途:某个版本只在 GitHub 发过、GitCode 发行版仓库缺安装包时,一键补齐。');
   info('不重新打包,直接下载 GitHub 发行版的附件再上传。');
   console.log('');
 
@@ -390,7 +394,7 @@ async function actionSyncGitHub() {
   if (tag.startsWith('(')) { warn('还没有标签可用。'); return; }
 
   step('查询 GitHub 发行版 ' + tag + ' ...');
-  const rel = await fetchJson('https://api.github.com/repos/' + REPO + '/releases/tags/' + tag);
+  const rel = await fetchJson('https://api.github.com/repos/' + GH_REPO + '/releases/tags/' + tag);
   if (rel.error || !rel.data) {
     bad('GitHub 上查不到这个发行版:' + (rel.error || '没有数据'));
     return;
@@ -443,7 +447,7 @@ async function actionSyncGitHub() {
     if (r.status === 0) {
       console.log('');
       ok('同步完成');
-      info('下载页: https://gitcode.com/' + REPO + '/releases');
+      info('下载页: https://gitcode.com/' + GITCODE_REPO + '/releases');
     } else {
       console.log('');
       bad('同步失败(退出码 ' + r.status + ')。看上面的输出定位原因。');
@@ -474,9 +478,9 @@ function header() {
 const MENU = [
   ['1', '提交代码', '把改动提交并推送到 GitHub(不含打包)', actionCommit],
   ['2', '发布新版本', '改版本号 → 起草说明 → 提交 → 打标签 → 云端自动打包发布', actionRelease],
-  ['3', '上传安装包到 GitCode', '把本地打好的包补传到某个版本的发行版', actionUpload],
+  ['3', '上传安装包到 GitCode 发行版仓库', '把本地打好的包补传到某个版本的发行版', actionUpload],
   ['4', '检查发布状态', '对比 GitHub 与 GitCode 两边的安装包', actionStatus],
-  ['5', '从 GitHub 补同步到 GitCode', '某个版本只在 GitHub 发过、GitCode 缺安装包时,一键下载并补传', actionSyncGitHub],
+  ['5', '从 GitHub 补同步到 GitCode 发行版仓库', '某个版本只在 GitHub 发过、GitCode 缺安装包时,一键下载并补传', actionSyncGitHub],
 ];
 
 function drawMenu() {

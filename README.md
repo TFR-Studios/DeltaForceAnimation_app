@@ -30,7 +30,7 @@
 - [构建与打包(维护者)](#构建与打包维护者)
 - [自助工具(双击就能用)](#自助工具双击就能用)
 - [发版(打标签 → CI 自动出包)](#发版打标签--ci-自动出包)
-- [同步到 GitCode(镜像 + 更新源)](#同步到-gitcode镜像--更新源)
+- [同步到 GitCode(代码镜像 + 发行版仓库)](#同步到-gitcode代码镜像--发行版仓库)
 - [命令一览](#命令一览)
 - [目录结构](#目录结构)
 - [桌面外壳实现要点](#桌面外壳实现要点)
@@ -407,9 +407,29 @@ npm run tauri android build -- --apk -t aarch64
 
 ---
 
-## 同步到 GitCode(镜像 + 更新源)
+## 同步到 GitCode(代码镜像 + 发行版仓库)
 
-GitCode 在这里承担两个角色:**GitHub 的代码镜像**,以及**软件的更新源**(国内下载比 GitHub 稳)。
+GitCode 上现在有**两个仓库**,职责分开:
+
+| 仓库 | 作用 | 能不能写 |
+|---|---|---|
+| [DeltaForceAnimation_app](https://gitcode.com/TFR-Studios/DeltaForceAnimation_app) | GitHub 的**代码镜像**(Pull) | 只读,只能由镜像同步 |
+| [DeltaForceAnimation_releases](https://gitcode.com/TFR-Studios/DeltaForceAnimation_releases) | **发行版仓库**,放安装包 | 普通仓库,可建标签/发行版/传附件 |
+
+### 为什么要拆
+
+GitCode 的镜像仓库是"image repository":**只允许给已经镜像过来的标签建发行版,不允许创建新标签**。
+新版本发布时标签还没镜像过去,API 会直接报:
+
+```text
+this operation is not allowed because the repository is an image repository
+```
+
+所以安装包不能传到代码镜像仓库,必须传到独立的普通仓库 `DeltaForceAnimation_releases`。
+代码镜像继续自动拉 GitHub,发行版由 CI 直接写发行版仓库,两边互不影响。
+
+> v1.0.1 / v1.0.2 的旧发行版还留在代码镜像仓库上;从 **v1.0.3 起**新发行版在
+> [发行版仓库](https://gitcode.com/TFR-Studios/DeltaForceAnimation_releases/releases)。
 
 ### 代码:自动同步
 
@@ -421,12 +441,11 @@ GitCode 在这里承担两个角色:**GitHub 的代码镜像**,以及**软件的
 > ⚠️ **注意方向**:Pull 是 GitHub → GitCode(你要的);Push 是反过来的,别配错。
 > 另外建议勾上「覆盖分叉分支」—— 意思是永远以 GitHub 为准。
 
-### 安装包:由 CI 自动同步
-
-⚠️ **仓库镜像只同步代码,不同步 Release 的附件。** 少这一步,GitCode 上就只有代码、下载不到安装包。
+### 安装包:由 CI 自动同步到发行版仓库
 
 [.github/workflows/release.yml](.github/workflows/release.yml) 的 `publish` 作业里已经接好了
-[scripts/publish-to-gitcode.mjs](scripts/publish-to-gitcode.mjs):GitHub 的发行版建完之后,同一批附件会再传一份到 GitCode。
+[scripts/publish-to-gitcode.mjs](scripts/publish-to-gitcode.mjs):GitHub 的发行版建完之后,同一批附件会再传一份到
+[发行版仓库](https://gitcode.com/TFR-Studios/DeltaForceAnimation_releases)。
 
 需要配一个 Secret:
 
@@ -441,28 +460,31 @@ GitCode 在这里承担两个角色:**GitHub 的代码镜像**,以及**软件的
 本地也能手动跑(脚本是幂等的:同名附件先删再传,发行版说明就地更新):
 
 ```bash
-GITCODE_TOKEN=xxx node scripts/publish-to-gitcode.mjs v1.0.2 release-assets
+# 默认目标就是 DeltaForceAnimation_releases,不用额外指定
+GITCODE_TOKEN=xxx node scripts/publish-to-gitcode.mjs v1.0.3 release-assets
 ```
+
+> 如果误把 `GITCODE_REPO` 指到代码镜像仓库,脚本会明确报 "目标仓库是镜像仓库" 并退出,
+> 不会再留下一条看不懂的 400。
 
 ### 已经漏掉的版本怎么补
 
 不用重新打包。三种方式任选:
 
-1. **Actions 页面 → Sync to GitCode → Run workflow**,填标签(如 `v1.0.2`)。
-   它会先用仓库里的 `docs/RELEASE_NOTES_v1.0.2.md` 修正 GitHub 发行版说明,再从 GitHub 下载附件传到 GitCode,
+1. **Actions 页面 → Sync to GitCode → Run workflow**,填标签(如 `v1.0.3`)。
+   它会先用仓库里的 `docs/RELEASE_NOTES_v1.0.3.md` 修正 GitHub 发行版说明,再从 GitHub 下载附件传到发行版仓库,
    见 [.github/workflows/sync-gitcode.yml](.github/workflows/sync-gitcode.yml);
 2. **管理工具.bat → 5「从 GitHub 补同步到 GitCode」**(需要本地有 `GITCODE_TOKEN` 或按提示粘贴令牌);
 3. 手工先把附件下到 `release-assets\`,再跑上面的命令。
 
-> 补同步前先确认 GitCode 的代码镜像里已经有这个标签(`v1.0.2` 的代码是同步过去的);
-> 镜像有延迟时脚本会等待并重试。
+> 发行版仓库是普通仓库,不依赖代码镜像的标签同步,所以补发不用再等镜像。
 
 ### 软件怎么做更新检查
 
 GitCode 的接口**不用登录就能读**,直接问它「最新发行版是哪个」:
 
 ```
-GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/releases/latest
+GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_releases/releases/latest
 ```
 
 返回里带着版本号(`tag_name`)和每个安装包的下载地址(`assets[].browser_download_url`)。
@@ -496,13 +518,13 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
   2  发布新版本
      改版本号 → 起草说明 → 提交 → 打标签 → 云端自动打包发布
 
-  3  上传安装包到 GitCode
+  3  上传安装包到 GitCode 发行版仓库
      把本地打好的包补传到某个版本的发行版
 
   4  检查发布状态
      对比 GitHub 与 GitCode 两边的安装包
 
-  5  从 GitHub 补同步到 GitCode
+  5  从 GitHub 补同步到 GitCode 发行版仓库
      某个版本只在 GitHub 发过、GitCode 缺安装包时,一键下载并补传
 
   0  退出
@@ -516,19 +538,19 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 连字形都被拆坏了。所以界面全部放在 [scripts/dfae-cli.mjs](scripts/dfae-cli.mjs) 里(Node 在 Windows 控制台输出 UTF-8 没问题),
 `.bat` 只负责启动,里面一个中文字符都没有。
 
-### 「上传安装包到 GitCode」干什么用
+### 「上传安装包到 GitCode 发行版仓库」干什么用
 
-正常发版时安装包会自动同步到 GitCode,这个功能是**补传**用的:
+正常发版时安装包会自动同步到 GitCode 发行版仓库,这个功能是**补传**用的:
 比如某个版本当初只在 GitHub 发过、GitCode 上没有包,或者从别处拿到了新的安装包,可以用它手动补齐。
 
 它会:列出本地找到的安装包 → 让你挑 → 问传到哪个版本 → 要 GitCode 令牌 → 上传。
 列表默认只显示**当前版本**的包,避免把 `release\` 里 1.0.0 的旧 exe 误传到新版本发行版。
 令牌建议设成环境变量 `GITCODE_TOKEN`,这样不用每次输入。
 
-### 「从 GitHub 补同步到 GitCode」干什么用
+### 「从 GitHub 补同步到 GitCode 发行版仓库」干什么用
 
 如果本地没有那一版的安装包(换电脑、清理过 `release\`),用它最省事:
-选版本 → 从 GitHub 发行版下载附件到临时目录 → 调同一个上传脚本传到 GitCode。
+选版本 → 从 GitHub 发行版下载附件到临时目录 → 调同一个上传脚本传到 GitCode 发行版仓库。
 它和 Actions 里的 **Sync to GitCode** 工作流是同一套逻辑,区别只是一个在本地跑、一个在云端跑。
 
 ---

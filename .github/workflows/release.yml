@@ -160,14 +160,16 @@ jobs:
           else
             gh release create "$TAG" --title "$TAG" $NOTES release-assets/*
           fi
-      # 把同一批产物也同步到 GitCode。
-      # 为什么要单独做:GitCode 的「仓库镜像」只同步代码(分支/标签/提交),不同步 Release 附件,
-      # 而软件的更新检查是靠 GitCode 上的附件下载地址 —— 少这一步,GitCode 上就只有代码没有安装包。
-      # 注意:没配 GITCODE_TOKEN 会让这一步失败(而不是静默跳过),否则“发布成功”会盖住
+      # 把同一批产物也同步到 GitCode 的发行版仓库。
+      # 为什么不是代码镜像仓库:GitCode 的镜像仓库只读,不允许创建新标签,
+      # 给新版本建发行版会报 “repository is an image repository”。
+      # 所以安装包统一传到普通仓库 DeltaForceAnimation_releases。
+      # 没配 GITCODE_TOKEN 会让这一步失败(而不是静默跳过),否则“发布成功”会盖住
       # “GitCode 还停在旧版本”的事实。补同步:运行 Sync to GitCode 工作流。
-      - name: 同步到 GitCode(镜像 + 更新源)
+      - name: 同步到 GitCode 发行版仓库
         env:
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          GITCODE_REPO: DeltaForceAnimation_releases
         run: |
           if [ -z "$GITCODE_TOKEN" ]; then
             # 这里以前是“打条警告然后跳过”,结果 v1.0.2 只在 GitHub 上发了,GitCode 一直停在 v1.0.1,
