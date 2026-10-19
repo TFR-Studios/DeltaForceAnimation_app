@@ -16,6 +16,10 @@ on:
         description: '要同步的标签(如 v1.0.3;留空 = 仓库里最新的标签)'
         required: false
         default: ''
+  # 每天兜底跑一次:如果某次发布时 GitCode 网络抖动导致附件没传全,
+  # 这个定时任务会把最新版本的附件补齐(已存在且大小一致的会跳过,很快)。
+  schedule:
+    - cron: '17 3 * * *'
 
 permissions:
   # download 附件需要读;顺手用仓库里的 docs/RELEASE_NOTES_<tag>.md 修正 GitHub 发行版说明时需要写

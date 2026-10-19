@@ -478,6 +478,8 @@ GITCODE_TOKEN=xxx node scripts/publish-to-gitcode.mjs v1.0.3 release-assets
 3. 手工先把附件下到 `release-assets\`,再跑上面的命令。
 
 > 发行版仓库是普通仓库,不依赖代码镜像的标签同步,所以补发不用再等镜像。
+> 另外 [.github/workflows/sync-gitcode.yml](.github/workflows/sync-gitcode.yml) 每天 03:17 UTC 会兜底跑一次,
+> 把最新版本缺失的附件补齐;已存在且大小一致的会跳过。
 
 ### 软件怎么做更新检查
 
