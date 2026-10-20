@@ -124,6 +124,10 @@ jobs:
     needs: [windows, android]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    # 和 mirror-gitcode 工作流共用同一个 concurrency 组,避免两边同时 force push 抢 ref
+    concurrency:
+      group: mirror-gitcode
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -146,8 +150,15 @@ jobs:
           fi
           git config --local credential.helper '!f() { echo username=TFR-Studios; echo password=$GITCODE_TOKEN; }; f'
           git remote add gitcode https://gitcode.com/TFR-Studios/DeltaForceAnimation_app.git
-          git push --force gitcode "HEAD:refs/heads/main"
-          git push --force gitcode "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          push_ref() {
+            for i in 1 2 3; do
+              if git push --force gitcode "$1"; then return 0; fi
+              echo "push 失败,3 秒后重试($i/3)"; sleep 3
+            done
+            return 1
+          }
+          push_ref "HEAD:refs/heads/main"
+          push_ref "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
       - name: 发布
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

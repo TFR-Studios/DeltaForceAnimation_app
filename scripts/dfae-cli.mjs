@@ -95,21 +95,39 @@ function ensureGitCodeRemote() {
   return true;
 }
 
-/* 推一个 ref 到 GitCode;返回是否成功 */
-function pushGitCode(refspec, force = false) {
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/* 推一个 ref 到 GitCode;返回是否成功。
+ * GitHub 侧的 mirror-gitcode 工作流可能同时推同一个提交,偶发 ref lock 冲突;
+ * 失败后先比较远端/本地 sha,相同就视为成功,否则重试一次。 */
+async function pushGitCode(refspec, force = false) {
   if (!ensureGitCodeRemote()) return false;
-  step('git push 到 GitCode: ' + refspec);
-  const args = ['push'];
-  if (force) args.push('-f');
-  args.push('gitcode', refspec);
-  const r = git(...args);
-  if (r.code !== 0) {
+  const [localRef, remoteRef] = refspec.includes(':') ? refspec.split(':') : [refspec, refspec];
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    step('git push 到 GitCode: ' + refspec);
+    const args = ['push'];
+    if (force) args.push('-f');
+    args.push('gitcode', refspec);
+    const r = git(...args);
+    if (r.code === 0) { ok('已推送到 GitCode'); return true; }
+
+    const local = git('rev-parse', localRef);
+    const remote = git('ls-remote', 'gitcode', remoteRef);
+    const remoteSha = remote.code === 0 ? (remote.out.split(/\s+/)[0] || '') : '';
+    if (local.code === 0 && remoteSha && remoteSha === local.out.trim()) {
+      ok('远端已经是这个提交,视为推送成功');
+      return true;
+    }
+    if (attempt === 1) {
+      warn('GitCode 推送冲突,1.5 秒后重试一次...');
+      sleepSync(1500);
+      continue;
+    }
     bad('GitCode 推送失败(令牌/网络/权限):');
     console.log(indent(r.out));
     return false;
   }
-  ok('已推送到 GitCode');
-  return true;
+  return false;
 }
 
 /* ---------- 读仓库状态 ---------- */
@@ -172,7 +190,7 @@ async function actionCommit() {
   ok('已推送到 GitHub');
 
   step('git push 到 GitCode');
-  const g = pushGitCode('HEAD:main');
+  const g = await pushGitCode('HEAD:main');
   if (!g) warn('GitHub 已成功,GitCode 这次没推上去;修好令牌/网络后重跑本工具即可。');
   console.log('');
   info(g ? 'GitHub 与 GitCode 已同步。' : 'GitHub 已同步,GitCode 待重试。');
@@ -239,7 +257,7 @@ async function actionRelease() {
   const u2 = git('push');
   if (u2.code !== 0) { bad('GitHub 推送失败。修好后重跑本工具,或手动 git push。'); console.log(indent(u2.out)); return; }
   ok('已推送到 GitHub');
-  const g2 = pushGitCode('HEAD:main');
+  const g2 = await pushGitCode('HEAD:main');
   if (!g2) warn('GitCode 分支没推上去;云端发布会再补推,但建议修好后再重跑。');
 
   step('[4/4] 打标签并推送(这一步触发云端打包)');
@@ -248,7 +266,7 @@ async function actionRelease() {
   if (t1.code !== 0) { bad('打标签失败:'); console.log(indent(t1.out)); return; }
   if (exists) warn('这个标签之前就存在,会用强制更新覆盖远端。');
   /* 先把标签推到 GitCode,再推 GitHub 触发 CI;这样云端建发行版时 GitCode 上已经有这个标签 */
-  const gTag = pushGitCode('refs/tags/' + tag, true);
+  const gTag = await pushGitCode('refs/tags/' + tag, true);
   if (!gTag) warn('GitCode 标签没推上去;发布工作流里还会再推一次。');
   const pushArgs = exists ? ['push', '-f', 'origin', tag] : ['push', 'origin', tag];
   const t2 = git(...pushArgs);

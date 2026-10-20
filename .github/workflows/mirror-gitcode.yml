@@ -39,8 +39,15 @@ jobs:
           fi
           git config --local credential.helper '!f() { echo username=TFR-Studios; echo password=$GITCODE_TOKEN; }; f'
           git remote add gitcode https://gitcode.com/TFR-Studios/DeltaForceAnimation_app.git
+          push_ref() {
+            for i in 1 2 3; do
+              if git push --force gitcode "$1"; then return 0; fi
+              echo "push 失败,3 秒后重试($i/3)"; sleep 3
+            done
+            return 1
+          }
           if [ "$REF_TYPE" = "branch" ]; then
-            git push --force gitcode "HEAD:refs/heads/main"
+            push_ref "HEAD:refs/heads/main"
           else
-            git push --force gitcode "refs/tags/${REF_NAME}:refs/tags/${REF_NAME}"
+            push_ref "refs/tags/${REF_NAME}:refs/tags/${REF_NAME}"
           fi
