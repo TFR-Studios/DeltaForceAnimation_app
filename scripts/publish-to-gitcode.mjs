@@ -161,12 +161,16 @@ if (got.status === 200) {
 
 /* 2) 说明文字就地更新(失败不致命:附件才是关键,但要把状态打出来) */
 if (body) {
-  const upd = await apiRetry('/releases/' + encodeURIComponent(tag), {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: tag, body, prerelease: false }),
-  });
-  console.log('[GitCode] 更新说明:', upd.status, upd.status >= 400 ? (await upd.text()).slice(0, 200) : 'ok');
+  if (release && typeof release.body === 'string' && release.body === body) {
+    console.log('[GitCode] 说明未变化,跳过更新');
+  } else {
+    const upd = await apiRetry('/releases/' + encodeURIComponent(tag), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: tag, body, prerelease: false }),
+    });
+    console.log('[GitCode] 更新说明:', upd.status, upd.status >= 400 ? (await upd.text()).slice(0, 200) : 'ok');
+  }
 }
 
 /* 3) 逐个上传附件:同名先删再传,保证不会出现两份 */
