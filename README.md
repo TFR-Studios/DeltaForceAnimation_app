@@ -499,14 +499,14 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 管理工具的菜单长这样:
 
 ```
-  版本 v1.0.2   分支 main   改动 干净
-  最新标签 v1.0.2   与 GitHub 一致
+  版本 v1.0.3   分支 main   改动 干净
+  最新标签 v1.0.3   与 GitHub 一致
 
   1  提交代码
-     把改动提交并推送到 GitHub(不含打包)
+     把改动提交并同时推送到 GitHub + GitCode(不含打包)
 
   2  发布新版本
-     改版本号 → 起草说明 → 提交 → 打标签 → 云端自动打包发布
+     改版本号 → 起草说明 → 提交 → 打标签 → 推送 GitHub + GitCode → 云端自动打包发布
 
   3  上传安装包到 GitCode
      把本地打好的包补传到某个版本的发行版
