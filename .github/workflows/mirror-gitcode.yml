@@ -1,0 +1,46 @@
+name: Mirror code to GitCode
+
+# 把 GitHub 的 main 和标签同步到 GitCode 的普通仓库。
+# 原来的 GitCode Pull 镜像仓库已经删除 —— 镜像仓库只读,不能建新标签/发行版;
+# 现在 GitCode 仓库是普通仓库,代码由这个工作流推过去,发行版由 release.yml 推。
+#
+# 需要 Secret:GITCODE_TOKEN(GitCode → 设置 → 访问令牌)。
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-gitcode
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: 推送代码到 GitCode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Push to GitCode
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ -z "$GITCODE_TOKEN" ]; then
+            echo "::error::没有配置 GITCODE_TOKEN,GitCode 上的代码不会更新。"
+            exit 1
+          fi
+          git config --local credential.helper '!f() { echo username=TFR-Studios; echo password=$GITCODE_TOKEN; }; f'
+          git remote add gitcode https://gitcode.com/TFR-Studios/DeltaForceAnimation_app.git
+          if [ "$REF_TYPE" = "branch" ]; then
+            git push --force gitcode "HEAD:refs/heads/main"
+          else
+            git push --force gitcode "refs/tags/${REF_NAME}:refs/tags/${REF_NAME}"
+          fi

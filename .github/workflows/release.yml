@@ -126,6 +126,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -133,6 +135,19 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
+      # 先把代码和标签推到 GitCode,再建发行版 —— 否则发行版可能落到旧提交上。
+      - name: 推送代码与标签到 GitCode
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: |
+          if [ -z "$GITCODE_TOKEN" ]; then
+            echo "::error::没有配置 GITCODE_TOKEN,GitCode 上的代码和安装包都不会更新。"
+            exit 1
+          fi
+          git config --local credential.helper '!f() { echo username=TFR-Studios; echo password=$GITCODE_TOKEN; }; f'
+          git remote add gitcode https://gitcode.com/TFR-Studios/DeltaForceAnimation_app.git
+          git push --force gitcode "HEAD:refs/heads/main"
+          git push --force gitcode "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
       - name: 发布
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -160,16 +175,13 @@ jobs:
           else
             gh release create "$TAG" --title "$TAG" $NOTES release-assets/*
           fi
-      # 把同一批产物也同步到 GitCode 的发行版仓库。
-      # 为什么不是代码镜像仓库:GitCode 的镜像仓库只读,不允许创建新标签,
-      # 给新版本建发行版会报 “repository is an image repository”。
-      # 所以安装包统一传到普通仓库 DeltaForceAnimation_releases。
+      # 把同一批产物也同步到 GitCode 的普通仓库(代码 + 发行版同一个仓库)。
       # 没配 GITCODE_TOKEN 会让这一步失败(而不是静默跳过),否则“发布成功”会盖住
       # “GitCode 还停在旧版本”的事实。补同步:运行 Sync to GitCode 工作流。
-      - name: 同步到 GitCode 发行版仓库
+      - name: 同步发行版到 GitCode
         env:
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
-          GITCODE_REPO: DeltaForceAnimation_releases
+          GITCODE_REPO: DeltaForceAnimation_app
         run: |
           if [ -z "$GITCODE_TOKEN" ]; then
             # 这里以前是“打条警告然后跳过”,结果 v1.0.2 只在 GitHub 上发了,GitCode 一直停在 v1.0.1,

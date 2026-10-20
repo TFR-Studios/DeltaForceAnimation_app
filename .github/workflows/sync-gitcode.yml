@@ -1,11 +1,11 @@
 name: Sync to GitCode
 
-# 补同步工具:当某个版本只在 GitHub 上发了、GitCode 的发行版仓库还缺安装包时,
+# 补同步工具:当某个版本只在 GitHub 上发了、GitCode 仓库还缺安装包时,
 # 在 Actions 页面点「Run workflow」,填标签(如 v1.0.3)即可把 GitHub 发行版的附件
 # 原样补传到 GitCode,不用重新打包,也不用在本地准备产物。
 #
-# 目标仓库是普通仓库 TFR-Studios/DeltaForceAnimation_releases,
-# 不是只读的代码镜像仓库 DeltaForceAnimation_app —— 镜像仓库不允许创建新标签/发行版。
+# 目标仓库是普通仓库 TFR-Studios/DeltaForceAnimation_app(代码 + 发行版同一个仓库);
+# 旧的只读镜像仓库已经删除,不再需要等镜像同步。
 # 需要仓库 Secret:GITCODE_TOKEN(GitCode → 设置 → 访问令牌)。
 # 与 release.yml 里的同步步骤共用 scripts/publish-to-gitcode.mjs(幂等)。
 
@@ -76,10 +76,10 @@ jobs:
             echo "RELEASE_NOTES_FILE=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_ENV"
           fi
 
-      - name: 同步到 GitCode 发行版仓库
+      - name: 同步到 GitCode
         env:
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
-          GITCODE_REPO: DeltaForceAnimation_releases
+          GITCODE_REPO: DeltaForceAnimation_app
         run: |
           if [ -z "$GITCODE_TOKEN" ]; then
             echo "::error::没有配置 GITCODE_TOKEN。请到仓库 Settings → Secrets and variables → Actions 添加,再重跑本工作流。"

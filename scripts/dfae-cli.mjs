@@ -24,11 +24,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const ROOT = process.cwd();
-/* 代码仍放在 GitCode 的镜像仓库(只读、自动从 GitHub 拉);
- * 发行版放在单独的普通仓库 —— GitCode 的镜像仓库不允许创建新标签,
- * 新版本没法建发行版(报 image repository),所以必须拆开。 */
+/* GitHub 是主仓库;GitCode 现在是普通仓库(不是镜像仓),
+ * 代码和发行版都放在同名仓库里,由本工具和 GitHub Actions 双向同步过去。 */
 const GH_REPO = 'TFR-Studios/DeltaForceAnimation_app';
-const GITCODE_REPO = 'TFR-Studios/DeltaForceAnimation_releases';
+const GITCODE_REPO = 'TFR-Studios/DeltaForceAnimation_app';
+const GITCODE_URL = 'https://gitcode.com/' + GITCODE_REPO + '.git';
 const NL = String.fromCharCode(10);
 const ESC = String.fromCharCode(27);
 
@@ -79,6 +79,38 @@ function run(cmd, args, opts = {}) {
 }
 const git = (...args) => run('git', args);
 const node = (...args) => run(process.execPath, args);
+
+/* 确保本地有 gitcode 远端(凭据走 Windows 凭据管理器里的 GitCode 令牌) */
+function ensureGitCodeRemote() {
+  const cur = git('remote', 'get-url', 'gitcode');
+  if (cur.code !== 0) {
+    const add = git('remote', 'add', 'gitcode', GITCODE_URL);
+    if (add.code !== 0) { bad('无法添加 gitcode 远端:'); console.log(indent(add.out)); return false; }
+    return true;
+  }
+  if (cur.out.trim() !== GITCODE_URL) {
+    const set = git('remote', 'set-url', 'gitcode', GITCODE_URL);
+    if (set.code !== 0) { bad('无法更新 gitcode 远端:'); console.log(indent(set.out)); return false; }
+  }
+  return true;
+}
+
+/* 推一个 ref 到 GitCode;返回是否成功 */
+function pushGitCode(refspec, force = false) {
+  if (!ensureGitCodeRemote()) return false;
+  step('git push 到 GitCode: ' + refspec);
+  const args = ['push'];
+  if (force) args.push('-f');
+  args.push('gitcode', refspec);
+  const r = git(...args);
+  if (r.code !== 0) {
+    bad('GitCode 推送失败(令牌/网络/权限):');
+    console.log(indent(r.out));
+    return false;
+  }
+  ok('已推送到 GitCode');
+  return true;
+}
 
 /* ---------- 读仓库状态 ---------- */
 function pkgVersion() {
@@ -138,8 +170,12 @@ async function actionCommit() {
     return;
   }
   ok('已推送到 GitHub');
+
+  step('git push 到 GitCode');
+  const g = pushGitCode('HEAD:main');
+  if (!g) warn('GitHub 已成功,GitCode 这次没推上去;修好令牌/网络后重跑本工具即可。');
   console.log('');
-  info('GitCode 的代码镜像会自动跟上(有延迟,不是实时的)。');
+  info(g ? 'GitHub 与 GitCode 已同步。' : 'GitHub 已同步,GitCode 待重试。');
   info('本次没有打包 —— 要出安装包请选「发布新版本」。');
 }
 
@@ -199,20 +235,25 @@ async function actionRelease() {
   if (c2.code !== 0) { bad('提交失败:'); console.log(indent(c2.out)); return; }
   ok('已提交 ' + tag);
 
-  step('[3/4] 推送到 GitHub');
+  step('[3/4] 推送到 GitHub + GitCode');
   const u2 = git('push');
-  if (u2.code !== 0) { bad('推送失败。修好后重跑本工具,或手动 git push。'); console.log(indent(u2.out)); return; }
-  ok('已推送');
+  if (u2.code !== 0) { bad('GitHub 推送失败。修好后重跑本工具,或手动 git push。'); console.log(indent(u2.out)); return; }
+  ok('已推送到 GitHub');
+  const g2 = pushGitCode('HEAD:main');
+  if (!g2) warn('GitCode 分支没推上去;云端发布会再补推,但建议修好后再重跑。');
 
   step('[4/4] 打标签并推送(这一步触发云端打包)');
   const exists = git('rev-parse', '-q', '--verify', 'refs/tags/' + tag).code === 0;
   const t1 = git('tag', '-f', tag);
   if (t1.code !== 0) { bad('打标签失败:'); console.log(indent(t1.out)); return; }
-  const pushArgs = exists ? ['push', '-f', 'origin', tag] : ['push', 'origin', tag];
   if (exists) warn('这个标签之前就存在,会用强制更新覆盖远端。');
+  /* 先把标签推到 GitCode,再推 GitHub 触发 CI;这样云端建发行版时 GitCode 上已经有这个标签 */
+  const gTag = pushGitCode('refs/tags/' + tag, true);
+  if (!gTag) warn('GitCode 标签没推上去;发布工作流里还会再推一次。');
+  const pushArgs = exists ? ['push', '-f', 'origin', tag] : ['push', 'origin', tag];
   const t2 = git(...pushArgs);
-  if (t2.code !== 0) { bad('推标签失败。手动重试: git push -f origin ' + tag); console.log(indent(t2.out)); return; }
-  ok('标签 ' + tag + ' 已推送');
+  if (t2.code !== 0) { bad('推 GitHub 标签失败。手动重试: git push -f origin ' + tag); console.log(indent(t2.out)); return; }
+  ok('标签 ' + tag + ' 已推送到 GitHub + GitCode');
 
   console.log('');
   console.log(rule('═'));
@@ -223,7 +264,7 @@ async function actionRelease() {
   console.log('    1. 校验版本号是否一致');
   console.log('    2. Windows + Android 双端打包(约 10 分钟)');
   console.log('    3. 建 GitHub 发行版并挂上安装包');
-  console.log('    4. 把安装包同步到 GitCode');
+  console.log('    4. 把代码和安装包同步到 GitCode');
   console.log('');
   console.log('  你可以关掉这个窗口,关掉不影响打包。');
   console.log('');
@@ -261,8 +302,8 @@ function localAssets() {
 const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
 
 async function actionUpload() {
-  title('上传安装包到 GitCode 发行版仓库');
-  info('用途:当某个版本只发过 GitHub、GitCode 发行版仓库还没有安装包时,用这个补上去。');
+  title('上传安装包到 GitCode');
+  info('用途:当某个版本只发过 GitHub、GitCode 仓库还没有安装包时,用这个补上去。');
   console.log('');
 
   const files = localAssets();
@@ -297,7 +338,7 @@ async function actionUpload() {
   if (!token) { warn('没有令牌,已取消。'); return; }
 
   console.log('');
-  console.log(dim('  将上传到 GitCode 发行版仓库的 ' + tag + ' 发行版:'));
+  console.log(dim('  将上传到 GitCode 的 ' + tag + ' 发行版:'));
   for (const f of chosen) console.log(dim('    · ' + f.name + '  ' + mb(f.size)));
   console.log('');
   const go = (await ask('  确认?(输入 y 回车开始): ')).trim().toLowerCase();
@@ -385,8 +426,8 @@ async function actionStatus() {
  * 适用场景:某个版本当初只在 GitHub 发了(比如 v1.0.2 的 GITCODE_TOKEN 没配),
  * 或者本地已经没有了那一版的安装包。 */
 async function actionSyncGitHub() {
-  title('从 GitHub 同步发行版到 GitCode 发行版仓库');
-  info('用途:某个版本只在 GitHub 发过、GitCode 发行版仓库缺安装包时,一键补齐。');
+  title('从 GitHub 同步发行版到 GitCode');
+  info('用途:某个版本只在 GitHub 发过、GitCode 仓库缺安装包时,一键补齐。');
   info('不重新打包,直接下载 GitHub 发行版的附件再上传。');
   console.log('');
 
@@ -476,11 +517,11 @@ function header() {
 }
 
 const MENU = [
-  ['1', '提交代码', '把改动提交并推送到 GitHub(不含打包)', actionCommit],
+  ['1', '提交代码', '把改动提交并同时推送到 GitHub + GitCode(不含打包)', actionCommit],
   ['2', '发布新版本', '改版本号 → 起草说明 → 提交 → 打标签 → 云端自动打包发布', actionRelease],
-  ['3', '上传安装包到 GitCode 发行版仓库', '把本地打好的包补传到某个版本的发行版', actionUpload],
+  ['3', '上传安装包到 GitCode', '把本地打好的包补传到某个版本的发行版', actionUpload],
   ['4', '检查发布状态', '对比 GitHub 与 GitCode 两边的安装包', actionStatus],
-  ['5', '从 GitHub 补同步到 GitCode 发行版仓库', '某个版本只在 GitHub 发过、GitCode 缺安装包时,一键下载并补传', actionSyncGitHub],
+  ['5', '从 GitHub 补同步到 GitCode', '某个版本只在 GitHub 发过、GitCode 缺安装包时,一键下载并补传', actionSyncGitHub],
 ];
 
 function drawMenu() {
