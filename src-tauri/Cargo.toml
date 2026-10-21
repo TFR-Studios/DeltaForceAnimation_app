@@ -13,7 +13,7 @@
 #   · 没有手写任何 Java/JNI:无法在本机编译验证的代码不进交付物。
 [package]
 name = "dfae-tauri"
-version = "1.0.3"
+version = "1.0.4"
 description = "三角洲行动动画编辑器 · Tauri v2 外壳(Windows / Android)"
 authors = ["TFR-Studios"]
 edition = "2021"
