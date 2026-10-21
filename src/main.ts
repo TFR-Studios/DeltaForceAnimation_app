@@ -1839,6 +1839,7 @@ async function loadData(data: any, name: string) {
   normalizePrecompInds(data);
   /* 字形表只烘焙了导出时的那些字:一旦用户改成表外的字就会渲染成空路径(文字消失)。
    * 盖不住时丢掉 chars、退回浏览器文本引擎;必须在 lottie.loadAnimation 之前判定。 */
+  if (!animHadGlyphTable.has(currentAnimKey)) animHadGlyphTable.set(currentAnimKey, !!data?.chars);
   dropCharsIfUncovered(data);
   // 「原始状态」捕获必须放在时长压缩之后:applyMainDuration 会把各图层末尾淡出
   // 关键帧平移到压缩后的出点(如文字层由 47→61 帧改为 61→75 帧)。若在压缩前捕获,
@@ -2327,8 +2328,10 @@ function applyFit() {
   stagePadY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
   const cw = Math.max(1, previewStage.clientWidth - stagePadX);
   const ch = Math.max(1, previewStage.clientHeight - stagePadY);
-  previewInner.style.width = d.w + 'px';
-  previewInner.style.height = d.h + 'px';
+  /* 尺寸也只在真的变了才写:ResizeObserver 在拖面板 / 窗口缩放时每帧都会进来,
+   * 重复写同样的 width/height 会把画布层标脏,84 个节点的 SVG 就得多重绘一次。 */
+  if (previewInner.style.width !== d.w + 'px') previewInner.style.width = d.w + 'px';
+  if (previewInner.style.height !== d.h + 'px') previewInner.style.height = d.h + 'px';
   const fit = selFit.value;
   if (fit === 'contain') baseScale = Math.min(cw / d.w, ch / d.h);
   else if (fit === 'cover') baseScale = Math.max(cw / d.w, ch / d.h);
@@ -2337,11 +2340,24 @@ function applyFit() {
 }
 
 // 合成最终 transform 并刷新缩放读数;zoomInfo 显示的是用户缩放(viewZoom),不含 baseScale
+/* 这个函数在拖动 / 捏合 / 播放 / 窗口缩放里被高频调用,写法必须"没变化就不写":
+ * 给 style.transform 赋一个和上次完全相同的字符串,浏览器仍然会把这一层标脏、
+ * 重新算样式并重绘 —— 每一帧一次的无用写入在手机上就是实打实的掉帧。
+ * 比较一次字符串的成本远远低于一次样式重算。 */
+let lastTransform = '';
+let lastZoomText = '';
 function updateViewTransform() {
   const s = baseScale * viewZoom;
-  previewInner.style.transform =
-    'translate(' + viewPanX + 'px, ' + viewPanY + 'px) scale(' + s + ')';
-  zoomInfo.textContent = Math.round(viewZoom * 100) + '%';
+  const next = 'translate(' + viewPanX + 'px, ' + viewPanY + 'px) scale(' + s + ')';
+  if (next !== lastTransform) {
+    previewInner.style.transform = next;
+    lastTransform = next;
+  }
+  const text = Math.round(viewZoom * 100) + '%';
+  if (text !== lastZoomText) {
+    zoomInfo.textContent = text;
+    lastZoomText = text;
+  }
 }
 
 // 复位视图:缩放回到 100%、平移归零(双击画布与「重置视图」按钮共用)
@@ -2985,6 +3001,18 @@ function dropCharsIfUncovered(data: any): boolean {
   console.info('[text] 字形表盖不住当前文字,已退回浏览器字体渲染(改字不会再消失)');
   return true;
 }
+
+/* 这套动画「出厂时」是否带字形表(chars)。
+ * 用途:判断改字后导出的画面还能不能交给 canvas 渲染器 —— canvas 渲染器的文字是拿 chars 里的
+ * 字形轮廓直接画路径的(见 patchCanvasTextElement 的注释),chars 一旦被 dropCharsIfUncovered 删掉,
+ * 它一个字都画不出来,而且会把渲染器自己的透明度/变换状态带歪,整帧直接变成空白
+ * (实测:改字后导出透明 AVI 全透明、导出 MP4 只剩背景色,详见 needsSvgRasterForEditedText)。
+ * 只记**首次载入**时的值:改字会把 chars 整张删掉,若每次载入都重记,第二次进入这套动画就会把
+ * 「本来带字形表」记成「不带」,判定随即失效。
+ * 为什么需要「出厂」而不是「当前」:撤离 / 位置暴露 / 核电站三套从 AE 导出时就只带 TTF(fPath)、
+ * 根本没有 chars,它们的文字一直由浏览器文本引擎绘制、canvas 路径本来就正常 ——
+ * 这类动画不该因为判据缺失被拖进逐帧光栅化(它们动辄上千帧,光栅化会慢一个数量级)。 */
+const animHadGlyphTable = new Map<string, boolean>();
 
 /* 在「顶层 + 被引用的预合成」里按 ind 找图层 —— 侧栏编辑统一走这里。 */
 function findLayerInData(data: any, ind: number): any | null {
@@ -5454,13 +5482,23 @@ function reRenderPreservingStateCore(onSettled?: () => void) {
   /* 改字触发的重建走的是这条路径(不经过 loadData),所以字形表判定必须在这里也做一次:
    * 用户改成表外的字时丢掉 chars、退回浏览器文本引擎,否则新字会被渲染成空路径(文字消失)。 */
   dropCharsIfUncovered(currentData);
+  /* 反过来:字形表已经没了、而用户此刻正用 canvas 渲染器,就必须切回 SVG。
+   * canvas 渲染器的文字靠 chars 里的字形轮廓画路径,表外字它画不出来,而且会把渲染器的
+   * 透明度/变换累加器带歪 —— 整块画布变成空白(与导出那条完全同因,见 needsSvgRasterForEditedText)。
+   * 与「亮度遮罩自动切回 SVG」同一套做法:用户不需要自己猜画面为什么没了。 */
+  let useCanvasRenderer = renderer === 'canvas';
+  if (useCanvasRenderer && needsSvgRasterForEditedText(currentData)) {
+    useCanvasRenderer = false;
+    selRenderer.value = 'svg';
+    setStatus('改字后字形表不覆盖当前文字:canvas 渲染器画不出来,已自动切回 SVG 渲染器');
+  }
   let newAnim: AnimationItem;
   /* loadAnimation 也可能同步抛错（数据异常 / 容器异常）：这条路径必须清掉看门狗并放行
    * 单飞队列，否则后续所有重建请求都会被 rerenderBusy 挡住。 */
   try {
     newAnim = lottie.loadAnimation({
       container: previewInner,
-      renderer: renderer === 'canvas' ? 'canvas' : 'svg',
+      renderer: useCanvasRenderer ? 'canvas' : 'svg',
       loop: chkLoop.checked,
       autoplay: false,
       animationData: currentData,
@@ -5478,7 +5516,7 @@ function reRenderPreservingStateCore(onSettled?: () => void) {
   (window as any).__lottie = lottie;
   // 渲染器补丁要在实例刚建好时立刻挂上：loadAnimation 可能已同步构建好元素，
   // 补丁内部会对已构建元素补做处理（图片序列层调色、投影、SVG 裁剪等两套渲染器的差异）
-  if (renderer === 'canvas') patchCanvasRendererTree(newAnim.renderer as any);
+  if (useCanvasRenderer) patchCanvasRendererTree(newAnim.renderer as any);
   else patchSvgRendererTree(newAnim.renderer as any);
   rebuildPopupOverlay();
   newAnim.addEventListener('DOMLoaded', onAnimReady);
@@ -7808,6 +7846,12 @@ async function switchAnimation(key: string) {
       ? '该动画含亮度遮罩:导出将自动使用 SVG 逐帧光栅化,画面与预览一致'
       : '该动画含共用轨道遮罩:导出将自动使用 SVG 逐帧光栅化,画面与预览一致');
   }
+  /* 上次改过的字让字形表被丢掉(数据是内存里那份、切走再切回来仍是编辑后的状态):
+   * canvas 渲染器画不出这些字,与导出同理也要切回 SVG,否则预览直接空白。 */
+  if (selRenderer.value === 'canvas' && needsSvgRasterForEditedText(data)) {
+    selRenderer.value = 'svg';
+    setStatus('上次改字后字形表已不覆盖当前文字:canvas 渲染器画不出来,已自动切回 SVG 渲染器');
+  }
   // 主题颜色区块:当前动画里存在这两族颜色(填充族/描边族)时显示,并回填当前色与计数
   syncThemeSection(data);
   // 图片图层区块:含可调色纹理(百叶窗.png 等)、叠加序列,或黑潮爆破的位图/序列时显示
@@ -9496,6 +9540,33 @@ function needsSvgRasterExport(data: any): boolean {
   return tt > td || hasLumaMatte(data);
 }
 
+/* 改过字之后,canvas 渲染器已经画不出这套文字了 —— 导出必须改走 SVG 逐帧光栅化。
+ *
+ * 现象:地图标题动画把「地图地点」改成表外字(或任何一套带 chars 的动画改字)之后导出透明 AVI,
+ * 得到的文件整整 100% 透明、播放器里什么都不显示;导出 MP4 则只剩背景色(自检里 326/327 帧
+ * 与上一帧完全相同,正是「一帧都没画」的特征)。
+ *
+ * 根因(canvas 渲染器,与导出/预览无关):它的文字是拿 JSON 里 chars 的字形轮廓自己拼路径画的
+ * (CVTextElement.buildNewText → getCharData → createSizedArray(jLen - 1));改成表外的字之后
+ * dropCharsIfUncovered 会先把整张字形表删掉,此时取不到字形 → 文字元素要么抛异常、要么画空,
+ * 而 lottie 的 canvas 渲染器把 globalAlpha / 变换矩阵当成**跨元素、跨帧累积**的状态
+ * (CVContextData.opacity:stack.opacity 只在乘积变化时才写原生 ctx),一旦某个元素没能成对
+ * save/restore,这个累加器就卡在 0 上再也回不来 —— 实测改字后渲染器的 cArrPos=1、globalAlpha=0,
+ * 连底框、描边这些纯形状图层也一起画不出来。
+ * SVG 渲染器用的是真正的 <text>(浏览器文本引擎排版,与预览完全一致),所以这条路上改过字的
+ * 画面是正确的 —— 也就是本文件里「兼容导出」这套已验证的逐帧光栅化。
+ *
+ * 判定只用三个条件,保证不误伤:
+ *   ① 现在没有字形表(有就说明文字仍在烘焙范围内,canvas 能画,保持快路径);
+ *   ② 这套动画**出厂时**带过字形表(见 animHadGlyphTable:撤离/位置暴露/核电站从 AE 导出时就
+ *      没有 chars,文字一直由浏览器文本引擎画,canvas 路径正常,不能被拖进光栅化);
+ *   ③ 数据里确实有文字层(没有文字层的动画与字形表无关)。 */
+function needsSvgRasterForEditedText(data: any): boolean {
+  if (!data || data.chars) return false;
+  if (!animHadGlyphTable.get(currentAnimKey)) return false;
+  return countMatteLayers(data).text > 0;
+}
+
 /* 字体二进制 → 可复用的 blob URL。
  * 关键:栅格化每帧都会新建一份 SVG 文档,字体若用 data URI 内联,浏览器每帧都要重新 base64 解码
  * 并解析整份字体(实测 2.7MB WOFF2 ≈ 44ms/帧,占导出时间近一半);改用 blob URL 后浏览器按 URL
@@ -9754,17 +9825,28 @@ async function exportVideo() {
   const formatLabel = (format === 'avi'
     ? (wantTransparent ? 'AVI · 无压缩透明' : 'AVI · H.264')
     : 'MP4 · H.264') + ' · ' + fr + 'fps' + (fr !== srcFps ? '(插值)' : '') + popupTag;
-  /* 兼容导出:遮罩源被共用的动画必须改用 SVG 渲染器逐帧光栅化(canvas 渲染器遮罩合成不正确)。
+  /* 兼容导出:两种动画必须改用 SVG 渲染器逐帧光栅化 ——
+   *   ① 遮罩源被共用的动画(canvas 渲染器遮罩合成不正确);
+   *   ② 改过字、字形表已被丢掉的动画(canvas 渲染器一个字都画不出来,还会把整帧带成空白,
+   *      详见 needsSvgRasterForEditedText)。
    * 这个判定放在打开浮层之前 —— 手机上它决定"要不要提前告诉用户这段会慢",而不是让人对着
    * 「正在初始化渲染器」猜。 */
-  const useRaster = needsSvgRasterExport(data);
+  const rasterByText = needsSvgRasterForEditedText(data);
+  const useRaster = rasterByText || needsSvgRasterExport(data);
+  const rasterWhy = rasterByText ? '改字后文字要靠浏览器文本引擎排版' : '该动画含共用轨道遮罩';
   const rasterMobileWarn = useRaster && IS_MOBILE
-    ? '该动画含共用轨道遮罩,手机上导出需要逐帧光栅化(每帧先把 SVG 转成位图),比桌面慢很多,可能要几分钟。'
+    ? rasterWhy + ',手机上导出需要逐帧光栅化(每帧先把 SVG 转成位图),比桌面慢很多,可能要几分钟。'
       + '进度会持续更新,请让页面保持在前台、不要锁屏(已申请屏幕常亮)。'
+    : undefined;
+  /* 桌面端的普通(不透明)导出没有手机那条慢速提示,但改字后同样会自动走光栅化:
+   * 一行说明比让人以为「导出变卡了」要好。 */
+  const rasterDeskWarn = useRaster && !IS_MOBILE
+    ? rasterWhy + ':本次导出会逐帧光栅化(画面才和预览一致),比平时慢一些。'
     : undefined;
   const warn = wantTransparent
     ? '透明 AVI 为无压缩编码,预计文件约 ' + fmtSize(dibBytes) + ';已采用预乘 alpha(premultiplied),与 PotPlayer/Windows 渲染语义一致,半透明组件可正常显示。导出期间请勿关闭页面。'
-    : rasterMobileWarn;
+      + (useRaster ? ' 本段需逐帧光栅化(画面才和预览一致),导出时间会比平时长一些。' : '')
+    : (rasterMobileWarn ?? rasterDeskWarn);
   showExportOverlay({ formatLabel, warn });
   /* 立刻把"这次要下载的文件"显示出来(名字在导出开始时就已经定好,见 buildExportFilename):
    * 用户点完导出马上能看到下载项与进度,不用等编码结束才出现结果。 */

@@ -556,6 +556,8 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 | `npm run app:smoke:export` | 自检 + **真跑一次 MP4 导出**并校验落盘文件 |
 | `node tools/measure-ui.mjs` | **界面布局审计**:在真实窗口里按 7 档宽度量几何/对齐/对比度,报告写进 `release/measure/` |
 | `node tools/check-downloads.mjs` | 下载列表/下载历史的行为自检(纯 Node,57 项断言) |
+| `node tools/mobile-perf.mjs` | **移动端交互性能探针**:用 CDP 派发真实触摸,量平移 / 捏合 / 拖底部面板 / 拖时间轴四类拖动的帧间隔与样式重算,报告写进 `release/perf/`(支持 `--cpu` / `--dpr` / `--renderer` / `--inject` 做 A/B) |
+| `node tools/verify-mobile-touch.mjs` | **移动端触屏回归**(常驻,27 项):拖把手跟手与吸附、双击、单指平移、双指捏合、单击播放、长按复位、旋转停靠,以及拖动期间的样式重算 / 帧间隔预算 |
 | `npm run build` | 仅构建前端 → `dist/`(类型检查 + Vite) |
 | `npm run icons` | 生成 `build/icon.ico` / `icon.png` |
 | `npm run dist` | 打包:免安装目录 + 便携版 |
@@ -766,6 +768,13 @@ npm run app:smoke:export       # 再加一次真实的 MP4 导出与落盘校验
 说明这个环境拿不到 H.264 编码器。常见于:**远程桌面会话**、部分虚拟机、显卡驱动异常或禁用了硬件加速的机器。
 排查顺序:① 跑 `应用自检.bat`,看报告里的 `page.h264` 与 `gpu.video_encode`;② 换成物理机会话再试;
 ③ 站点本身有回退路径(兼容录制 / MJPEG AVI),但**透明 AVI 与 MP4 会降级**,详见 [docs/FEATURES.md](docs/FEATURES.md) 的「视频导出」与「兼容导出」。
+
+**Q:改完文字再导出,透明 AVI 打开什么都不显示(全透明)?**
+旧版本有过这个 bug:文字被改成字形表外的字之后,canvas 渲染器画不出这些字,还会把自己的透明度/变换
+累加器带歪,整帧连底框、描边都一起消失(文件结构是好的,只是每帧 alpha 都是 0)。现在导出会自动改走
+「SVG 逐帧光栅化」,预览也会自动切回 SVG 渲染器 —— 不需要做任何设置,代价只是这一段导出比平时慢一些。
+根因与判定条件见 [docs/FEATURES.md](docs/FEATURES.md) 的「兼容导出」,回归脚本是
+`tools/verify-maptitle-transparent-avi.mjs`。
 
 **Q:界面白屏 / 黑屏**
 跑 `应用自检.bat`,它会给出截图和报告(`release\smoke\`)。

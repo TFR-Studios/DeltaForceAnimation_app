@@ -180,14 +180,21 @@ export function initMobileUI(hooks: MobileHooks): void {
    *  zoomInfo 的文本由 main.ts 写过,这里把它搬到舞台右下角(拇指够得着);
    *  播放态读 #btnPlay 的 aria-pressed(由 main.ts 维护)。
    *  播放中**不淡化按钮**(改版前淡化到 34%,用户以为按钮坏了),只换图标与文案。 */
+  /* 这个函数在每次视图结算(一帧一次)、以及 200ms 轮询里都会跑,所以它必须是
+   * "无变化就一个字节都不写":写 textContent / toggleAttribute 都会让浏览器把这一小块
+   * 重新算一遍样式 —— 每帧两三次的无用写入,在高频拖动里就是白白吃掉帧预算。 */
+  let lastPlaying: boolean | null = null;
   function syncTools(): void {
     const view = hooks.getView();
     const text = zoomInfo?.textContent?.trim() || Math.round(view.zoom * 100) + '%';
     if (badge.textContent !== text) badge.textContent = text;
     const playing = btnPlay?.getAttribute('aria-pressed') === 'true';
-    icoPlay.toggleAttribute('hidden', !!playing);
-    icoPause.toggleAttribute('hidden', !playing);
-    playLabel.textContent = playing ? '暂停' : '播放';
+    if (playing !== lastPlaying) {
+      lastPlaying = playing;
+      icoPlay.toggleAttribute('hidden', !!playing);
+      icoPause.toggleAttribute('hidden', !playing);
+      playLabel.textContent = playing ? '暂停' : '播放';
+    }
   }
 
   toolPlay.addEventListener('click', () => {
@@ -209,6 +216,17 @@ export function initMobileUI(hooks: MobileHooks): void {
     if (viewAnim) { cancelAnimationFrame(viewAnim); viewAnim = 0; }
   }
 
+  /* 视图在动(手势 / 惯性 / 补间)时给画布挂的那层独立合成层(见 mobile.css 的
+   * .preview-stage.is-interacting)。用"确保 + 收尾"而不是加法计数:任何一条在动视图的
+   * 路径都可能被另一条打断(拖到一半触发复位、松手回弹接住惯性),计数会漏;
+   * 而这里的状态本来就是二值的 —— 只要还有手指在台上、或者还有动画在跑,就不该摘。 */
+  function ensureInteracting(): void {
+    if (!stage.classList.contains('is-interacting')) stage.classList.add('is-interacting');
+  }
+  function settleInteracting(): void {
+    if (pts.size === 0) stage.classList.remove('is-interacting');
+  }
+
   /** 直接补间到目标视图(复位用:缩放与平移各自线性到位) */
   function animateViewTo(zoom: number, panX: number, panY: number): void {
     stopViewAnim();
@@ -220,8 +238,8 @@ export function initMobileUI(hooks: MobileHooks): void {
       const e = easeOutCubic(t);
       hooks.setView(lerp(from.zoom, zoom, e), lerp(from.panX, panX, e), lerp(from.panY, panY, e));
       syncTools();
-      if (t < 1) viewAnim = requestAnimationFrame(step);
-      else viewAnim = 0;
+      if (t < 1) { ensureInteracting(); viewAnim = requestAnimationFrame(step); }
+      else { viewAnim = 0; settleInteracting(); }
     };
     viewAnim = requestAnimationFrame(step);
   }
@@ -244,8 +262,8 @@ export function initMobileUI(hooks: MobileHooks): void {
       const k = zoom / from.zoom;
       hooks.setView(zoom, dx * (1 - k) + k * from.panX, dy * (1 - k) + k * from.panY);
       syncTools();
-      if (t < 1) viewAnim = requestAnimationFrame(step);
-      else viewAnim = 0;
+      if (t < 1) { ensureInteracting(); viewAnim = requestAnimationFrame(step); }
+      else { viewAnim = 0; settleInteracting(); }
     };
     viewAnim = requestAnimationFrame(step);
   }
@@ -283,9 +301,42 @@ export function initMobileUI(hooks: MobileHooks): void {
     if (momentum) { cancelAnimationFrame(momentum); momentum = 0; }
   }
 
+  /* ---------- 舞台矩形缓存 ----------
+   * 手势数学要用舞台中心(捏合焦点、越界回弹的补偿点),但 getBoundingClientRect()
+   * 是"读布局":它一旦和同一帧里的 setView(写 transform)交替出现,浏览器每帧都要
+   * 强制一次样式重算 + 布局 —— 实测单指平移 54 次移动里强制了 78 次布局,压到
+   * 手机的 CPU 上就是每帧多花几毫秒。
+   * 一次手势里舞台矩形不会变(页面不滚动),所以按需缓存:手势开始时、面板尺寸变化时
+   * (拖动把手会改舞台高度)、视口变化时把缓存标脏,下一次用到再重取。 */
+  let stageRect = { left: 0, top: 0, width: 0, height: 0, cx: 0, cy: 0 };
+  let stageRectDirty = true;
   function stageCenter(): { cx: number; cy: number } {
-    const r = stage.getBoundingClientRect();
-    return { cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+    if (stageRectDirty) {
+      const r = stage.getBoundingClientRect();
+      stageRect = {
+        left: r.left, top: r.top, width: r.width, height: r.height,
+        cx: r.left + r.width / 2, cy: r.top + r.height / 2,
+      };
+      stageRectDirty = false;
+    }
+    return { cx: stageRect.cx, cy: stageRect.cy };
+  }
+  function invalidateStageRect(): void { stageRectDirty = true; }
+
+  /* ---------- 每帧最多结算一次 ----------
+   * 触屏的 pointermove 可以到 120-240Hz,而屏幕只画 60-120 帧:逐条事件都去做一次
+   * 视图计算 + 写 transform + 同步悬浮控件,等于同一帧重复干几次同样的活,还占住输入
+   * 线程。这里只记"手指现在在哪",真正结算放到下一帧。 */
+  let moveQueued = 0;
+  /* 有没有"还没结算的手指位移"。抬起时的补结算必须看这个标记:
+   * 没有它的话,一次长按(手指按住不动,期间视图已经被复位动画改过)会在抬起瞬间
+   * 被"按 panOrigin 重新算一遍"覆盖回去 —— 表现就是"长按复位了,一松手又跳回原位"。 */
+  let movePending = false;
+  function queueMove(): void {
+    if (!moveQueued) moveQueued = requestAnimationFrame(flushMove);
+  }
+  function cancelQueuedMove(): void {
+    if (moveQueued) { cancelAnimationFrame(moveQueued); moveQueued = 0; }
   }
 
   function isTouch(p: PointerEvent): boolean {
@@ -309,6 +360,11 @@ export function initMobileUI(hooks: MobileHooks): void {
 
     stopMomentum();
     stopViewAnim();
+    /* 手势期间给画布挂一层独立合成层(见 mobile.css 的 .is-interacting):
+     * 平移不必重绘整幅 SVG。松手就摘掉,不常驻占贴图。 */
+    stage.classList.add('is-interacting');
+    /* 新的手势从一次干净的量算开始(舞台上一次量是拖面板之前量的,高度已经变了) */
+    invalidateStageRect();
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { stage.setPointerCapture(e.pointerId); } catch { /* ignore */ }
 
@@ -349,6 +405,59 @@ export function initMobileUI(hooks: MobileHooks): void {
     }
   }
 
+  /* 单指平移:真正写视图的地方。只在 rAF 里调用,一帧一次。 */
+  function applyPan(px: number, py: number, now: number): void {
+    ensureInteracting();
+    const dx = px - panStart.x;
+    const dy = py - panStart.y;
+    moved = Math.max(moved, Math.hypot(dx, dy));
+    if (moved > 10) { window.clearTimeout(longPress); longPress = 0; }
+    const v = hooks.getView();
+    hooks.setView(v.zoom, panOrigin.x + dx, panOrigin.y + dy);
+    syncTools();
+    /* 速度采样给松手后的惯性滑行用;停顿超过 80ms 就丢掉旧速度(慢速拖动不该飘) */
+    const dt = now - lastMove.t;
+    if (dt > 0) {
+      if (dt > 80) vel = { x: 0, y: 0 };
+      else vel = { x: (px - lastMove.x) / dt, y: (py - lastMove.y) / dt };
+      lastMove = { x: px, y: py, t: now };
+    }
+  }
+
+  /* 双指捏合:同上,一帧一次。舞台中心取缓存,不在移动里读布局。 */
+  function applyPinch(): void {
+    ensureInteracting();
+    const arr = Array.from(pts.values());
+    const dist = Math.max(1, Math.hypot(arr[0].x - arr[1].x, arr[0].y - arr[1].y));
+    const c = stageCenter();
+    /* 用当前中点而不是初始中点,双指整体平移就自然成立:
+     * 两指同向移动时 ratio≈1、中点位移,公式退化成纯平移。 */
+    const midNowX = (arr[0].x + arr[1].x) / 2 - c.cx;
+    const midNowY = (arr[0].y + arr[1].y) / 2 - c.cy;
+    const ratio = dist / pinchOrigin.dist;
+    const zoom = clamp(pinchOrigin.zoom * ratio, ZOOM_MIN / ZOOM_OVER, ZOOM_MAX * ZOOM_OVER);
+    const k = zoom / pinchOrigin.zoom;
+    hooks.setView(
+      zoom,
+      midNowX - (pinchOrigin.midX - pinchOrigin.panX) * k,
+      midNowY - (pinchOrigin.midY - pinchOrigin.panY) * k
+    );
+    syncTools();
+    moved = Math.max(moved, 20);
+  }
+
+  function flushMove(): void {
+    moveQueued = 0;
+    if (!movePending) return;
+    movePending = false;
+    if (mode === 'pan' && pts.size === 1) {
+      const p = pts.values().next().value as Pt;
+      applyPan(p.x, p.y, performance.now());
+    } else if (mode === 'pinch' && pts.size >= 2) {
+      applyPinch();
+    }
+  }
+
   function onMove(e: PointerEvent): void {
     if (!isTouch(e)) return;
     if (inStageTools(e.target)) { e.stopPropagation(); return; }
@@ -358,41 +467,17 @@ export function initMobileUI(hooks: MobileHooks): void {
 
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
+    /* 只更新"手指在哪"与那两件必须立刻成立的事(长按取消、moved 判据);
+     * 视图计算与写 DOM 交给下一帧的 flushMove。 */
     if (mode === 'pan' && pts.size === 1) {
-      const dx = e.clientX - panStart.x;
-      const dy = e.clientY - panStart.y;
-      moved = Math.max(moved, Math.hypot(dx, dy));
+      const p = pts.values().next().value as Pt;
+      moved = Math.max(moved, Math.hypot(p.x - panStart.x, p.y - panStart.y));
       if (moved > 10) { window.clearTimeout(longPress); longPress = 0; }
-      const v = hooks.getView();
-      hooks.setView(v.zoom, panOrigin.x + dx, panOrigin.y + dy);
-      syncTools();
-      /* 速度采样给松手后的惯性滑行用;停顿超过 80ms 就丢掉旧速度(慢速拖动不该飘) */
-      const now = performance.now();
-      const dt = now - lastMove.t;
-      if (dt > 0) {
-        if (dt > 80) vel = { x: 0, y: 0 };
-        else vel = { x: (e.clientX - lastMove.x) / dt, y: (e.clientY - lastMove.y) / dt };
-        lastMove = { x: e.clientX, y: e.clientY, t: now };
-      }
     } else if (mode === 'pinch' && pts.size >= 2) {
-      const arr = Array.from(pts.values());
-      const dist = Math.max(1, Math.hypot(arr[0].x - arr[1].x, arr[0].y - arr[1].y));
-      const c = stageCenter();
-      /* 用当前中点而不是初始中点,双指整体平移就自然成立:
-       * 两指同向移动时 ratio≈1、中点位移,公式退化成纯平移。 */
-      const midNowX = (arr[0].x + arr[1].x) / 2 - c.cx;
-      const midNowY = (arr[0].y + arr[1].y) / 2 - c.cy;
-      const ratio = dist / pinchOrigin.dist;
-      const zoom = clamp(pinchOrigin.zoom * ratio, ZOOM_MIN / ZOOM_OVER, ZOOM_MAX * ZOOM_OVER);
-      const k = zoom / pinchOrigin.zoom;
-      hooks.setView(
-        zoom,
-        midNowX - (pinchOrigin.midX - pinchOrigin.panX) * k,
-        midNowY - (pinchOrigin.midY - pinchOrigin.panY) * k
-      );
-      syncTools();
       moved = Math.max(moved, 20);
     }
+    movePending = true;
+    queueMove();
   }
 
   function onUp(e: PointerEvent): void {
@@ -402,8 +487,13 @@ export function initMobileUI(hooks: MobileHooks): void {
     e.stopPropagation();
     e.preventDefault();
 
+    /* 抬起常常赶在下一帧之前:先把最后一次移动结算掉,否则画面会停在上上一帧
+     * (表现是"松手瞬间画面往回跳一下")。 */
+    if (movePending) { cancelQueuedMove(); flushMove(); }
+
     const wasPinch = mode === 'pinch';
     pts.delete(e.pointerId);
+    movePending = false;
     try { stage.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
 
     if (pts.size >= 1) {
@@ -420,6 +510,8 @@ export function initMobileUI(hooks: MobileHooks): void {
       return;
     }
 
+    /* 全部手指都抬起来了:手势结束,摘掉合成分层(不常驻) */
+    stage.classList.remove('is-interacting');
     window.clearTimeout(longPress);
     longPress = 0;
     const dur = performance.now() - downAt;
@@ -486,8 +578,8 @@ export function initMobileUI(hooks: MobileHooks): void {
       const v = hooks.getView();
       hooks.setView(v.zoom, v.panX + vel.x * dt, v.panY + vel.y * dt);
       syncTools();
-      if (Math.hypot(vel.x, vel.y) > 0.02) momentum = requestAnimationFrame(step);
-      else momentum = 0;
+      if (Math.hypot(vel.x, vel.y) > 0.02) { ensureInteracting(); momentum = requestAnimationFrame(step); }
+      else { momentum = 0; settleInteracting(); }
     };
     momentum = requestAnimationFrame(step);
   }
@@ -701,14 +793,33 @@ export function initMobileUI(hooks: MobileHooks): void {
     return [min, Math.round((min + max) / 2), max];
   }
 
+  /* ---------- 尺寸怎么写进 DOM:行内几何,不碰自定义属性 ----------
+   * 改版前这里是 root.style.setProperty('--m-sheet', …) —— 看起来最"干净",
+   * 代价却是每改一次就让**整棵文档树**(含 Fluent 组件各自的 shadow 树)重算样式:
+   * 本页 1848 个元素,实测 6× CPU(≈ 中低端手机)下一次改值,样式重算 25ms,
+   * 拖动把手时 14.3 秒里 13.7 秒主线程都被它吃掉、单次最长 370ms —— 这就是"拖动卡顿"。
+   * 直接写 height / flex 只要 0.3ms(同机同倍速实测 1.7ms vs 147ms),
+   * 因为只失效这一个盒子的布局,不触发自定义属性继承链上的全量重算。
+   *
+   * CSS 里的 --m-sheet / --m-side 仍然保留:它们是首屏、旋转与"还没拖过"时的默认值,
+   * 行内值只在用户真的拖过 / 吸附过之后才存在(覆盖默认值)。
+   * 两个轴向各自清掉另一轴的行内值:竖屏行内高度如果留到停靠模式,会把侧栏顶成整屏高。 */
   function setSheet(h: number, snapping: boolean): void {
     panel.classList.toggle('is-snapping', snapping);
-    root.style.setProperty('--m-sheet', Math.round(h) + 'px');
+    const px = Math.round(h) + 'px';
+    panel.style.width = '';
+    panel.style.height = px;
+    panel.style.flex = '0 0 ' + px;
+    invalidateStageRect();
     if (snapping) window.setTimeout(() => panel.classList.remove('is-snapping'), 320);
   }
   function setSide(w: number, snapping: boolean): void {
     panel.classList.toggle('is-snapping', snapping);
-    root.style.setProperty('--m-side', Math.round(w) + 'px');
+    const px = Math.round(w) + 'px';
+    panel.style.height = '';
+    panel.style.width = px;
+    panel.style.flex = '0 0 ' + px;
+    invalidateStageRect();
     if (snapping) window.setTimeout(() => panel.classList.remove('is-snapping'), 320);
   }
   function currentSize(): number {
@@ -726,8 +837,37 @@ export function initMobileUI(hooks: MobileHooks): void {
   let snapIdx = 0;
   if (!isDocked()) setSheet(snaps()[0], false);
 
-  /* ---------- 把手拖拽:竖屏拖高度,停靠拖宽度 ---------- */
-  let gripDrag: { axis: 'y' | 'x'; start: number; startSize: number; last: number; lastT: number; v: number } | null = null;
+  /* ---------- 把手拖拽:竖屏拖高度,停靠拖宽度 ----------
+   * 拖拽期内的三条纪律(都是"不读布局、不重复写"这一件事的不同侧面):
+   *   1. 吸附档位在按下时快照一次。原来每条 pointermove 都调 snapList(),
+   *      而它读 layout.clientHeight —— 刚写完尺寸又去读布局,浏览器只能当场做一次
+   *      全量样式重算 + 布局,一帧的预算直接花光;
+   *   2. 每帧最多写一次尺寸(pointermove 可以到 120-240Hz);
+   *   3. 松手时把最后一次还没结算的位置补上,再吸附。 */
+  interface GripDrag {
+    axis: 'y' | 'x';
+    start: number;
+    startSize: number;
+    last: number;
+    lastT: number;
+    v: number;
+    /** 按下时的吸附档位快照:拖拽过程中不再读布局算它 */
+    snaps: number[];
+    /** 最近一次还没写进 DOM 的手指位置 */
+    pending: number | null;
+    raf: number;
+  }
+  let gripDrag: GripDrag | null = null;
+
+  /** 把手位移 → 面板尺寸。两个轴向是同一个式子,方向也一致:
+   *  竖屏往上拖 = 变高,停靠时往左拖 = 变宽。
+   *  越界允许 36px:手指拖到顶/底时给一点"拉得动"的手感,松手再吸附回边界内。 */
+  function applyGrip(d: GripDrag, pos: number): void {
+    const lo = d.snaps[0] - 36;
+    const hi = d.snaps[d.snaps.length - 1] + 36;
+    /* 兜底读一次面板当前量?不需要 —— startSize 与手指位移就能算出目标尺寸 */
+    applySize(clamp(d.startSize - (pos - d.start), lo, hi), false);
+  }
 
   grip.addEventListener('pointerdown', (e) => {
     e.preventDefault();
@@ -735,31 +875,52 @@ export function initMobileUI(hooks: MobileHooks): void {
     try { grip.setPointerCapture(e.pointerId); } catch { /* ignore */ }
     const docked = isDocked();
     const start = docked ? e.clientX : e.clientY;
-    gripDrag = { axis: docked ? 'x' : 'y', start, startSize: currentSize(), last: start, lastT: performance.now(), v: 0 };
+    gripDrag = {
+      axis: docked ? 'x' : 'y',
+      start,
+      startSize: currentSize(),
+      last: start,
+      lastT: performance.now(),
+      v: 0,
+      snaps: snapList(),
+      pending: null,
+      raf: 0,
+    };
     panel.classList.add('is-dragging');
     panel.classList.remove('is-snapping');
   });
 
   grip.addEventListener('pointermove', (e) => {
-    if (!gripDrag) return;
+    const d = gripDrag;
+    if (!d) return;
     e.preventDefault();
-    const pos = gripDrag.axis === 'x' ? e.clientX : e.clientY;
+    const pos = d.axis === 'x' ? e.clientX : e.clientY;
     const now = performance.now();
-    const dt = now - gripDrag.lastT;
-    if (dt > 0) gripDrag.v = (pos - gripDrag.last) / dt;
-    gripDrag.last = pos;
-    gripDrag.lastT = now;
-    const s = snapList();
-    /* 两个轴向是同一个式子,方向也一致:竖屏往上拖 = 变高,停靠时往左拖 = 变宽。
-     * 越界允许 36px:手指拖到顶/底时给一点"拉得动"的手感,松手再吸附回边界内。 */
-    const raw = gripDrag.startSize - (pos - gripDrag.start);
-    applySize(clamp(raw, s[0] - 36, s[s.length - 1] + 36), false);
+    const dt = now - d.lastT;
+    if (dt > 0) d.v = (pos - d.last) / dt;
+    d.last = pos;
+    d.lastT = now;
+    d.pending = pos;
+    if (!d.raf) {
+      d.raf = requestAnimationFrame(() => {
+        const cur = gripDrag;
+        if (!cur) return;
+        cur.raf = 0;
+        const p = cur.pending;
+        if (p == null) return;
+        cur.pending = null;
+        applyGrip(cur, p);
+      });
+    }
   });
 
   const endGrip = (e: PointerEvent): void => {
-    if (!gripDrag) return;
     const drag = gripDrag;
+    if (!drag) return;
     gripDrag = null;
+    if (drag.raf) { cancelAnimationFrame(drag.raf); drag.raf = 0; }
+    /* 松手位置没来得及结算的那一版先落下去,吸附才从"手指真的停住的地方"开始 */
+    if (drag.pending != null) { applyGrip(drag, drag.pending); drag.pending = null; }
     panel.classList.remove('is-dragging');
     try { grip.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
     const s = snapList();
@@ -797,6 +958,8 @@ export function initMobileUI(hooks: MobileHooks): void {
    * 不重吸附的话,旋转后 --m-sheet 还是旧方向的像素值,面板会顶穿或缩成一条缝。 */
   let resizeTimer = 0;
   window.addEventListener('resize', () => {
+    /* 舞台矩形缓存跟着失效(地址栏收放会改可用高度,和 CSS 变量一样会"过期") */
+    invalidateStageRect();
     window.clearTimeout(resizeTimer);
     resizeTimer = window.setTimeout(() => {
       snapIdx = clamp(snapIdx, 0, snapList().length - 1);
@@ -823,6 +986,9 @@ export function initMobileUI(hooks: MobileHooks): void {
     window.setTimeout(() => {
       hint.classList.remove('is-show');
       try { sessionStorage.setItem('dfae.ui.mHint', '1'); } catch { /* ignore */ }
+      /* 淡出之后把节点真的摘掉:它身上挂着 backdrop-filter(10px 模糊),
+       * 留在一个会动的画布上方等于常驻一层"每帧都要重算背景"的模糊层。 */
+      window.setTimeout(() => hint.remove(), 420);
     }, 9000);
   }
 

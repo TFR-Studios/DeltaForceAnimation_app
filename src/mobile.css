@@ -220,6 +220,25 @@ html[data-ui='mobile'] .m-tool:active {
   transform: scale(0.95);
   background: var(--surface-3);
 }
+
+/* 手势期间(单指平移 / 双指捏合 / 惯性滑行 / 双击与复位的补间)只做两件事:
+ *
+ * 1) 把画布提升为独立合成层。不提升的话每一帧改 transform 都会让浏览器把这一层
+ *    重新光栅化 —— 这里挂着近 900 个节点的 SVG,手机上一帧就是十几毫秒,表现就是
+ *    "拖动一卡一卡"。will-change 只在这段时间挂着,松手立刻摘掉:常驻会永久占着一张
+ *    接近画布像素尺寸的大贴图(DPR 3 下 1920×1080 画布就是 5760×3240)。
+ *
+ * 2) 收掉压在这块会动画布上的 backdrop-filter。两枚悬浮按钮与缩放读数是毛玻璃,
+ *    背景每帧都在动 = 每帧都要重算一次背景模糊。手势中手指就压在屏幕上,这点模糊
+ *    看不出来,松手立刻恢复(不透明度 92% → 100%,肉眼几乎不可分辨)。 */
+html[data-ui='mobile'] .preview-stage.is-interacting .preview-inner {
+  will-change: transform;
+}
+html[data-ui='mobile'] .preview-stage.is-interacting .m-tool,
+html[data-ui='mobile'] .preview-stage.is-interacting .m-zoom-badge {
+  backdrop-filter: none;
+  background: var(--surface-2);
+}
 html[data-ui='mobile'] .m-tool svg {
   width: 16px;
   height: 16px;

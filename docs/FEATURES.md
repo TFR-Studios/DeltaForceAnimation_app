@@ -432,6 +432,29 @@ npm run dist       # 打包:release/win-unpacked(免安装)+ 便携版单文件 
 含「共用轨道遮罩」的动画(被遮罩层 tt 多于遮罩源 td,如核电站功率动画)导出时**自动**改用 SVG 渲染器渲染、
 再逐帧光栅化后交给编码器,页面里没有任何开关;其余动画仍走原有 canvas 管线(它们的遮罩是标准配对,canvas 结果正确)。
 
+**改过文字的动画同样自动走这条路**(判定函数是 `needsSvgRasterForEditedText`)。原因:
+canvas 渲染器画文字靠的是 JSON 里内嵌的字形表(`chars`),它直接拿字形轮廓拼路径
+(`CVTextElement.buildNewText` → `getCharData` → `createSizedArray(jLen - 1)`);用户把文字改成
+字形表里没有的字时,`dropCharsIfUncovered` 会先把整张字形表删掉(不删就会被渲染成空路径、文字消失),
+于是取不到字形。更要命的是 lottie 的 canvas 渲染器把 `globalAlpha` / 变换矩阵当成**跨元素、跨帧累积**
+的状态(`CVContextData.opacity` 只在乘积变化时才写原生 ctx),某个元素没能成对 `save/restore` 之后
+累加器就卡在 0 上再也回不来 —— 实测改字后渲染器 `cArrPos=1`、`globalAlpha=0`,
+**连底框、描边这些纯形状图层也一起画不出来**,整帧变成全透明。
+
+症状正是「改字后导出透明 AVI 什么都不显示」:文件结构完全正常(RIFF/avih/strf/idx1 全部合法),
+只是每一帧的 alpha 都是 0;导出 MP4 则只剩背景色,导出自检会报「326/327 帧与上一帧完全相同」。
+预览侧同理(canvas 渲染器),所以预览在遇到这种数据时会**自动切回 SVG 渲染器**并提示一句。
+
+判定条件(三条同时成立,保证不误伤出厂就没有字形表的动画):
+1. 当前数据没有 `chars`(还有就说明文字仍在烘焙范围内,canvas 能画,保持快路径);
+2. 这套动画**首次载入时**带过 `chars`(撤离 / 位置暴露 / 核电站三套从 AE 导出时就只带 TTF(`fPath`),
+   文字一直由 `patchCanvasTextElement` 用浏览器文本引擎画,canvas 路径本来就正常,它们动辄上千帧,
+   不能被拖进逐帧光栅化);
+3. 数据里确实有文字层(`ty:5`)。
+
+回归脚本:`tools/verify-maptitle-transparent-avi.mjs`(改字 → 导出一份小体积透明 AVI → 从文件里解帧,
+核对 alpha 与白色文字像素;为避免 3.4 GB 的成品,脚本会临时把出点压到 41 帧)。
+
 > 判定函数是 `needsSvgRasterExport`,它还有第二个条件:**含亮度遮罩(tt:3)的动画也必须走 SVG** ——
 > lottie-web 5.13.0 的 canvas 渲染器根本构建不出亮度遮罩图层(上游少了调用括号,
 > `assetLoader.loadLumaCanvas` 不存在),异常被 lottie 自己吞掉,结果是整帧全黑。
