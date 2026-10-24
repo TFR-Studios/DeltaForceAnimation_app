@@ -1,7 +1,7 @@
 {
   "name": "delta-force-animation-editor-desktop",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "三角洲行动动画编辑器 · Windows 桌面版(Electron):内置八套游戏动画的 Lottie 预览 / 编辑 / 视频导出",
   "author": "TFR-Studios",
   "license": "GPL-3.0",
