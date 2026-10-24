@@ -28,6 +28,33 @@ contextBridge.exposeInMainWorld('dfaeDesktop', {
   openExternal: (url) => ipcRenderer.invoke('dfae:open-external', String(url)),
   /** 在资源管理器里定位某个文件。 */
   revealFile: (file) => ipcRenderer.invoke('dfae:reveal-file', String(file)),
+  /**
+   * 检查更新:主进程按 GitCode → GitHub 的顺序取最新发行版并原样返回。
+   * 为什么不让页面自己 fetch:主进程的 net.fetch 走系统代理,也没有跨域那道开关
+   * (见 main.cjs 的 5b 段)。返回 { ok, source, label, release }
+   * 或 { ok:false, tried:[...] },解析与版本比较都在 src/update-check.ts 里做。
+   */
+  checkUpdate: () => ipcRenderer.invoke('dfae:check-update'),
+
+  /* ---------- 应用内更新(桌面端「下载并安装」) ----------
+   * 下载、校验、启动安装器全在主进程做(见 main.cjs 的 5c 段);这里只暴露四个具名方法。
+   * 仍然不暴露 ipcRenderer 本体:页面拿不到任意通道的调用能力。 */
+  /** 这个客户端能不能自替换安装(便携版 / 非 Windows 返回 false,界面退回「前往下载」)。 */
+  updateCapabilities: () => ipcRenderer.invoke('dfae:update-capabilities'),
+  /** 下载安装包。返回 { ok, path, size } 或 { ok:false, error }。 */
+  downloadUpdate: (url, filename) => ipcRenderer.invoke('dfae:update-download', { url: String(url), filename: String(filename) }),
+  /** 取消正在进行的下载。 */
+  cancelUpdate: () => ipcRenderer.invoke('dfae:update-cancel'),
+  /** 启动安装器并退出自己。返回 { ok } 或 { ok:false, error }。 */
+  installUpdate: (filePath) => ipcRenderer.invoke('dfae:update-install', { path: String(filePath) }),
+  /** 下载进度订阅;返回取消订阅函数。 */
+  onUpdateProgress: (handler) => {
+    const listener = (_e, payload) => {
+      try { handler(payload); } catch { /* 页面自己的异常不该影响主进程 */ }
+    };
+    ipcRenderer.on('dfae:update-progress', listener);
+    return () => ipcRenderer.removeListener('dfae:update-progress', listener);
+  },
 });
 
 /* ---------------------------------------------------------------------------

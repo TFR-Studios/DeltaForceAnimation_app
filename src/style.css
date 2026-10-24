@@ -2642,6 +2642,419 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
 .dw-hint { color: var(--text-3); font-size: 11px; }
 
 /* ============================================================================
+ * 9.5 应用外壳:导航轨 + 页面(主页 / 编辑器 / 关于)
+ * ---------------------------------------------------------------------------
+ * 结构(index.html):
+ *   .app-body
+ *     nav.rail      左侧导航轨(手机端变底部标签栏,见 mobile.css 第 11 节)
+ *     main.layout   编辑器(#viewEditor):预览 + 检查器,**切页时不销毁**
+ *     #viewHome     主页:只回答"现在要干什么",不放动画列表
+ *     #viewAbout    关于:版本 / 检查更新 / 保存目录 / 制作声明 / 许可
+ *
+ * 为什么编辑器那一块不销毁:预览画布的适配、时间轴、导出参数都挂在它的几何上,
+ * 切页时如果把它设成 display:none,舞台会瞬间 0×0、适配算法重算,回来时画面跳一下。
+ * 所以页面切换只动 [hidden] 和目标页的 inert,编辑器自己的内部状态一概不碰。
+ * ========================================================================== */
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* ---------- 导航轨 ---------- */
+.rail {
+  flex: none;
+  width: 176px;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 8px 12px;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  /* 收起/展开是这一个容器的一次变形:宽度、内边距、行内边距、图标与文字的间距一起过渡,
+     图标因此会"滑"到居中位置,而不是跳过去。overflow:hidden 让文字在收窄过程里被裁掉,
+     不给它机会压到图标上。 */
+  overflow: hidden;
+  /* 220ms:比 --dur(180)略长一点,让"边收边让位"看得清,又不至于拖手。
+     不再往 tokens 里加第四档时长 —— 三档够用,这只是一次性值。 */
+  transition:
+    width 220ms var(--ease-out),
+    padding-left 220ms var(--ease-out),
+    padding-right 220ms var(--ease-out);
+}
+/* 收起 / 展开按钮:常驻在导航轨右上角。收起后它居中,是"重新展开"的唯一入口,
+ * 所以不能跟着标签一起藏掉。 */
+.rail-head {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0 6px;
+}
+.rail-toggle {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.rail-toggle .bi { width: 13px; height: 13px; transition: transform var(--dur) var(--ease); }
+.rail-toggle:hover { color: var(--text); background: var(--surface-hover); border-color: var(--line); }
+.rail-toggle:active { background: var(--surface-3); transform: scale(0.94); }
+
+.rail-items { display: flex; flex-direction: column; gap: 2px; }
+/* ---------- 收起态 ----------
+ * 只收宽度和文字,图标保留(图标本身就是最省位的导航语言,tooltip 由 title 兜住)。
+ * 刻意**不做宽度过渡**:它是布局变化,过渡会让 ResizeObserver 在 176ms 里连开十几次
+ * applyFit;侧边栏收起是"一瞬间换个版式",不是需要被看见的过程。 */
+html[data-rail='collapsed'] .rail { width: 56px; padding-left: 6px; padding-right: 6px; }
+html[data-rail='collapsed'] .rail-head { justify-content: center; }
+html[data-rail='collapsed'] .rail-toggle .bi { transform: rotate(180deg); }
+/* 14px = (44 内容宽 - 16 图标)/2,图标正好落在中线上 */
+html[data-rail='collapsed'] .rail-item { gap: 0; padding-left: 14px; }
+html[data-rail='collapsed'] .rail-item span { max-width: 0; opacity: 0; }
+html[data-rail='collapsed'] .rail-foot { justify-content: center; padding-left: 0; padding-right: 0; }
+html[data-rail='collapsed'] .rail-version { opacity: 0; }
+
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  overflow: hidden;
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    padding-left 220ms var(--ease-out),
+    gap 220ms var(--ease-out);
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.rail-item .bi { width: 16px; height: 16px; flex: none; color: var(--text-3); transition: color var(--dur) var(--ease); }
+/* 文字靠 max-width 收放(可过渡),opacity 稍快一点先淡掉,读起来是"字先走、边再收" */
+.rail-item span {
+  min-width: 0;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 1;
+  transition:
+    max-width 220ms var(--ease-out),
+    opacity 140ms var(--ease);
+}
+.rail-item:hover { background: var(--surface-hover); border-color: var(--line); color: var(--text); }
+.rail-item:hover .bi { color: var(--text-2); }
+.rail-item:active { transform: scale(0.985); background: var(--surface-3); }
+/* 当前页:与顶栏动画触发器选中态同一套语言(实心浅底 + 亮描边 + 图文一起提亮) */
+.rail-item.is-active {
+  background: var(--brand-subtle);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+.rail-item.is-active .bi { color: var(--text); }
+.rail-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  padding: 10px 10px 0;
+  border-top: 1px solid var(--line);
+}
+.rail-version {
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition: opacity var(--dur) var(--ease);
+}
+
+/* ---------- 页面容器 ---------- */
+.page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg);
+}
+.page[hidden] { display: none; }
+.page-scroll {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: clamp(28px, 6vh, 64px) var(--sp-6) var(--sp-6);
+}
+/* 主页只有一块内容:在整页高度里垂直居中,而不是顶在最上面留一大片空底。
+ * 关于页内容更长,保持顶部对齐(滚动阅读时位置稳定)。 */
+.page-home .page-scroll {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* ---------- 主页 ---------- */
+.home-card { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-3); }
+.home-logo { display: block; width: 52px; height: 52px; }
+.home-channel {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.home-title {
+  margin: 0;
+  max-width: 12em;
+  font-family: var(--font-display);
+  font-size: clamp(26px, 2.8vw, 34px);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.home-desc {
+  margin: 0;
+  max-width: 34em;
+  color: var(--text-2);
+  font-size: 13.5px;
+  line-height: 1.72;
+}
+.home-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+/* 主操作:全站唯一的实心按钮(与导出按钮同一套 --brand / --on-brand) */
+.home-primary {
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-cta);
+  padding: 0 22px;
+  color: var(--on-brand);
+  background: var(--brand);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.home-primary:hover { background: var(--brand-hover); box-shadow: var(--shadow-1); }
+.home-primary:active { background: var(--brand-pressed); transform: scale(0.985); }
+.home-primary[disabled] { opacity: 0.6; cursor: progress; }
+.home-ghost {
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-cta);
+  padding: 0 18px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.home-ghost:hover { background: var(--surface-hover); border-color: var(--line-accent); color: var(--text); }
+.home-ghost:active { background: var(--surface-3); transform: scale(0.985); }
+.home-last { margin: 0; color: var(--text-3); font-size: 11.5px; }
+
+/* ---------- 页面标题 ---------- */
+.page-head { margin-bottom: var(--sp-4); }
+.page-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.page-sub { margin: 4px 0 0; color: var(--text-3); font-size: 11.5px; }
+
+/* ---------- 关于 ---------- */
+.about-card {
+  margin-bottom: var(--sp-3);
+  padding: 4px var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+.about-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 48px;
+  border-bottom: 1px solid var(--line);
+}
+.about-card > .about-row:last-child { border-bottom: none; }
+.about-label { flex: none; width: 56px; color: var(--text-3); font-size: 12px; }
+.about-value { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.about-value b { font-variant-numeric: tabular-nums; }
+.about-channel { color: var(--text-3); font-size: 11px; }
+.about-actions { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; flex: 1; }
+.about-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: var(--h-ctl);
+  padding: 0 12px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.about-btn:hover { background: var(--surface-hover); border-color: var(--line-accent); color: var(--text); }
+.about-btn:active { background: var(--surface-3); transform: scale(0.985); }
+.about-btn[disabled] { cursor: progress; color: var(--text-3); }
+.about-btn .bi { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+.about-btn.is-busy .bi { animation: about-spin 900ms linear infinite; }
+@keyframes about-spin { to { transform: rotate(360deg); } }
+.about-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.about-craft-card { padding: var(--sp-4); }
+.about-craft { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--text-2); font-size: 12.5px; }
+.about-craft .bi { width: 13px; height: 13px; flex: none; color: var(--text-3); }
+.about-craft b { color: var(--text); font-weight: 600; }
+.about-meta { margin: 0 0 4px; color: var(--text-3); font-size: 11.5px; }
+.about-link { color: var(--text-2); text-decoration: none; border-bottom: 1px solid var(--line-accent); }
+.about-link:hover { color: var(--text); }
+
+/* ---------- 更新状态行 ---------- */
+.update-status {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.update-status[hidden] { display: none; }
+.update-item { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.update-ico { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+.update-text { color: var(--text-2); }
+.update-text b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.update-note { color: var(--text-3); font-size: 11px; }
+.update-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: var(--h-sm);
+  padding: 0 9px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+  text-decoration: none;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+/* 应用内下载:与链接同形,但是个 button(它会触发下载而不是跳页) */
+.update-link-btn { cursor: pointer; font-family: inherit; }
+.update-link:hover { background: var(--surface-hover); border-color: var(--line-accent); }
+/* 下载进度条:2px 轨道 + --brand 填充。它与"检查中"的扫描条不同 ——
+ * 这条是**确定性**进度(有总长度),所以稳步走,不做巡回动画。 */
+.update-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+.update-progress[hidden] { display: none; }
+.update-bar {
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.update-fill {
+  width: 0%;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--brand);
+  transition: width 160ms linear;
+}
+.update-pct {
+  flex: none;
+  min-width: 48px;
+  text-align: right;
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+/* 侧边栏「关于」上的"有新版本"小点:自动检查发现新版本时才亮,是真实状态 */
+.rail-item.has-update { position: relative; }
+.rail-item.has-update::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+html[data-rail='collapsed'] .rail-item.has-update::after { top: 6px; right: 6px; }
+html[data-ui='mobile'] .rail-item.has-update::after { top: 8px; right: 26%; }
+.update-link:active { background: var(--surface-3); }
+.update-status[data-state='available'] .is-warn .update-ico { color: var(--warn); }
+.update-status[data-state='latest'] .is-plain .update-ico { color: var(--text-2); }
+.update-status[data-state='error'] .update-text,
+.update-status[data-state='error'] .update-ico { color: var(--danger); }
+/* 检查中:2px 扫描条,表达"进度未知、还在等" */
+.update-status.is-checking { padding-bottom: 12px; }
+.update-status.is-checking::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 2px;
+  border-radius: 1px;
+  background-image: linear-gradient(90deg, transparent, var(--brand), transparent);
+  background-repeat: no-repeat;
+  background-size: 38% 100%;
+  animation: update-sweep 1.1s var(--ease) infinite;
+}
+@keyframes update-sweep {
+  from { background-position: -38% 0; }
+  to { background-position: 138% 0; }
+}
+
+/* 顶栏里只有编辑器页用得到的东西:其它页把动画选择器与下载入口收起来,
+ * 让顶栏只剩"我是谁 + 主题 + 制作声明"。 */
+html:not([data-page='editor']) .anim-switch,
+html:not([data-page='editor']) .dw-open { display: none; }
+
+/* ============================================================================
  * 10. 自适应:收窄时先让侧栏变窄,再折行,最后单栏
  * ========================================================================== */
 @media (max-width: 1380px) { :root { --side-w: 316px; } }
@@ -2833,6 +3246,19 @@ html.is-theme-fading *::after {
   .export-percent.cancel { animation: none; }
   .ap-card:hover { transform: none; }
   .ap-card:hover .ap-card-cover img { transform: none; }
+  /* 开始页:检查更新时那颗转圈图标与扫描条都是"动效承载信息"的例子 ——
+   * 减少动效下换成静态信号(图标不动、扫描条变成一条实心细线),信息不丢。 */
+  .ss-btn.is-busy .ss-btn-ico { animation: none; }
+  .ss-status.is-checking::after {
+    animation: none;
+    background-image: none;
+    background-color: var(--line-strong);
+  }
+  .ss-card:hover { transform: none; }
+  .ss-card:hover .ss-card-cover img { transform: none; }
+  .ss-primary:hover .ss-primary-ico,
+  .ss-btn:hover .ss-btn-arrow,
+  .ss-btn:hover .ss-btn-ico { transform: none; }
     /* 减少动效:按下反馈的缩放一并取消(它承载的信息由背景加深与 aria 状态替代) */
   .anim-trigger:active, .dw-open:active, .theme-btn:active, .ap-card:active,
   .t-reset:active, .popup-toggle:active, .preset-toggle:active, #themeReset:active,
@@ -2840,6 +3266,7 @@ html.is-theme-fading *::after {
   .dw-acts button:active, .dw-bar button:active,
   .export-actions :is(button, fluent-button):active, .export-actions .primary:active,
   .transport .icon-btn:active, #btnExport:active,
+  .tb-home:active, .ss-primary:active, .ss-btn:active, .ss-card:active, .ss-status-link:active,
   .df-select-btn:active { transform: none; }
   /* 滑杆与开关的位移 / 缩放反馈同样取消:位置与颜色已经表达了状态 */
   input[type='range']:hover::-webkit-slider-thumb,

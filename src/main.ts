@@ -56,6 +56,9 @@ import { initThemeAndSwitch } from './ui-theme';
 /* 移动端外壳与触屏手势。非触屏设备上它什么都没做(见 src/mobile.ts 的判定),
  * 所以桌面端的行为与样式与本模块无关。 */
 import { initMobileUI } from './mobile';
+/* 开始页(应用的第一屏):版本 / 检查更新 / 打开编辑器 / 保存目录 / 八套动画联系表。
+ * 它只拿回调,不反向 import 本文件 —— 与 mobile.ts 同一条约定(互相 import 会成环)。 */
+import { initAppShell } from './start-screen';
 
 /* 音效资源:独立小文件(?url 打包为静态资源),不进入大体积动画数据 chunk */
 import bundledAudioUrl from '../animations/animation_1/gunmuchenggong.mp3?url';
@@ -92,6 +95,13 @@ const FONT_CURVE_WOFF2_URL = new URL('../animations/animation_1/fonts/ProjectDTy
 // appLoadingHidden:加载界面是否已进入淡出流程 —— hideAppLoading 在多处分支被调用,这里做重入保护
 let appLoadingHidden = false;
 let appLoadingReady = false; // 主动画已就绪,允许进度条收尾到 100%
+
+/* 是否不在编辑器页(视图状态的唯一权威是 <html data-page>,见文件末尾的「应用外壳」一节)。
+ * 声明在这里而不是文件末尾:loadData 构造 lottie 实例时要读它来决定 autoplay ——
+ * 不在编辑器页时不该让画布背后自动播起来(还有音效)。 */
+let startViewIsHome = true;
+/* 当前 lottie 实例是否在"编辑器隐藏"期间建出来的(见 loadData 里的说明)。 */
+let builtWhileHidden = false;
 
 /* 把百分比进度画到加载界面上:pct 取 0..100(#ldPct 显示四舍五入后的整数百分比)。
  * #ldBar 里是 22 个 <i> 格,按比例点亮前 on 格;格数用 children.length 动态取,
@@ -164,17 +174,217 @@ const AUDIO_VOLUME = 0.3;
  * 同时处理浏览器自动播放策略:动画 autoplay 触发的 play() 在无用户手势时会被拦截,
  * 这里在首次用户交互(点击/按键)时自动重试,保证用户一定能听到音效。
  */
-/* 音频元素缓存:同一资源只创建一个 Audio 元素并复用。
- * 每次重建动画(lottie 会为每个音频层新建 Audio 元素)都会发起新请求,
- * 旧元素被 GC 时若请求仍在进行会中止加载,控制台报 net::ERR_ABORTED。
- * 元素常驻缓存不会被回收,既消除该报错,也避免重复请求。 */
+/* ---------- 音频控制器:WebAudio 精确回放 ----------
+ *
+ * 为什么不用 HTMLAudioElement(lottie-web 的默认做法,也是本文件原来的实现):
+ * lottie 的 AudioElement 在**每一帧**都会做这件事(见 lottie.js 的 renderFrame):
+ *     if (!audio.playing() || Math.abs(动画时间 - audio.seek()) > 0.1) audio.seek(动画时间)
+ * 也就是说:它要求 seek() 的返回值与动画时间对齐在 100ms 内,一旦不齐就重排。
+ * 手机上 <audio> 的 currentTime 会滞后(缓冲、解码、被系统降频),
+ * 于是每一帧都判定"不齐" → 每帧 seek → 声音永远停在开头那 0.2s,
+ * 听感就是"一直在重复开头";再加上自动播放策略拦截(错误名还不一定是 NotAllowedError)、
+ * 元素没 loaded 时 play() 直接被拒,就成了"有的没声、有的延迟很久"。
+ *
+ * WebAudio 这条路把三件事都解决了:
+ *   · 位置由 AudioContext.currentTime 推算,精确且不会因为缓冲而滞后;
+ *   · 只有真正的跳变(>250ms,例如用户拖时间轴)才重排音源,逐帧的小偏差不理会;
+ *   · AudioContext 只需要一次用户手势解锁,之后所有音频共用,不再有"每个层各自被拦截"的问题。
+ * 解码后的 AudioBuffer 按资源路径缓存:切动画不重解码,手机上也够快。
+ */
 const audioElCache = new Map<string, HTMLAudioElement>();
+
+/** 全局唯一的 AudioContext(懒创建:创建本身不发声,不违反自动播放策略;resume 才需要手势)。 */
+let audioCtx: AudioContext | null = null;
+let audioCtxBroken = false;
+function getAudioCtx(): AudioContext | null {
+  if (audioCtx || audioCtxBroken) return audioCtx;
+  try {
+    const Ctor = (window.AudioContext || (window as any).webkitAudioContext);
+    if (!Ctor) { audioCtxBroken = true; return null; }
+    audioCtx = new Ctor();
+  } catch {
+    audioCtxBroken = true;
+    audioCtx = null;
+  }
+  return audioCtx;
+}
+
+/* 解码缓存:路径 → AudioBuffer(或正在解码的 Promise,避免同一资源解码两次)。 */
+const audioBufferCache = new Map<string, AudioBuffer>();
+const audioDecoding = new Map<string, Promise<AudioBuffer | null>>();
+
+function decodeAudioAsset(path: string): Promise<AudioBuffer | null> {
+  const cached = audioBufferCache.get(path);
+  if (cached) return Promise.resolve(cached);
+  const inflight = audioDecoding.get(path);
+  if (inflight) return inflight;
+  const ctx = getAudioCtx();
+  if (!ctx) return Promise.resolve(null);
+  const job = (async () => {
+    try {
+      const res = await fetch(path);
+      if (!res.ok) return null;
+      const raw = await res.arrayBuffer();
+      /* slice:decodeAudioData 会 detach 传入的 ArrayBuffer,失败重试时还要用同一份数据 */
+      const buf = await ctx.decodeAudioData(raw.slice(0));
+      audioBufferCache.set(path, buf);
+      return buf;
+    } catch {
+      return null;
+    } finally {
+      audioDecoding.delete(path);
+    }
+  })();
+  audioDecoding.set(path, job);
+  return job;
+}
+
+/* 诊断计数:每创建一次音源 +1。手机上"重复开头"的病根就是这里被疯狂重建;
+ * 正常播放一段应该只有"每个音频层一次"级别的次数。开发模式下可用 __audioDbg 读取。 */
+let audioStartCount = 0;
+
+/** 自动播放解锁:任何一次手势都把 AudioContext 拉起来,并把等着播的音重排上。 */
+const audioPendingStarts = new Set<() => void>();
+let audioUnlockBound = false;
+function bindAudioUnlock(): void {
+  if (audioUnlockBound) return;
+  audioUnlockBound = true;
+  const unlock = () => {
+    const ctx = getAudioCtx();
+    if (ctx && ctx.state !== 'running') { void ctx.resume().catch(() => { /* 忽略 */ }); }
+    window.removeEventListener('pointerdown', unlock);
+    window.removeEventListener('touchend', unlock);
+    window.removeEventListener('keydown', unlock);
+    /* 解锁后把排队中的播放全部放出去(在下一帧,确保 resume 已生效) */
+    window.setTimeout(() => {
+      for (const fn of Array.from(audioPendingStarts)) { audioPendingStarts.delete(fn); try { fn(); } catch { /* 忽略 */ } }
+    }, 0);
+  };
+  window.addEventListener('pointerdown', unlock, { passive: true });
+  window.addEventListener('touchend', unlock, { passive: true });
+  window.addEventListener('keydown', unlock);
+}
 
 /* 音频控制器工厂:lottie-web 要求 audioFactory(assetPath) 返回带
  * play/pause/seek/playing/rate/volume 的对象,并且会为每个音频层各调用一次,
- * 所以必须返回独立的控制器闭包 —— wantPlay / retryHandler 是每个音频层各自的状态,不能复用同一对象。
- * el.src 每次赋值是幂等的(值相同不会重新发起请求),所以放心直写。 */
+ * 所以必须返回独立的控制器闭包 —— 每个层的播放位置/音量/速率各自独立。
+ *
+ * 语义与 lottie 的预期严格对齐(见 lottie.js 的 AudioElement):
+ *   seek()      不传参 = 读当前播放位置(秒)
+ *   seek(t)     传参 = 排到 t 秒;只有真的跳变(>0.25s)才重排音源,
+ *               逐帧的一点点偏差直接忽略 —— 这正是手机端"重复开头"的病根
+ *   playing()   有正在发声的音源才算在播(不依赖缓冲状态) */
 const audioFactory = (assetPath: string) => {
+  const maybeCtx = getAudioCtx();
+  /* 没有 WebAudio(极老的 WebView):退回 HTMLAudioElement 老实现,至少还能出声 */
+  if (!maybeCtx) return audioElementFactory(assetPath);
+  /* 非空别名:上面的守卫之后闭包里就不可能再是 null,TS 的收窄不进闭包 */
+  const ctx: AudioContext = maybeCtx;
+
+  let buffer: AudioBuffer | null = audioBufferCache.get(assetPath) || null;
+  let src: AudioBufferSourceNode | null = null;
+  let gain: GainNode | null = null;
+  let vol = 1;
+  let rateVal = 1;
+  let wantPlay = false;
+  let playing = false;
+  let offset = 0;          // 起点位置(秒)
+  let startedAt = 0;       // ctx.currentTime 中开始播放的时刻
+
+  const ensureGain = () => {
+    if (!gain) { gain = ctx.createGain(); gain.gain.value = vol; gain.connect(ctx.destination); }
+  };
+  /* 当前播放位置:在播就按 ctx 时间推算(精确),否则停在 offset */
+  const currentPos = () => (playing ? offset + (ctx.currentTime - startedAt) * rateVal : offset);
+
+  function stopSource() {
+    if (src) {
+      const s = src;
+      src = null;
+      try { s.onended = null; s.stop(); } catch { /* 已经停过 */ }
+      try { s.disconnect(); } catch { /* 忽略 */ }
+    }
+    playing = false;
+  }
+
+  function startFrom(t: number) {
+    if (!buffer) return;
+    stopSource();
+    ensureGain();
+    const s = ctx.createBufferSource();
+    s.buffer = buffer;
+    s.playbackRate.value = rateVal;
+    s.connect(gain as GainNode);
+    const pos = Math.max(0, Math.min(t, Math.max(0, buffer.duration - 0.005)));
+    s.start(0, pos);
+    src = s;
+    offset = pos;
+    startedAt = ctx.currentTime;
+    playing = true;
+    audioStartCount++;
+    s.onended = () => {
+      /* 自然播完:回到 0,等下一次 play() 从头来(暂停/重排不会走到这里,stopSource 会先摘掉 onended) */
+      if (src === s) { src = null; playing = false; offset = 0; }
+    };
+  }
+
+  function playNow() {
+    if (!wantPlay) return;
+    if (ctx.state !== 'running') {
+      /* 还没被手势解锁:记一笔排队,解锁后自动补播(比 HTMLAudio 的 NotAllowedError 重试可靠) */
+      audioPendingStarts.add(() => { if (wantPlay) playNow(); });
+      void ctx.resume().catch(() => { /* 手势之间允许失败 */ });
+      bindAudioUnlock();
+      return;
+    }
+    if (buffer) startFrom(offset);
+    else {
+      void decodeAudioAsset(assetPath).then((b) => {
+        if (b) { buffer = b; if (wantPlay && !playing) startFrom(offset); }
+      });
+    }
+  }
+
+  bindAudioUnlock();
+  if (!buffer) void decodeAudioAsset(assetPath).then((b) => { if (b) buffer = b; });
+
+  return {
+    play: () => { wantPlay = true; playNow(); },
+    pause: () => {
+      wantPlay = false;
+      const pos = currentPos();
+      stopSource();
+      offset = pos;
+    },
+    seek: (t?: number) => {
+      if (t === undefined) return currentPos();
+      if (!playing) { offset = Math.max(0, t); return offset; }
+      /* 只认真实跳变:超过 250ms 才重排。lottie 每帧都会调到这里,
+       * 手机上介质位置的抖动远小于这个阈值,所以不会再出现"每帧回到开头"。 */
+      if (Math.abs(currentPos() - t) > 0.25) startFrom(t);
+      return t;
+    },
+    playing: () => playing && !!src,
+    rate: (r?: number) => {
+      if (r === undefined) return;
+      rateVal = r;
+      if (src) src.playbackRate.value = r;
+    },
+    volume: (v?: number) => {
+      if (v === undefined) return;
+      vol = v;
+      if (gain) gain.gain.value = v;
+    },
+    setVolume: (v?: number) => {
+      if (v === undefined) return;
+      vol = v;
+      if (gain) gain.gain.value = v;
+    },
+  };
+};
+
+/* ---------- 兜底:HTMLAudioElement(没有 WebAudio 的老 WebView) ---------- */
+function audioElementFactory(assetPath: string) {
   let el = audioElCache.get(assetPath);
   if (!el) {
     el = new Audio();
@@ -182,22 +392,18 @@ const audioFactory = (assetPath: string) => {
     audioElCache.set(assetPath, el);
   }
   el.src = assetPath; // 同值赋值是幂等操作,不会重新发起加载
-  let wantPlay = false; // lottie 期望该音频处于播放状态
+  let wantPlay = false;
   let retryHandler: (() => void) | null = null;
 
-  // play() 只有较新的浏览器才返回 Promise;返回 undefined 时无从得知是否被自动播放策略拦截
   const tryPlay = () => {
     const p = el.play();
     if (p && typeof (p as Promise<void>).catch === 'function') {
       (p as Promise<void>).catch((e: any) => {
-        // 自动播放被浏览器拦截:等待首次用户交互后重试(仅当 lottie 仍期望播放时)
-        if (e && e.name === 'NotAllowedError' && wantPlay && !retryHandler) {
-          console.warn('[AUDIO] 自动播放被浏览器拦截,等待用户交互后重试');
+        if (wantPlay && !retryHandler) {
           const onGesture = () => {
             window.removeEventListener('pointerdown', onGesture);
             window.removeEventListener('keydown', onGesture);
             retryHandler = null;
-            // 延迟到点击事件处理完成后:若点击的是播放按钮(会暂停动画),此时 wantPlay 已为 false,跳过重试避免"开始又立即暂停"
             window.setTimeout(() => { if (wantPlay) tryPlay(); }, 0);
           };
           retryHandler = onGesture;
@@ -215,10 +421,10 @@ const audioFactory = (assetPath: string) => {
     seek: (t?: number) => { if (t !== undefined) el.currentTime = t; return el.currentTime; },
     playing: () => !el.paused && !el.ended,
     rate: (r?: number) => { if (r !== undefined) el.playbackRate = r; },
-    volume: setVolume, // 运行时实际调用
-    setVolume, // 类型声明要求
+    volume: setVolume,
+    setVolume,
   };
-};
+}
 
 /* ④ 声音优先加载:页面启动即预载两套音效(文件很小),音频请求先于大体积
  * 动画数据包发出;配合「数据按需加载」,用户触发播放时音效已就绪(不再卡顿)。 */
@@ -227,6 +433,16 @@ function prefetchAudios() {
   audioFactory(exposedAudioUrl);
 }
 void prefetchAudios();
+
+/* 开发期诊断钩子(生产构建里整段被摇掉):音频走没走 WebAudio、解码了几段、重启了几次。
+ * 手机上的"没声音 / 重复开头 / 延迟"三类问题都靠这三个读数判定。 */
+if (import.meta.env.DEV) {
+  (window as any).__audioDbg = {
+    ctxState: () => (audioCtx ? audioCtx.state : 'none'),
+    buffers: () => Array.from(audioBufferCache.keys()).map((k) => k.slice(0, 40)),
+    starts: () => audioStartCount,
+  };
+}
 
 /* 在 lottie 的 AnimationItem.destroy 中先暂停音频:
  * 动画销毁(切换/重建/导出结束)时 lottie 不会暂停音频层,若不处理,
@@ -1971,16 +2187,24 @@ async function loadData(data: any, name: string) {
     attachAnimHost(host);
     animHost = host;
     /* lottie 实例化:renderer 由下拉框决定(SVG / Canvas 是两条不同的渲染管线,patch 也不同);
-     * autoplay 恒开 —— 是否循环由 chkLoop 控制;音效走上面注入的 audioFactory(修复 Howl 缺失导致的崩溃)。 */
+     * autoplay 默认开(进编辑器即播),但**开始页在前台时关掉** —— 那一屏用户看的是开始页,
+     * 画布背后自动播放既白烧 GPU 也会出声。是否循环由 chkLoop 控制;
+     * 音效走上面注入的 audioFactory(修复 Howl 缺失导致的崩溃)。 */
     anim = lottie.loadAnimation({
       container: host,
       renderer: selRenderer.value === 'canvas' ? 'canvas' : 'svg',
       loop: chkLoop.checked,
-      autoplay: true,
+      autoplay: !startViewIsHome,
       animationData: data,
       audioFactory,
     });
     (anim as any).__dfGlyph = !!(data?.chars && data.chars.length);
+    /* 关键标记:这个实例是不是在"编辑器还隐藏着"的时候建出来的。
+     * 隐藏时舞台 clientWidth/Height 都是 0,lottie 会按 0 尺寸算出一批内部量
+     * (容器测量、文字度量、纹理尺寸),而它们**不会**因为容器后来变大而自动重算 ——
+     * 表现就是整段动画糊成一团,得换一套动画重建实例才恢复(用户复现的正是这个)。
+     * 记下来,进编辑器时直接重建一次,而不是指望 resize() 能补救。 */
+    if (startViewIsHome) builtWhileHidden = true;
     host.classList.remove('is-staging'); // 换动画是整段替换,没有可保留的旧画面,直接显示
     patchAudioDestroy(anim);
     (window as any).__anim = anim;
@@ -2043,6 +2267,10 @@ function onRebuiltReady() {
  * finishAppLoading 只置标志位;帧范围与时长滑块都是「按当前数据重算后覆盖」,天然幂等。 */
 function onAnimReady() {
   finishAppLoading(); // 主动画就绪:放行进度条走到 100% 后再隐藏加载界面
+  /* 开始页还盖在前面时(首次启动就是这种情况),把预览停在首帧:
+   * 用户看的是开始页,画布背后不该已经在放动画,更不该有音效(autoplay 是开着的)。
+   * 进编辑器时保持暂停 —— 播放按钮就在手边,按空格即播。 */
+  if (startViewIsHome) pauseForStartView();
   updateFrameRange();
   updateTransport();
   syncDurationSlider();
@@ -2375,6 +2603,8 @@ selRenderer.addEventListener('change', () => {
 // 空格 = 播放/暂停;焦点在输入控件上时不抢按键(否则输入框里打不出空格,按钮也无法用空格触发)
 window.addEventListener('keydown', (e) => {
   if (e.code !== 'Space') return;
+  // 开始页在前台:画布是盖住的,空格不该让背后的动画偷偷播起来(还有音效)
+  if (startViewIsHome) return;
   // 动画画廊打开时焦点可能落在面板空白处,这时空格不应该穿透到播放/暂停
   if (animPickerOpen()) return;
   const t = e.target as HTMLElement | null;
@@ -8145,7 +8375,12 @@ async function switchAnimation(key: string) {
   syncAllRangeFills();
   /* 区块跳转条:先按"刚刚切换过的显隐"重画一遍,数据渲染完在 onAnimReady 里再画一遍 */
   renderSideNav();
-  void loadData(data, def.label);
+  /* 等 loadData 真的建好实例再返回(原来这里是 void)。
+   * 原因只有一个但很具体:开始页点卡片时,"关掉开始页"与"构造 lottie 实例"是两条并行路径,
+   * void 的话关页面会先发生,而实例构造时读到的 startViewIsHome 已经是 false,
+   * 于是动画在用户还没看到编辑器时就开始播了(还带音效)。await 之后顺序是确定的:
+   * 先把实例以"暂停"建好,再淡出开始页。 */
+  await loadData(data, def.label);
 }
 /* ---------- 视频导出 ---------- */
 // 导出单飞锁:导出期间为 true,再次点击导出按钮直接返回。
@@ -8507,10 +8742,16 @@ const IS_MOBILE = (() => {
     // ⑤ 兜底:粗指针 + 多触点 + 小屏 = 手机/平板,哪怕 UA 自称桌面
     const shortSide = Math.min(window.screen?.width || 9999, window.screen?.height || 9999);
     const touchDesktopMode = coarse && touchPoints > 1 && shortSide <= 1000;
+    /* ⑥ 原生信号(最权威,排第一):Tauri 在 Android 上注入 window.__DFAE_MOBILE__ = true
+     * (见 src-tauri/src/lib.rs 的 DFAE_PLATFORM_JS)。这条以前**只被桥接层自己用**于
+     * 「保存到相册」的分流,UI 从来没读过 —— 结果就是安卓 APK 里 UA / 指针判定一旦失手,
+     * 整个前端按桌面端渲染,手机上看到的就是桌面布局。现在把它当唯一权威:
+     * 原生说这是移动端,就一定是移动端。 */
+    const nativeMobile = (window as any).__DFAE_MOBILE__ === true;
     if (import.meta.env.DEV) {
-      (window as any).__mobileDetect = { uaMobile, chMobile, coarse, touchPoints, iPadDesktop, shortSide, touchDesktopMode };
+      (window as any).__mobileDetect = { nativeMobile, uaMobile, chMobile, coarse, touchPoints, iPadDesktop, shortSide, touchDesktopMode };
     }
-    return uaMobile || chMobile || iPadDesktop || touchDesktopMode;
+    return nativeMobile || uaMobile || chMobile || iPadDesktop || touchDesktopMode;
   } catch { return false; }
 })();
 
@@ -10713,7 +10954,10 @@ function openAnimPicker() {
   playGalleryEntrance();
   renderAnimGallery();
   paintAnimCursor(true);
-  animSearch.focus();
+  /* 自动聚焦搜索框是**桌面端的键盘捷径**:打开就能直接打字。
+   * 手机上聚焦 = 立刻弹起输入法,把刚打开的画廊顶掉半屏,
+   * 而手机用户本来就是想先看看列表 —— 所以手机端不抢焦点。 */
+  if (!IS_MOBILE) animSearch.focus();
 }
 /* 画廊入场:给网格挂 .is-entering,一帧后摘掉,后续重画不再带动效。 */
 let galleryEntranceTimer: number | undefined;
@@ -10840,6 +11084,8 @@ document.addEventListener('keydown', (e) => {
  * 否则编辑文字图层时打不出「/」(与空格播放的守卫同一套判断)。 */
 window.addEventListener('keydown', (e) => {
   if (animPickerOpen()) return;
+  // 开始页有自己的动画联系表:斜杠 / Ctrl+K 不再叠一层画廊
+  if (startViewIsHome) return;
   const t = e.target as HTMLElement | null;
   const typing = !!t && (['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable);
   const modK = (e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K');
@@ -10903,3 +11149,102 @@ initMobileUI({
   },
   resetView,
 });
+
+/* ==================== 应用外壳(主页 / 编辑器 / 下载列表 / 关于) ====================
+ * 结构在 index.html 的 #appRail 与 #viewHome / #viewAbout,逻辑在 src/app-shell 对应的
+ * src/start-screen.ts,桌面样式在 style.css(9.5 节),手机样式在 mobile.css(第 11 节)。
+ *
+ * 本文件只负责与编辑器状态有关的三件事:
+ *   1) 告诉外壳"当前是哪一套 / 上次是哪一套 / 怎么切过去"(回调);
+ *   2) 不在编辑器页时**把预览停下**(否则画布背后在放动画、音效还会响);
+ *   3) 进编辑器的"落地"动作(pulseStage)。
+ * 页面状态只有一处权威:<html data-page> —— 变更时广播 dfae:viewchange,
+ * mobile.ts 的首次手势提示等在这条事件上。
+ * (startViewIsHome 这个标志声明在文件靠上的位置:loadData 要读它,见那里的说明。) */
+
+/* 从主页 / 关于切回编辑器时补一次"舞台重新量一次"。
+ *
+ * 为什么必须有:主页在前台时编辑器是 display:none,舞台 clientWidth/Height 都是 0。
+ * 这时候建出来的 lottie 实例是按 0 尺寸量的(内部 SVG 的绘制尺寸跟着 0),
+ * 只把容器显示出来并不会让它自己重新测量 —— 表现就是整段动画被压成一团,
+ * 必须"换一套动画再换回来"(重建实例)才恢复。用户报的正是这个。
+ *
+ * 这里做三件事:重算适配(applyFit 会写回画布框尺寸与 baseScale)、
+ * 让 lottie 按新容器尺寸重新测量(resize)、再同步一遍播放条读数。
+ * 用两次 rAF:第一次等 hidden 撤掉后的布局生效,第二次等浏览器真的量过一遍。 */
+function refitStage(): void {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      applyFit();
+      try {
+        /* resize 必须带上明确尺寸:lottie 的 resize(width, height) 会把这两个值
+         * 直接写进 SVG / canvas 的宽高属性,不传就是 undefined(等于把画布尺寸写成
+         * "undefined"),那只会更糟。 */
+        if (anim && currentData && typeof (anim as any).resize === 'function') {
+          (anim as any).resize(currentData.w, currentData.h);
+        }
+      } catch { /* 个别渲染器没有 resize,忽略即可 */ }
+      syncAllRangeFills();
+      updateViewTransform();
+    });
+  });
+}
+
+/* 停在首帧并同步播放按钮:只改动画与传输条状态,不动任何布局 */
+function pauseForStartView(): void {
+  if (!anim) return;
+  anim.goToAndStop(FIRST_REL_FRAME, true);
+  updateTransport();
+}
+
+window.addEventListener('dfae:viewchange', (e) => {
+  const detail = (e as CustomEvent<{ view?: string }>).detail;
+  startViewIsHome = (detail && detail.view) !== 'editor';
+  if (startViewIsHome) pauseForStartView();
+});
+
+/** 主进程桥接(见 electron/preload.cjs)。网页版是 undefined,所有桌面分支据此短路。 */
+const desktopBridge: any = (window as any).dfaeDesktop;
+const downloadsBridge: any = (window as any).dfaeDownloads;
+
+const appShell = initAppShell({
+  isMobile: IS_MOBILE,
+  isDesktopApp: !!desktopBridge && desktopBridge.isDesktop === true,
+  hasExportDir: !!downloadsBridge && typeof downloadsBridge.reveal === 'function',
+  version: __APP_VERSION__,
+  getInfo: async () => (desktopBridge && typeof desktopBridge.getInfo === 'function' ? await desktopBridge.getInfo() : null),
+  openExportDir: async () => {
+    if (!downloadsBridge || typeof downloadsBridge.reveal !== 'function') return false;
+    /* reveal('') = 打开导出目录本身(见 electron/main.cjs 的 dfae:downloads-reveal)。 */
+    return !!(await downloadsBridge.reveal(''));
+  },
+  currentKey: () => currentAnimKey,
+  lastKey: () => animRecent[0] || '',
+  labelOf: (key: string) => {
+    const def = animDef(key);
+    return def ? def.label : '';
+  },
+  open: async (key: string) => {
+    if (key !== currentAnimKey) await switchAnimation(key);
+    /* 打开的就是当前这一套时 switchAnimation 不会跑,也就不会记「最近使用」——
+     * 这里补一次,否则主页会一直写着「还没有打开过动画」。 */
+    else noteAnimUsed(key);
+  },
+  openDownloads: () => { void openDownloads(); },
+  /* 应用内更新的桥(下载 / 校验 / 启动安装器都在主进程,见 electron/main.cjs 5c 段) */
+  desktop: desktopBridge,
+  onEnterEditor: () => {
+    pulseStage();
+    /* 第一次进编辑器:如果实例是在隐藏期间建的,内部尺寸都是按 0×0 算出来的,
+     * 补适配 / resize 都救不回来 —— 直接重建一次(与用户手动"换一套再换回来"同一个动作,
+     * 只是自动做掉)。此时还不可能有用户编辑,所以重建不会丢东西。
+     * 其它情况(实例本来就是可见时建的)只补一次适配 + resize,成本几乎为零。 */
+    if (builtWhileHidden && currentData) {
+      builtWhileHidden = false;
+      void loadData(currentData, currentName);
+      return;
+    }
+    refitStage();
+  },
+});
+void appShell;

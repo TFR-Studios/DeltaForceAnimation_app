@@ -1,5 +1,11 @@
 /* 顶栏内联制作声明验证:并入顶栏、不增加顶栏高度、文案一致、不影响顶栏控件与状态栏 */
+import fs from 'node:fs';
+import path from 'node:path';
 import puppeteer from 'puppeteer-core';
+
+/* 截图落到 release/verify/(以前写死的是项目搬家前的绝对路径,一跑就 ENOENT 中断) */
+const SHOT_DIR = path.join(process.cwd(), 'release', 'verify');
+fs.mkdirSync(SHOT_DIR, { recursive: true });
 const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const out = []; let failures = 0;
@@ -80,8 +86,8 @@ check('单行胶囊且高度小于顶栏内容', s1.visible && s1.oneLine, 'note
 check('预览区已上移(比横幅方案多出约一行空间)', s1.stageTop <= 70, 'stageTop=' + s1.stageTop);
 check('桌面宽度无横向滚动', s1.overflowX <= 0, 'overflowX=' + s1.overflowX);
 const noteEl = await page.$('.craft-note');
-await noteEl.screenshot({ path: 'I:/Delta Force custom animation/tools/craft-note-badge.png' });
-await page.screenshot({ path: 'I:/Delta Force custom animation/tools/craft-note-firstscreen.png', clip: { x: 0, y: 0, width: 1700, height: 230 } });
+await noteEl.screenshot({ path: path.join(SHOT_DIR, 'craft-note-badge.png') });
+await page.screenshot({ path: path.join(SHOT_DIR, 'craft-note-firstscreen.png'), clip: { x: 0, y: 0, width: 1700, height: 230 } });
 
 // 状态栏不受影响
 await page.evaluate(() => { const el = document.querySelector('#statusbar'); window.__err = (() => { const b = getComputedStyle(el).color; el.classList.add('error'); const a = getComputedStyle(el).color; el.classList.remove('error'); return [b, a]; })(); });
@@ -98,7 +104,7 @@ for (const w of [1280, 1024, 768, 390]) {
   await sleep(500);
   const s = await probe();
   check(w + 'px:无横向滚动且声明可见', s.overflowX <= 0 && s.visible && s.text === EXPECT, 'overflowX=' + s.overflowX + ' noteH=' + s.noteH);
-  if (w === 390) await (await page.$('.craft-note')).screenshot({ path: 'I:/Delta Force custom animation/tools/craft-note-mobile.png' });
+  if (w === 390) await (await page.$('.craft-note')).screenshot({ path: path.join(SHOT_DIR, 'craft-note-mobile.png') });
 }
 await page.setViewport({ width: 1700, height: 1000 });
 await sleep(400);

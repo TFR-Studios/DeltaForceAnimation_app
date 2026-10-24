@@ -79,32 +79,35 @@ export function initTheme(): DfTheme {
   return theme;
 }
 
-/* ---------- 顶栏主题开关 ---------- */
-/* 结构:<div class="theme-switch" role="group"> + 两个 <fluent-toggle-button>。
- * 文案写在按钮的 light DOM 里(走 Fluent 的默认 slot),不写进 shadowRoot:
- * 把字塞进 shadow 的 .content 会让 light DOM 变成空的,读屏与复制都拿不到文字。 */
-const themeButtons: Partial<Record<DfTheme, HTMLElement>> = {};
+/* ---------- 主题开关(顶栏 / 开始页共用一套逻辑) ----------
+ * 结构:<div class="theme-switch" role="group"> + 两枚图标按钮 + 一枚滑动指示器。
+ * 文案不进 shadowRoot:读屏与复制都要能拿到 aria-label 与 title。
+ *
+ * 为什么是"多个实例"而不是只有一个:开始页是一整块盖住顶栏的独立表面,
+ * 它自己也需要主题开关(进编辑器之前就能切主题)。两份控件必须是**同一个状态** ——
+ * 所以下面用 themeGroups 记下所有已挂载的开关,syncThemeSwitch 一次同步全部。
+ * 早前的实现把按钮引用存在两个全局变量里,加第二个开关时那种写法会静默只同步一个。 */
+const themeGroups: HTMLElement[] = [];
 
 /** 把两个按钮的引用与点击接线一起装好。
  *  接线挂在按钮自身而不是 document 上:单个元素的监听与它的生命周期一致,
  *  不会因为"另一个模块先跑了一遍初始化"而被 window 上的去重标志挡掉
  *  (之前那版用 document 捕获 + window 标志去重,结果第二次进入就再也不响应了)。 */
-function bindThemeButtons(light: HTMLElement, dark: HTMLElement): void {
-  themeButtons.light = light;
-  themeButtons.dark = dark;
+function bindThemeButtons(group: HTMLElement, light: HTMLElement, dark: HTMLElement): void {
   for (const [key, btn] of [['light', light], ['dark', dark]] as [DfTheme, HTMLElement][]) {
     if (btn.dataset.dfBound === '1') continue;
     /* 键盘:Enter / 空格在原生 <button> 上会产生 click,走同一条路,
-     * 但方向键切换是分段控件的惯例,顺手补上(aria 语义仍是 pressed 而不是 tab)。 */
+     * 但方向键切换是分段控件的惯例,顺手补上(aria 语义仍是 pressed 而不是 tab)。
+     * 方向键只在这一组内部移动:页面上有两组开关时,不能把焦点丢到另一组去。 */
     btn.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       e.preventDefault();
-      const other = key === 'light' ? themeButtons.dark : themeButtons.light;
+      const other = group.querySelector<HTMLElement>('.theme-btn[data-theme="' + (key === 'light' ? 'dark' : 'light') + '"]');
       other?.focus();
       other?.click();
     });
     btn.dataset.dfBound = '1';
-    /* 鼠标点、键盘 Enter/空格,在 Fluent 按钮上都会走到同一个 click 事件。 */
+    /* 鼠标点、键盘 Enter/空格,在按钮上都会走到同一个 click 事件。 */
     btn.addEventListener('click', () => applyTheme(key));
   }
 }
@@ -115,18 +118,17 @@ function syncThemeSwitch(): void {
    * 早期版本为了让"浅色/深色"两段文字跟主题变,在这里写 textContent,
    * 结果把图标整个覆盖成了两个汉字。当前主题的可读性由 aria-pressed / aria-label 负责。 */
   const entries: DfTheme[] = ['light', 'dark'];
-  for (const key of entries) {
-    const btn = themeButtons[key];
-    if (!btn) continue;
-    /* 选中态由 aria-pressed + .is-current 表达(颜色/指示器位置都写在样式表里);
-     * 指示器位置用一个 CSS 变量交给样式表,避免为了滑一格去读两个按钮的几何。 */
-    const on = key === theme;
-    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    btn.classList.toggle('is-current', on);
-    if (on) {
-      const group = btn.parentElement;
-      if (group) group.dataset.current = key;
+  for (const group of themeGroups) {
+    for (const key of entries) {
+      const btn = group.querySelector<HTMLElement>('.theme-btn[data-theme="' + key + '"]');
+      if (!btn) continue;
+      const on = key === theme;
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.classList.toggle('is-current', on);
     }
+    /* 指示器位置由 data-current 决定(见 style.css 的 .theme-indicator),
+     * 所以两格都要写:不写就是"停在默认那一格"。 */
+    group.dataset.current = theme;
   }
 }
 
@@ -139,14 +141,15 @@ const THEME_ICONS: Record<DfTheme, string> = {
   light: '<circle cx="8" cy="8" r="3.2"/><path d="M8 .5v2.2M8 13.3v2.2M15.5 8h-2.2M2.7 8H.5M13.3 2.7l-1.55 1.55M4.25 11.75 2.7 13.3M13.3 13.3l-1.55-1.55M4.25 4.25 2.7 2.7"/>',
 };
 
-/** 在顶栏末尾插入主题开关。
+/** 在一个宿主元素末尾挂一枚主题开关(顶栏 / 开始页头部各一枚)。
  *  结构:.theme-switch(分段控件外壳)> .theme-indicator(滑动指示器)+ 两个图标按钮。
  *  为什么不再用 <fluent-toggle-button>:Fluent 按钮的最小宽度 96px、盒模型画在宿主上,
  *  两个并排会把顶栏撑开近 200px;而分段控件的正确形态是一个外壳 + 一个会滑动的指示器。
- *  这里保留 Fluent 的设计语言(实心指示器、圆角、焦点环、aria 状态),只是自己画盒模型。 */
-function mountThemeSwitch(): void {
-  const topbar = document.querySelector('.topbar');
-  if (!topbar || topbar.querySelector('.theme-switch')) return;
+ *  这里保留 Fluent 的设计语言(实心指示器、圆角、焦点环、aria 状态),只是自己画盒模型。
+ *
+ *  宿主自己已经有一枚就什么都不做 —— 同一个宿主挂两次会让指示器叠成两层。 */
+export function mountThemeSwitch(host: Element | null): void {
+  if (!host || host.querySelector('.theme-switch')) return;
 
   const group = document.createElement('div');
   group.className = 'theme-switch';
@@ -175,21 +178,27 @@ function mountThemeSwitch(): void {
     mk('light', '浅色主题(页面底 #f2f2f4)'),
     mk('dark', '深色主题(页面底 #242424)'),
   );
-  topbar.append(group);
+  host.append(group);
+  themeGroups.push(group);
 
   const light = group.querySelector<HTMLElement>('.theme-btn[data-theme="light"]');
   const dark = group.querySelector<HTMLElement>('.theme-btn[data-theme="dark"]');
-  if (light && dark) bindThemeButtons(light, dark);
+  if (light && dark) bindThemeButtons(group, light, dark);
   /* 初始位置不允许有动画:首屏应该直接就是"当前主题已经选中"的样子,
    * 让指示器从左边滑过来属于编排式入场(规范 6 明确禁止)。 */
   group.dataset.ready = '1';
   syncThemeSwitch();
 }
 
-/** 启动时调用一次:定主题 + 挂主题开关。
+/** 启动时调用一次:定主题 + 把主题开关挂到每个宿主上。
  *  同步完成、不返回 Promise —— main.ts 顶层的 $('...') 与事件绑定都在它之后,
- *  组件注册等异步部分已由 src/ui-upgrade.ts 的顶层 await 保证完成。 */
+ *  组件注册等异步部分已由 src/ui-upgrade.ts 的顶层 await 保证完成。
+ *
+ *  宿主是 index.html 里的两个占位:顶栏(编辑器)与开始页头部。
+ *  开始页在被跳过时(自动化脚本 / Electron 自检)也只是"挂好了但看不见",没有额外代价。 */
 export function initThemeAndSwitch(): void {
   initTheme();
-  mountThemeSwitch();
+  for (const host of document.querySelectorAll('[data-theme-switch-host]')) mountThemeSwitch(host);
+  /* 兜底:骨架里没打标记时仍然把顶栏那枚挂上(历史页面结构保持不变也能用)。 */
+  mountThemeSwitch(document.querySelector('.topbar'));
 }

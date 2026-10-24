@@ -62,6 +62,8 @@ function resolveMobile(isMobile: boolean): boolean {
     const q = new URLSearchParams(location.search).get('ui');
     if (q === 'mobile') return true;
     if (q === 'desktop') return false;
+    /* 原生信号优先于任何启发式:安卓壳里一律走手机 UI,除非显式 ?ui=desktop 调试。 */
+    if ((window as any).__DFAE_MOBILE__ === true && q === null) return true;
     const saved = localStorage.getItem('dfae.ui.mobile');
     if (saved === '1') return true;
     if (saved === '0') return false;
@@ -982,14 +984,34 @@ export function initMobileUI(hooks: MobileHooks): void {
   let hintShown = false;
   try { hintShown = sessionStorage.getItem('dfae.ui.mHint') === '1'; } catch { /* ignore */ }
   if (!hintShown) {
-    window.setTimeout(() => hint.classList.add('is-show'), 1600);
-    window.setTimeout(() => {
-      hint.classList.remove('is-show');
-      try { sessionStorage.setItem('dfae.ui.mHint', '1'); } catch { /* ignore */ }
-      /* 淡出之后把节点真的摘掉:它身上挂着 backdrop-filter(10px 模糊),
-       * 留在一个会动的画布上方等于常驻一层"每帧都要重算背景"的模糊层。 */
-      window.setTimeout(() => hint.remove(), 420);
-    }, 9000);
+    /* 开始页在前台时先不排期:那 9 秒里用户很可能还在开始页选动画,提示会白白播给
+     * 一块被盖住的画布看。等真正进了编辑器再开始计时(dfae:viewchange 由
+     * src/start-screen.ts 广播;没挂开始页时 dataset.view 一开始就是 editor)。 */
+    const scheduleHint = (): void => {
+      window.setTimeout(() => hint.classList.add('is-show'), 1600);
+      window.setTimeout(() => {
+        hint.classList.remove('is-show');
+        try { sessionStorage.setItem('dfae.ui.mHint', '1'); } catch { /* ignore */ }
+        /* 淡出之后把节点真的摘掉:它身上挂着 backdrop-filter(10px 模糊),
+         * 留在一个会动的画布上方等于常驻一层"每帧都要重算背景"的模糊层。 */
+        window.setTimeout(() => hint.remove(), 420);
+      }, 9000);
+    };
+    /* 判据是"不是 editor"而不是"等于 home":本模块在 main.ts 里先于开始页初始化,
+     * 此刻 data-view 还没写(开始页初始化时才写并广播)。写成 === 'home' 会让第一屏
+     * 永远命中 else 分支,提示照样在开始页背后数完 9 秒。 */
+    if (document.documentElement.dataset.view !== 'editor') {
+      const onView = (e: Event): void => {
+        const detail = (e as CustomEvent<{ view?: string }>).detail;
+        if (!detail || detail.view !== 'editor') return;
+        window.removeEventListener('dfae:viewchange', onView);
+        /* 再等 600ms:进编辑器的 200ms 淡出走完、舞台落定也播过一轮,提示才看得清 */
+        window.setTimeout(scheduleHint, 600);
+      };
+      window.addEventListener('dfae:viewchange', onView);
+    } else {
+      scheduleHint();
+    }
   }
 
   /* 播放状态由 main.ts 维护,这里跟着它同步悬浮按钮的图标与文案。

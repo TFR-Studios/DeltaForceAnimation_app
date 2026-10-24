@@ -28,3 +28,7 @@ declare module '*.mp3?url' {
   const url: string;
   export default url;
 }
+
+/* 构建期注入的应用版本(来源:package.json 的 version,见 vite.config.ts 的 define)。
+ * 网页版 / 手机版拿不到 Electron 的 app.getVersion(),开始页的版本号与更新检查靠它。 */
+declare const __APP_VERSION__: string;

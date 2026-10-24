@@ -633,6 +633,171 @@ html[data-ui='mobile'] .m-hint b { color: var(--text); font-weight: 700; }
   html[data-ui='mobile'] .m-ctrl > label { min-height: 34px; }
 }
 
+/* ---------- 11. 应用外壳:底部标签栏 + 页面(手机 / 平板) ----------
+ * 结构与桌面是同一份 DOM(见 index.html 的 .app-body / .rail / .page),这里只改形态:
+ *   · 桌面在左边的导航轨 → 手机上变成**底部标签栏**(拇指可达,Android/iOS 的系统惯例);
+ *   · 下载列表整项不出现(手机落点是系统相册);
+ *   · 页面只有一列,主按钮通栏 48px、次按钮 46px;
+ *   · 标签栏高度 58px + 安全区,状态栏在它上面一行。
+ * 逻辑仍然共用一份 src/start-screen.ts —— 这里只有样式。 */
+
+/* display:contents 让 .rail / 页面 / 状态栏成为 body 的直接 flex 子项 ——
+ * 只有这样才能把标签栏排到**最底部**(状态栏之上是它的上方),
+ * 否则标签栏会卡在状态栏上面,底下多出一条 30px 的缝(实测过)。 */
+html[data-ui='mobile'] .app-body {
+  display: contents;
+}
+html[data-ui='mobile'] .layout,
+html[data-ui='mobile'] .page { order: 1; flex: 1 1 auto; min-height: 0; }
+html[data-ui='mobile'] .statusbar { order: 2; }
+
+/* 导航轨 → 底部标签栏:四格等宽,图标在上文字在下 */
+html[data-ui='mobile'] .rail {
+  order: 3;
+  flex: none;
+  flex-direction: row;
+  width: 100%;
+  /* 底部 inset 取 max(安全区, 12px):WebView 若是 edge-to-edge 而 env() 报 0,
+     底栏就会正好压在系统手势条上 —— 那几十像素的点击会被系统吃掉,
+     表现就是"底栏能看见、点了没反应"。抬 12px 让每一格都落在可点区域里。 */
+  --m-bar-inset: max(env(safe-area-inset-bottom, 0px), 12px);
+  padding: 0 var(--m-safe-r) var(--m-bar-inset) var(--m-safe-l);
+  height: calc(56px + var(--m-bar-inset));
+  /* 保险丝:面板 / 浮层若在底部留了透明命中区(z-index 低于这层),标签栏仍然点得到。
+     30 高于 .layout 与 .side-panel(它们没有自己的 z-index 或更低),低于浮层(9000+)。 */
+  position: relative;
+  z-index: 30;
+  background: var(--surface);
+  border-right: none;
+  border-top: 1px solid var(--line);
+}
+html[data-ui='mobile'] .rail-items {
+  flex: 1;
+  flex-direction: row;
+  gap: 0;
+}
+html[data-ui='mobile'] .rail-item {
+  position: relative;
+  flex: 1 1 0;
+  height: 100%;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow: visible; /* 指示条要贴在标签栏顶边,不能被裁 */
+  /* 触屏命中区:整格都是按钮,宽度天然够,高度 56px 也够 */
+  touch-action: manipulation;   /* 去掉 300ms 双击缩放等待,点下去立刻响应 */
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  transition: color var(--dur) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+html[data-ui='mobile'] .rail-item .bi {
+  width: 19px;
+  height: 19px;
+  transition: transform 220ms var(--ease-out), color var(--dur) var(--ease);
+}
+html[data-ui='mobile'] .rail-item:hover { background: transparent; border: none; }
+/* 按下:整格压深一档 + 图标轻微缩小,给"手指已经打中"一个即时反馈(iOS/Android 都这么做) */
+html[data-ui='mobile'] .rail-item:active { background: var(--surface-hover); transform: none; }
+html[data-ui='mobile'] .rail-item:active .bi { transform: scale(0.88); }
+/* 文字在手机上不参与折叠逻辑:直接恢复常显 */
+html[data-ui='mobile'] .rail-item span { max-width: none; opacity: 1; }
+/* 选中态:手机上不用"实心浅底"那块(会变成一条突兀的色块),只用图文提亮 + 顶部 2px 指示条 */
+html[data-ui='mobile'] .rail-item.is-active {
+  background: transparent;
+  border: none;
+  color: var(--text);
+}
+html[data-ui='mobile'] .rail-item.is-active .bi { color: var(--text); transform: translateY(-1px); }
+/* 指示条:从中间"长"出来(scaleX 0.2→1),不是凭空出现 */
+html[data-ui='mobile'] .rail-item.is-active::before {
+  animation: tab-bar-in 260ms var(--ease-out) both;
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 28%;
+  right: 28%;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: var(--brand);
+}
+html[data-ui='mobile'] .rail-item { position: relative; }
+html[data-ui='mobile'] .rail-foot { display: none; }
+@keyframes tab-bar-in {
+  from { transform: scaleX(0.2); opacity: 0; }
+  to { transform: scaleX(1); opacity: 1; }
+}
+/* 底部标签栏没有"收起"这个概念;手机端整条 .rail-head 不出现 */
+html[data-ui='mobile'] .rail-head { display: none; }
+html[data-ui='mobile'][data-rail='collapsed'] .rail { width: 100%; }
+html[data-ui='mobile'][data-rail='collapsed'] .rail-item span { display: inline; }
+/* 手机端没有下载列表这一项(落点是系统相册) */
+html[data-ui='mobile'] #navDownloads { display: none; }
+
+/* ---------- 页面入场 ----------
+ * 换页时新页面淡入 + 上移 6px(见 start-screen.ts 的 showPage)。只在手机上播:
+ * 手机没有窗口边框做参照,一次轻微位移就能说明"我到了一个新地方";
+ * 桌面端切页保持瞬时(工具界面不该拖节奏)。 */
+html[data-ui='mobile'] .page.is-entering,
+html[data-ui='mobile'] .layout.is-entering {
+  animation: page-enter 220ms var(--ease-out) both;
+}
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- 状态栏 ----------
+ * 那条状态栏说的是编辑器的状态(第几帧 / 缩放 / 导出目录),在主页和关于页上是错位的噪音,
+ * 手机上还白占 30px。手机上只在编辑器页显示;桌面端保留(它是全窗口的底边)。 */
+html[data-ui='mobile']:not([data-page='editor']) .statusbar { display: none; }
+
+/* ---------- 页面内容 ---------- */
+html[data-ui='mobile'] .page-scroll {
+  max-width: none;
+  padding: var(--sp-5) var(--m-pad-r) var(--sp-6) var(--m-pad-l);
+}
+/* 手机上的主页同样居中:一屏里看到 logo / 标题 / 两个按钮就够,不留半屏空白 */
+html[data-ui='mobile'] .page-home .page-scroll {
+  min-height: 100%;
+  justify-content: center;
+}
+html[data-ui='mobile'] .home-logo { width: 44px; height: 44px; }
+html[data-ui='mobile'] .home-title {
+  max-width: none;
+  font-size: 26px;
+  line-height: 1.26;
+  letter-spacing: -0.022em;
+}
+html[data-ui='mobile'] .home-desc { font-size: 13px; line-height: 1.66; }
+html[data-ui='mobile'] .home-actions {
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+html[data-ui='mobile'] .home-primary { justify-content: center; width: 100%; height: 48px; font-size: 15px; }
+html[data-ui='mobile'] .home-ghost { justify-content: center; width: 100%; height: 46px; font-size: 13.5px; }
+
+html[data-ui='mobile'] .about-card { border-radius: var(--r-md); padding: 2px var(--sp-3); }
+html[data-ui='mobile'] .about-row { flex-wrap: wrap; gap: 6px; padding: 8px 0; min-height: 52px; }
+html[data-ui='mobile'] .about-label { width: 100%; }
+html[data-ui='mobile'] .about-actions { width: 100%; }
+html[data-ui='mobile'] .about-btn { height: 40px; padding: 0 var(--sp-3); }
+html[data-ui='mobile'] .about-path { flex: 1; }
+html[data-ui='mobile'] .update-link { height: 32px; padding: 0 12px; }
+html[data-ui='mobile'] .about-craft-card { padding: var(--sp-3); }
+
+/* 手机上的顶栏:动画选择器 / 下载入口只在编辑器页出现(与桌面同一套规则,
+ * 但手机端 .anim-switch 的 grid-area 由顶栏网格决定,隐藏时那一格自然空出) */
+html[data-ui='mobile']:not([data-page='editor']) .topbar { grid-template-rows: var(--topbar-h) var(--m-craft-h); }
+
 /* ---------- 10. 减少动效 ---------- */
 
 @media (prefers-reduced-motion: reduce) {

@@ -11,8 +11,16 @@ import path from 'node:path';
 /* 开发服务器端口固定 5173(而不是让 Vite 顺延到 5174/5175):
  * 预览与导出依赖 WebCodecs、File System Access 等能力,需要用 Chrome / Edge 打开,
  * 固定端口便于书签、脚本与本地校验工具复用同一地址。 */
+/* 应用版本号:开始页的版本显示与更新检查都要用。
+ * 从 package.json 读,和 electron-builder / Tauri 打包用的是同一个数字 ——
+ * 写死一份常量迟早会与安装包对不上(桌面端还会再用主进程的 app.getVersion() 覆盖一次)。 */
+const APP_VERSION = String(JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '0.0.0');
+
 export default defineConfig({
   server: { port: 5173 },
+  /* 构建期常量:src/vite-env.d.ts 里声明了 __APP_VERSION__ 的类型。
+   * 用 define 而不是 import package.json:后者会把整份 manifest 打进产物。 */
+  define: { __APP_VERSION__: JSON.stringify(APP_VERSION) },
   /* 构建配置:纯静态产物,除分包外没有特殊处理。
    * 注意 src/main.ts 里音频与动画 JSON 都走 ?url 以静态资源形式输出(按需下载),
    * 若把 assetsInlineLimit 调大到能覆盖它们,数据会被内联回 JS,分包与按需下载就一起失效了。 */

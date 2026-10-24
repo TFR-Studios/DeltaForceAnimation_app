@@ -32,10 +32,12 @@
  * ========================================================================== */
 'use strict';
 
-const { app, BrowserWindow, Menu, shell, dialog, session, Notification, nativeImage, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog, session, Notification, nativeImage, ipcMain, net } = require('electron');
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+/* 应用内更新:下载流写盘 + detached 启动安装器(见 5c 段) */
+const spawn = require('node:child_process').spawn;
 const { createDownloads } = require('./downloads.cjs');
 
 /* ---------------------------------------------------------------------------
@@ -567,7 +569,10 @@ async function bootstrap() {
     diagnostics.badResponses.push({ status: -1, error: d.error, method: d.method, url: d.url.slice(0, 300) });
   });
 
-  await mainWindow.loadURL(appOrigin + '/index.html');
+  /* 自检 / 布局审计直接进编辑器(?view=editor):它们量的是编辑器几何与导出链路,
+   * 开始页盖在上面会让截图与点击全部落在开始页上。开始页自己的回归在
+   * tools/verify-start-screen.mjs(它显式带 ?view=home)。 */
+  await mainWindow.loadURL(appOrigin + '/index.html' + (SMOKE || MEASURE ? '?view=editor' : ''));
 
   if (SMOKE) {
     const { runSmoke } = require('./smoke.cjs');
@@ -655,6 +660,228 @@ ipcMain.handle('dfae:info', () => ({
   exportDir: downloads ? downloads.dir() : '',
   historyFile: downloads ? downloads.historyFile() : '',
 }));
+
+/* ---------------------------------------------------------------------------
+ * 5b. 更新检查(开始页的「检查更新」)
+ *
+ * 为什么放在主进程:主进程用的是 Electron 的 net.fetch,它**走系统代理设置** ——
+ * 渲染进程的 fetch 不认系统代理,公司网络 / 代理后面就只剩"网络错误";
+ * 顺带也少一道跨域开关(api.gitcode.com 的 ACAO 是动态的:带 Origin 才给,
+ * 代理或网关一变就可能没有,不该把"能不能检查更新"押在这上面)。
+ *
+ * 顺序是 GitCode → GitHub,两个接口字段名一致(见 README「软件怎么做更新检查」),
+ * 所以解析只做一次。两个都失败时把每一源的失败原因一起返回:界面上要能区分
+ * "网络不可用"和"GitCode 挂了但 GitHub 顶上了",这决定了用户该不该换个时间再试。
+ * ------------------------------------------------------------------------- */
+const UPDATE_SOURCES = [
+  { id: 'gitcode', label: 'GitCode', url: 'https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/releases/latest' },
+  { id: 'github', label: 'GitHub', url: 'https://api.github.com/repos/TFR-Studios/DeltaForceAnimation_app/releases/latest' },
+];
+
+/** 带超时的 JSON 请求。超时用 AbortController:Promise.race 只是"不再等",请求还挂着。 */
+async function fetchReleaseJson(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 8000);
+  try {
+    const res = await net.fetch(url, {
+      signal: ctrl.signal,
+      headers: {
+        accept: 'application/json',
+        /* GitHub 的 API 对没有 User-Agent 的请求返回 403,这里显式给一个 */
+        'user-agent': 'DeltaForceAnimationEditor/' + app.getVersion(),
+      },
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+ipcMain.handle('dfae:check-update', async () => {
+  const tried = [];
+  for (const src of UPDATE_SOURCES) {
+    try {
+      const data = await fetchReleaseJson(src.url, 8000);
+      if (!data || !data.tag_name) throw new Error('返回内容里没有版本号');
+      return { ok: true, source: src.id, label: src.label, release: data };
+    } catch (e) {
+      tried.push(src.label + ': ' + ((e && e.message) || String(e)));
+    }
+  }
+  return { ok: false, tried };
+});
+
+/* ---------------------------------------------------------------------------
+ * 5c. 应用内更新:下载安装包 → 校验 → 启动安装器 → 退出自己
+ *
+ * 为什么能在应用内装:NSIS 安装包(oneClick,装到 %LOCALAPPDATA%)会**替换**掉正在运行的程序,
+ * 所以必须先退出自己再启动安装器 —— 运行中的 exe 在 Windows 上不允许被覆盖。
+ * 安装器是 detached 启动的:主进程退出后它还活着,装完由 runAfterFinish 自动拉起新版。
+ *
+ * 三条硬约束(改动这里之前先读):
+ *   1) 只允许从发行版站点下载 —— URL 走白名单,不然这个接口等于"任意地址下载并执行";
+ *   2) 只接受我方临时目录里的 .exe,并且校验 PE 头(MZ)—— 下载到一半的文件不能被当成安装包执行;
+ *   3) 便携版不能用这条路:它每次启动都解压到 %TEMP%,没有固定安装目录可替换,
+ *      所以便携版把 canSelfUpdate 报成 false,界面退回「前往下载」。
+ * ------------------------------------------------------------------------- */
+const UPDATE_DOWNLOAD_HOSTS = new Set([
+  'gitcode.com',
+  'api.gitcode.com',
+  'raw.gitcode.com',
+  'github.com',
+  'objects.githubusercontent.com',
+  'github-releases.githubusercontent.com',
+]);
+/* 安装包的落地目录:系统临时目录下的固定子目录,退出时不需要清理(系统会收)。 */
+function updateDownloadDir() {
+  const dir = path.join(app.getPath('temp'), 'dfae-update');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* 已存在 */ }
+  return dir;
+}
+/** 便携版判定:electron-builder 给便携版注入 PORTABLE_EXECUTABLE_DIR。 */
+const IS_PORTABLE = !!process.env.PORTABLE_EXECUTABLE_DIR;
+
+let updateJob = null; // { req, file, stream, cancelled, done }
+
+function sendUpdateProgress(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('dfae:update-progress', payload);
+  }
+}
+
+ipcMain.handle('dfae:update-capabilities', () => ({
+  canSelfUpdate: !IS_PORTABLE && process.platform === 'win32',
+  portable: IS_PORTABLE,
+  platform: process.platform,
+}));
+
+ipcMain.handle('dfae:update-download', async (_e, arg) => {
+  const rawUrl = String((arg && arg.url) || '');
+  const rawName = String((arg && arg.filename) || '');
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return { ok: false, error: '下载地址不合法' };
+  }
+  if (parsed.protocol !== 'https:') return { ok: false, error: '只允许 https 下载' };
+  if (!UPDATE_DOWNLOAD_HOSTS.has(parsed.hostname)) return { ok: false, error: '不在允许的下载站点内: ' + parsed.hostname };
+  if (!IS_PORTABLE && process.platform !== 'win32') return { ok: false, error: '当前平台不支持应用内安装' };
+
+  if (updateJob && !updateJob.done) return { ok: false, error: '已经有一个下载在进行中' };
+
+  /* 文件名:只保留安全字符,并且必须以 .exe 结尾(应用内安装只处理 Windows 安装包) */
+  const safeName = rawName.replace(/[\\/:*?"<>|]/g, '_').trim() || 'setup.exe';
+  if (!/\.exe$/i.test(safeName)) return { ok: false, error: '只支持下载 .exe 安装包' };
+  const dir = updateDownloadDir();
+  const file = path.join(dir, Date.now() + '-' + safeName);
+  const stream = fs.createWriteStream(file);
+
+  return await new Promise((resolve) => {
+    let received = 0;
+    let total = 0;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      updateJob = null;
+      try { stream.close(); } catch { /* ignore */ }
+      if (!result.ok) { try { fs.unlinkSync(file); } catch { /* ignore */ } }
+      resolve(result);
+    };
+
+    const req = net.request({ method: 'GET', url: parsed.toString(), redirect: 'follow' });
+    updateJob = { req, file, stream, done: false, cancelled: false };
+
+    req.on('response', (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        finish({ ok: false, error: '下载失败(HTTP ' + res.statusCode + ')' });
+        return;
+      }
+      total = Number(res.headers['content-length'] || 0) || 0;
+      sendUpdateProgress({ phase: 'start', received: 0, total, pct: 0 });
+      let lastSent = 0;
+      res.on('data', (chunk) => {
+        received += chunk.length;
+        stream.write(chunk);
+        const now = Date.now();
+        /* 进度事件按 120ms 节流:每块都发会把 IPC 通道塞爆,而进度条 8 帧/秒已经够顺 */
+        if (now - lastSent > 120 || (total && received >= total)) {
+          lastSent = now;
+          sendUpdateProgress({ phase: 'downloading', received, total, pct: total ? Math.min(99, Math.round((received / total) * 100)) : 0 });
+        }
+      });
+      res.on('end', () => {
+        stream.end(() => {
+          /* 校验:大小与 Content-Length 一致(拿不到 Content-Length 时跳过),
+           * 且文件头必须是 MZ —— 下载到一半的残包不能被当作安装器启动。 */
+          const size = (() => { try { return fs.statSync(file).size; } catch { return -1; } })();
+          if (total && size !== total) {
+            finish({ ok: false, error: '下载不完整(' + size + '/' + total + ' 字节)' });
+            return;
+          }
+          let head = Buffer.alloc(0);
+          try {
+            const fd = fs.openSync(file, 'r');
+            head = Buffer.alloc(2);
+            fs.readSync(fd, head, 0, 2, 0);
+            fs.closeSync(fd);
+          } catch { /* 读不到头就按失败处理 */ }
+          if (head.toString('latin1') !== 'MZ') {
+            finish({ ok: false, error: '下载下来的文件不是 Windows 可执行文件' });
+            return;
+          }
+          sendUpdateProgress({ phase: 'done', received, total: total || size, pct: 100 });
+          finish({ ok: true, path: file, size, name: safeName });
+        });
+      });
+      res.on('aborted', () => finish({ ok: false, error: '下载被中断' }));
+      res.on('error', (err) => finish({ ok: false, error: '下载出错: ' + (err && err.message) }));
+    });
+
+    req.on('error', (err) => finish({ ok: false, error: '下载失败: ' + (err && err.message) }));
+    req.end();
+  });
+});
+
+ipcMain.handle('dfae:update-cancel', () => {
+  if (!updateJob) return false;
+  updateJob.cancelled = true;
+  try { updateJob.req.abort(); } catch { /* ignore */ }
+  const file = updateJob.file;
+  updateJob = null;
+  try { if (file) fs.unlinkSync(file); } catch { /* ignore */ }
+  sendUpdateProgress({ phase: 'cancelled' });
+  return true;
+});
+
+ipcMain.handle('dfae:update-install', async (_e, arg) => {
+  const file = String((arg && arg.path) || '');
+  const dir = updateDownloadDir();
+  /* 只接受我们自己下载到临时目录里的文件:路径必须落在该目录内,且是 .exe */
+  const resolved = path.resolve(file);
+  if (!resolved.startsWith(path.resolve(dir) + path.sep)) return { ok: false, error: '安装包路径不在允许范围内' };
+  if (!/\.exe$/i.test(resolved)) return { ok: false, error: '不是安装包' };
+  if (!fs.existsSync(resolved)) return { ok: false, error: '安装包已被删除,请重新下载' };
+  try {
+    const fd = fs.openSync(resolved, 'r');
+    const head = Buffer.alloc(2);
+    fs.readSync(fd, head, 0, 2, 0);
+    fs.closeSync(fd);
+    if (head.toString('latin1') !== 'MZ') return { ok: false, error: '安装包损坏' };
+  } catch (e) {
+    return { ok: false, error: '安装包读取失败: ' + (e && e.message) };
+  }
+
+  /* detached + unref:主进程退出后安装器继续跑;oneClick 安装器装完会自动拉起新版
+   * (package.json 的 nsis.runAfterFinish 已经是 true)。 */
+  const child = spawn(resolved, [], { detached: true, stdio: 'ignore' });
+  child.unref();
+  setTimeout(() => { try { app.quit(); } catch { /* ignore */ } }, 400);
+  return { ok: true };
+});
 
 ipcMain.handle('dfae:open-external', (_e, url) => {
   const s = String(url || '');

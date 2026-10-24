@@ -558,6 +558,8 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 | `node tools/check-downloads.mjs` | 下载列表/下载历史的行为自检(纯 Node,57 项断言) |
 | `node tools/mobile-perf.mjs` | **移动端交互性能探针**:用 CDP 派发真实触摸,量平移 / 捏合 / 拖底部面板 / 拖时间轴四类拖动的帧间隔与样式重算,报告写进 `release/perf/`(支持 `--cpu` / `--dpr` / `--renderer` / `--inject` 做 A/B) |
 | `node tools/verify-mobile-touch.mjs` | **移动端触屏回归**(常驻,27 项):拖把手跟手与吸附、双击、单指平移、双指捏合、单击播放、长按复位、旋转停靠,以及拖动期间的样式重算 / 帧间隔预算 |
+| 关于页「下载并安装」 | 桌面**安装版**的应用内更新:主进程下载安装包 → 校验(大小 + PE 头 + 站点白名单)→ detached 启动 NSIS 安装器 → 自己退出。便携版 / 手机 / 网页仍走「前往下载」;安装包落在 %TEMP%\dfae-update |
+| `node tools/verify-app-shell.mjs` | **应用外壳回归**(常驻,30 项):默认停在主页、侧边导航轨 / 手机底部标签栏、主页不放动画列表、关于页承载检查更新、切页不销毁编辑器:结构 / 几何 / 文字 / 交互 / 状态,覆盖桌面(带假的主进程桥接)、浅色主题、1024 与 820 窄窗口、390px 手机壳;截图写进 `release/start/` |
 | `npm run build` | 仅构建前端 → `dist/`(类型检查 + Vite) |
 | `npm run icons` | 生成 `build/icon.ico` / `icon.png` |
 | `npm run dist` | 打包:免安装目录 + 便携版 |
