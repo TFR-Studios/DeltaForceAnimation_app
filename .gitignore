@@ -24,6 +24,9 @@ key.properties
 release/
 # CI / 本地打出来的待发布产物(发完之后就没有用了)
 /release-assets/
+# 发布自检下载/解包出来的目录(同理:几百 MB 的 exe/zip,不该进仓库)。
+# 之前漏了这条,曾经把一个 391 MB 的未推送提交带进本地历史(2b32297),详见 docs/RELEASE_NOTES_v1.0.5.md。
+/release-assets-check/
 # 注意:build/icon.ico / build/icon.png / build/splash.bmp **要提交**。
 # 它们是打包的输入(不是产物),而且由 npm run icons 生成时需要真的拉起 Electron;
 # CI 的 Windows runner 上没有可用的图形会话,让流水线依赖这一步很脆。

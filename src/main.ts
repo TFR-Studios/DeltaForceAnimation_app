@@ -22,8 +22,15 @@
  *   大战场弹窗动画(1920×1080,两行占位文字「主标题 / 内容」+ 一条 HUD 弹窗 + 一张可换的图标)、
  *   撤离点开启动画(1920×1080,一行状态文字 + 一张小图标 + 轨道遮罩形状 + 整幅黑底)。
  *
- * 编辑面板(所有编辑都是就地改渲染用的 JSON,再走 reRenderPreservingState() 单飞重建并恢复播放位置):
- *   • 文字 / 形状 / 图片图层列表 —— 顶层与被引用的预合成(assets[] 里的合成)内部都列出,预合成项名字带「合成名 ›」前缀;
+ * 编辑面板(编辑一律就地改渲染用的 JSON;文字另有「即时生效」通道,其余走双缓冲重建):
+ *   • 文字:onTextEdited 先把同一份文档直接写进正在显示的 lottie 实例(updateDocumentData +
+ *     强制重画当前帧),所以每敲一个字当帧就能看到;随后 180ms 防抖提交一次完整重建,
+ *     把底框宽度、字形表之类需要重建才能对齐的量补上(见 liveApplyText / scheduleTextRebuild)。
+ *   • 颜色 / 不透明度 / 图标 / 时长等:改完数据后走 reRenderPreservingState() 单飞重建。
+ *     重建采用双缓冲:新实例在隐藏宿主里建好、同一帧画好,才整层换上并销毁旧实例 ——
+ *     画面全程有内容,不再「清空 → 重建」地闪一下;重建也不再触发舞台落定动画
+ *     (那是「换了一套动画」的表达,不该每改一个字就演一次,见 onRebuiltReady)。
+ *   • 图层列表(文字 / 形状 / 图片)—— 顶层与被引用的预合成(assets[] 里的合成)内部都列出,预合成项名字带「合成名 ›」前缀;
  *     预合成内部的 ind 会和顶层撞号,载入时统一平移到独立号段(见 normalizePrecompInds);
  *   • 主题颜色 —— 两个色块把「默认填充色 / 描边默认色」两族颜色值整族替换(按颜色值匹配,填充与描边一起换);
  *   • 图标替换(位置暴露两段可分别设置;任务弹窗动画、大战场弹窗动画单图标位,候选来自各自的图标目录)、
@@ -1796,15 +1803,109 @@ document.addEventListener('input', (e) => {
 });
 
 /* ---------- 动画生命周期 ---------- */
+/* 当前主动画实例所在的宿主:每次(重新)构建都新建一个 .preview-anim-host。
+ * 这样重建可以「新实例先建在隐藏宿主里、就绪后整层换上」,旧实例这时才销毁(见
+ * reRenderPreservingStateCore 的双缓冲换屏);destroy() 清空的也永远是它自己的宿主。 */
+let animHost: HTMLDivElement | null = null;
+/* 每个实例「是否按字形轮廓表(chars)绘制」记在实例自己身上(__dfGlyph),而不是全局变量:
+ * 重建期间画面上还是旧实例,两者的字形模式可能不同(改字会把 chars 丢掉),用全局量会让
+ * 即时改字通道判断错实例、把新字画成空路径。这种实例画不出表外的新字,见 liveApplyText。 */
+
+function createAnimHost(className = 'preview-anim-host'): HTMLDivElement {
+  const host = document.createElement('div');
+  host.className = className + ' is-staging';
+  return host;
+}
+/* 把宿主挂进画布层。弹窗叠加层必须始终在最后(DOM 顺序决定叠放),
+ * 所以有弹窗层时插在它前面,否则直接追加。 */
+function attachAnimHost(host: HTMLDivElement) {
+  if (popupLayer.isConnected) previewInner.insertBefore(host, popupLayer);
+  else previewInner.appendChild(host);
+}
+/* 安全销毁一个实例:lottie 的 destroy() 会执行 wrapper.innerText = ''(清空它当初被塞进的容器)。
+ * 换屏时旧实例的容器可能正是画布层/弹窗层本身,直接 destroy 会把刚换上的新实例一起清掉,
+ * 所以先把它的 DOM 节点摘掉、把 wrapper 指向一个临时节点,再 destroy。 */
+function discardAnimInstance(item: AnimationItem | null, host?: HTMLDivElement | null) {
+  if (item) {
+    try {
+      const r: any = (item as any).renderer;
+      const node = r?.svgElement ?? (item as any).container;
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+      (item as any).wrapper = document.createElement('div');
+      item.destroy();
+    } catch { /* ignore */ }
+  }
+  if (host && host.parentNode) host.parentNode.removeChild(host);
+}
 /* 销毁当前 lottie 实例并清空预览容器。
  * 容器必须清空:destroy() 不会移除容器里残留的渲染节点,残留会让下一次重建出现新旧画面叠加,
- * 或留下「只剩一个图标的半成品」。 */
+ * 或留下「只剩一个图标的半成品」。只用于「整段换动画」(loadData);编辑期重建走双缓冲,不清容器。 */
 function destroyAnim() {
   if (anim) {
     try { anim.destroy(); } catch { /* ignore */ }
     anim = null;
   }
+  animHost = null;
   previewInner.innerHTML = '';
+}
+
+/* ---------- 即时预览(文字) ----------
+ * 整段重建要 10~150ms(取决于动画体积),如果只靠重建,用户打字时会觉得「改完没反应」,
+ * 而重建期间画面又不能动。于是文字走一条即时通道:直接改**正在显示的实例**里对应文字元素的
+ * 文档数据(lottie 自带的 updateDocumentData),再强制重画当前帧 —— 一次只更新一个文字层,
+ * 当帧生效、不重建。随后仍有一次防抖提交的完整重建(见 scheduleTextRebuild),把底框宽度、
+ * 字形表这类需要重建才能对齐的量补上;两条路径都读写同一份数据,不会打架。 */
+
+/* 在渲染器元素树里按「数据对象是同一个引用」找图层元素:预合成里的图层也能找到
+ * (合成的元素树挂在 el.elements 下,顶层挂在 renderer.elements 下)。 */
+function findLiveElementByData(root: any, target: any): any {
+  const els = root?.elements;
+  if (!Array.isArray(els)) return null;
+  for (const el of els) {
+    if (!el || el === true) continue;
+    if (el.data === target) return el;
+    const nested = findLiveElementByData(el, target);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+/* 强制重画当前帧:lottie 的 SVG 渲染器按 renderedFrame 去重(同一帧直接 return),
+ * 所以改完数据必须先把缓存帧号清掉,才会真的重算并画出新文字;canvas 渲染器则直接
+ * 用 renderFrame(num, true) 的 forceRender 重画整帧。 */
+function forceReRenderCurrentFrame(targetAnim: AnimationItem | null) {
+  if (!targetAnim) return;
+  const r: any = (targetAnim as any).renderer;
+  if (!r || typeof r.renderFrame !== 'function') return;
+  const compFrame = (targetAnim.currentFrame ?? 0) + ((targetAnim as any).firstFrame ?? 0);
+  if (r.svgElement) {
+    r.renderedFrame = -1;
+    r.renderFrame(compFrame);
+  } else {
+    r.renderFrame(compFrame, true);
+  }
+}
+
+/* 把新文字即时写进正在显示的实例,返回是否真的改了画面。
+ * 字形表(chars)还在的动画要当心:表外的字在 lottie 里会画成空路径(文字整段消失),
+ * 这时不即时生效,交给随后的重建(dropCharsIfUncovered 会丢掉字表、退回浏览器文本)。 */
+function liveApplyText(data: any, targetLayer: any, targetAnim: AnimationItem | null, newText: string): boolean {
+  if (!data || !targetLayer || !targetAnim) return false;
+  /* 字形模式读「这个实例自己的」标记(见 animHost 上方的说明),不用全局状态。
+   * 这个实例若仍按字表绘制,表外字会画成空路径 → 不即时生效,交给随后的重建;
+   * 表已经被重建流程删掉(改字提交过)时同样不能即时改:当前实例还在用旧字表,
+   * 没法验证覆盖性,宁可等换屏。 */
+  if ((targetAnim as any).__dfGlyph && (!data.chars?.length || glyphTableUncovered(data))) return false;
+  try {
+    const el = findLiveElementByData((targetAnim as any).renderer, targetLayer);
+    if (!el || typeof el.updateDocumentData !== 'function') return false;
+    // 与 setLayerText 同样的换行归一(AE/Bodymovin 用 \r);index 省略 = 当前文字关键帧
+    el.updateDocumentData({ t: newText.replace(/\r\n|\r|\n/g, '\r') });
+    forceReRenderCurrentFrame(targetAnim);
+    return true;
+  } catch {
+    return false; // 任何意外都只是「这次没即时生效」,随后的重建仍然会应用改动
+  }
 }
 
 // 载入序号:loadData 中途要 await 字体加载,期间用户可能已经切到别的动画,
@@ -1864,16 +1965,23 @@ async function loadData(data: any, name: string) {
   // 这套位移逻辑只对位置暴露动画成立(图层号、底框都在那段数据里写死),其它动画走「图标不透明度」。
   if (!chkIcon.checked && iconToggleApplies()) setIconVisible(false, false);
   try {
+    /* 实例落在新建的隐藏宿主里(见文件顶部的双缓冲说明),就绪后由 onAnimReady 收尾;
+     * 记录当前实例是否走字形表,即时改字通道据此决定能不能直接改(见 liveApplyText)。 */
+    const host = createAnimHost();
+    attachAnimHost(host);
+    animHost = host;
     /* lottie 实例化:renderer 由下拉框决定(SVG / Canvas 是两条不同的渲染管线,patch 也不同);
      * autoplay 恒开 —— 是否循环由 chkLoop 控制;音效走上面注入的 audioFactory(修复 Howl 缺失导致的崩溃)。 */
     anim = lottie.loadAnimation({
-      container: previewInner,
+      container: host,
       renderer: selRenderer.value === 'canvas' ? 'canvas' : 'svg',
       loop: chkLoop.checked,
       autoplay: true,
       animationData: data,
       audioFactory,
     });
+    (anim as any).__dfGlyph = !!(data?.chars && data.chars.length);
+    host.classList.remove('is-staging'); // 换动画是整段替换,没有可保留的旧画面,直接显示
     patchAudioDestroy(anim);
     (window as any).__anim = anim;
     (window as any).__lottie = lottie;
@@ -1908,12 +2016,27 @@ async function loadData(data: any, name: string) {
     requestAnimationFrame(revealIfLatest);
   // 构造失败也必须收掉加载界面,否则用户会永远停在加载页上
   } catch (e) {
+    // 失败的实例不会有 DOMLoaded 来收尾:把可能残留的空宿主一起清掉,不留一个隐藏盒子
+    if (animHost && animHost.parentNode) animHost.parentNode.removeChild(animHost);
+    animHost = null;
     hideAppLoading();
     setStatus('载入失败: ' + (e as Error).message, true);
   }
   updateInfo(data);
   syncDurationSlider();
   syncNextDurationSlider();
+}
+
+/* 编辑期重建(不是换动画)就绪后的轻量收尾:只把帧范围 / 播放状态 / 滑杆读数刷新一遍。
+ * 刻意**不**做 onAnimReady 里的舞台落定(pulseStage)与状态栏播报:
+ * 编辑是高频动作,每改一步都让整块画布"从 opacity 0 + 3px 模糊"淡入 300ms,
+ * 正是用户感知到的「每改一步就闪一下」;舞台落定只该表达「换了一套动画」这一件事。 */
+function onRebuiltReady() {
+  updateFrameRange();
+  updateTransport();
+  syncDurationSlider();
+  syncNextDurationSlider();
+  syncAllRangeFills();
 }
 
 /* DOMLoaded 与 config_ready 都会触发这里(可能各触发一次),因此函数体必须可重复执行:
@@ -2971,7 +3094,7 @@ function normalizePrecompInds(data: any) {
  *   • 字表盖得住当前所有文字 → 保留 chars(字形与 AE 完全一致,不改现状);
  *   • 盖不住(用户改了字) → 丢掉 chars,退回浏览器文本引擎(同一套字体,肉眼一致,且随便改字都不会消失)。
  * 每次 loadData 都会重新判定一次:第一次改字丢掉后,后续重建都直接走浏览器文本,不会来回闪。 */
-function dropCharsIfUncovered(data: any): boolean {
+function glyphTableUncovered(data: any): boolean {
   const list: any[] = Array.isArray(data?.chars) ? data.chars : [];
   if (!list.length) return false;
   const covered = new Set(list.map((c: any) => c.ch + '|' + c.style + '|' + c.fFamily));
@@ -2996,9 +3119,15 @@ function dropCharsIfUncovered(data: any): boolean {
       }
     }
   });
-  if (!uncovered) return false;
+  return uncovered;
+}
+
+/* 判定的「执行」版本:字表盖不住当前文字时把 chars 整张删掉,退回浏览器文本引擎。
+ * 返回是否真的删了(调用方据此决定能不能走即时改字通道,见 liveApplyText)。 */
+function dropCharsIfUncovered(data: any): boolean {
+  if (!glyphTableUncovered(data)) return false;
   delete data.chars;
-  console.info('[text] 字形表盖不住当前文字,已退回浏览器字体渲染(改字不会再消失)');
+  console.info('[text] 字形表盖不住当前文字,已退回浏览器字体渲染(改字不会消失)');
   return true;
 }
 
@@ -3080,25 +3209,20 @@ function setLayerText(layer: any, newText: string) {
   }
 }
 
-let textEditTimer: number | undefined;
-
-/* 文字编辑的写回入口:改 JSON → 同步底框宽度 → 防抖重建动画。
- * 不每次按键都重建:重建要走完整的 loadAnimation 流程(解析 JSON、建 DOM、恢复播放状态),
- * 连续输入会把主线程占满;250ms 无输入才真正重建。
- * 重建由 reRenderPreservingState 负责保留当前帧/播放状态/缩放。 */
+/* 文字编辑的写回入口:写数据 → 即时改画面 → 同步底框宽度 → 防抖提交重建。
+ * 顺序不能反:必须先把新文字写进数据,即时通道与随后的重建才能拿到同一份内容。
+ * 即时通道只更新那一个文字层(liveApplyText),所以每敲一个字当帧可见;
+ * 完整重建延后 180ms(见 scheduleTextRebuild),把底框宽度、字形表等需要重建的量对齐。 */
 function onTextEdited(ind: number, newText: string) {
   if (!currentData) return;
   const layer = findLayerInData(currentData, ind);
   if (!layer) return;
   setLayerText(layer, newText);
+  liveApplyText(currentData, layer, anim, newText);
   adaptDikuangWidth(); // 文字宽度变化 → 底框宽度同步
   adaptMaptitlePlateWidth(); // 地图标题动画:底框/描边跟着文字宽度走(只增不减)
   refreshBattlefieldPresetHighlight(); // 改字后预设可能就不再匹配了(只重画预设列表,不动输入框)
-  // 防抖后重渲染(保留当前帧/播放状态/缩放)
-  window.clearTimeout(textEditTimer);
-  textEditTimer = window.setTimeout(() => {
-    reRenderPreservingState();
-  }, 250);
+  scheduleTextRebuild(); // 提交重建:保留当前帧/播放状态/缩放
 }
 
 /* 写入文字颜色。fc 是 0~1 的三(四)分量数组(见 hexToFc),不能直接存 0~255。
@@ -3132,7 +3256,7 @@ function syncDigitColorInputs(hex: string, exceptInd?: number) {
 
 /* 文字颜色编辑入口。普通文字层只改自己;「第 N 位」数字位视为同一组,改一个五位一起改,
  * 并同步侧栏其余行的取色器显示,否则同一屏上的数字会出现两种颜色。
- * 与文字编辑共用 textEditTimer,两类编辑不会各自排队重复重建。 */
+ * 取色器是连续型输入,走节流重建(scheduleHotRebuild),拖动过程中画面持续跟着变。 */
 function onColorChanged(ind: number, hex: string) {
   if (!currentData) return;
   const layer = findLayerInData(currentData, ind);
@@ -3141,10 +3265,7 @@ function onColorChanged(ind: number, hex: string) {
   const group = isSingleDigitTextName(layer.nm) ? digitTextLayers(currentData) : [layer];
   for (const l of group) setLayerColor(l, hex);
   if (group.length > 1) syncDigitColorInputs(hex, ind);
-  window.clearTimeout(textEditTimer);
-  textEditTimer = window.setTimeout(() => {
-    reRenderPreservingState();
-  }, 250);
+  scheduleHotRebuild();
 }
 
 /* 把某个文字图层的文字、颜色、不透明度还原到快照值,并把侧栏控件同步回原始值
@@ -3173,10 +3294,7 @@ function onResetText(ind: number) {
   if (ta) ta.value = String(orig.text).replace(/\r/g, '\n');
   const ci = textList.querySelector<HTMLInputElement>('.t-color[data-ind="' + ind + '"]');
   if (ci) setColorPickerValue(ci, fcToHex(orig.fc));
-  window.clearTimeout(textEditTimer);
-  textEditTimer = window.setTimeout(() => {
-    reRenderPreservingState();
-  }, 250);
+  reRenderPreservingState(); // 重置是一次性动作,立即重建(双缓冲,不会闪)
 }
 
 /* ---------- 主题颜色(两个颜色值统一替换) ----------
@@ -3281,15 +3399,13 @@ function syncThemeSection(data: any = currentData) {
   void btnThemeReset;
 }
 
-/* 应用并重建(防抖:拖色块会连续触发,和文字/颜色编辑共用 textEditTimer) */
-let themeEditTimer: number | undefined;
+/* 应用并重建(色块拖动会连续触发:走节流重建,拖动过程中画面持续跟着变) */
 function onThemeColorChanged(kind: 'fill' | 'stroke', hex: string) {
   const n = applyThemeColor(kind, hex);
   if (!n) { syncThemeSection(); return; }
   syncThemeSection();
   setStatus((kind === 'fill' ? '默认填充颜色' : '描边默认颜色') + '已改为 ' + normHex(hex).toUpperCase() + '(共替换 ' + n + ' 处)');
-  window.clearTimeout(themeEditTimer);
-  themeEditTimer = window.setTimeout(() => reRenderPreservingState(), 250);
+  scheduleHotRebuild();
 }
 bindColorPicker(themeFill, (hex) => onThemeColorChanged('fill', hex));
 bindColorPicker(themeStroke, (hex) => onThemeColorChanged('stroke', hex));
@@ -3451,8 +3567,8 @@ function opacitySliderHtml(ind: number, layer: any): string {
 }
 
 /* 给 root 内所有 .o-slider 绑定输入处理(每次重写列表 HTML 后都要重新调用)。
- * 拖动过程中只改 JSON 和数值标签,防抖后才重建动画;与文字/颜色编辑共用 textEditTimer,
- * 避免多个编辑各自排队重建。 */
+ * 拖动过程中改 JSON + 数值标签,并走节流重建(scheduleHotRebuild):画面持续跟着滑块变,
+ * 但不会每个 input 事件都重建一次。 */
 function bindOpacitySliders(root: HTMLElement) {
   root.querySelectorAll<HTMLInputElement>('.o-slider').forEach((sl) => {
     sl.addEventListener('input', () => {
@@ -3464,8 +3580,7 @@ function bindOpacitySliders(root: HTMLElement) {
       const layer = findLayerInData(currentData, ind);
       if (!layer) return;
       setLayerOpacity(layer, val);
-      window.clearTimeout(textEditTimer);
-      textEditTimer = window.setTimeout(() => reRenderPreservingState(), 250);
+      scheduleHotRebuild(); // 拖动中持续生效(节流 + 双缓冲换屏,不会闪)
     });
   });
 }
@@ -3483,15 +3598,14 @@ function setShapeStrokeColor(layer: any, hex: string) {
   for (const s of strokes) if (s.c?.a === 0) s.c.k = hexToFc(hex, s.c.k);
 }
 
-/* 形状颜色编辑入口:kind 区分填充/描边,改完 250ms 防抖后重建动画。 */
+/* 形状颜色编辑入口:kind 区分填充/描边。取色器是连续型输入,走节流重建。 */
 function onShapeColorChanged(ind: number, hex: string, kind: 'fill' | 'stroke') {
   if (!currentData) return;
   const layer = findLayerInData(currentData, ind);
   if (!layer) return;
   if (kind === 'fill') setShapeFillColor(layer, hex);
   else setShapeStrokeColor(layer, hex);
-  window.clearTimeout(textEditTimer);
-  textEditTimer = window.setTimeout(() => reRenderPreservingState(), 250);
+  scheduleHotRebuild();
 }
 
 /* 重置形状图层的填充/描边与不透明度,并把两个取色器及其 HEX 输入框同步回原始色。 */
@@ -3508,8 +3622,7 @@ function onShapeReset(ind: number) {
   if (fi && orig.fill) setColorPickerValue(fi, fcToHex(orig.fill));
   const si = shapeList.querySelector<HTMLInputElement>('.s-stroke[data-ind="' + ind + '"]');
   if (si && orig.stroke) setColorPickerValue(si, fcToHex(orig.stroke));
-  window.clearTimeout(textEditTimer);
-  textEditTimer = window.setTimeout(() => reRenderPreservingState(), 250);
+  reRenderPreservingState(); // 重置是一次性动作,立即重建(双缓冲,不会闪)
 }
 
 /* 「形状图层」列表里隐藏颜色取色器的规则 —— 判据都是「这个颜色在这套素材里是占位色,不是设计色」,
@@ -4269,64 +4382,117 @@ let popupAnim: AnimationItem | null = null;
 let popupLastFrame = -1;
 let popupEditTimer: number | undefined;
 
+/* 弹窗实例的宿主:与主动画同一套双缓冲做法 —— 新实例先在隐藏宿主里建好,就绪后整层换上,
+ * 编辑弹窗内容时叠加层不会闪一下。 */
+let popupHost: HTMLDivElement | null = null;
+/* 弹窗实例是用哪个渲染器建的:主动画重建可能把渲染器降级成 SVG(改字 / 亮度遮罩),
+ * 这时叠加层必须跟着换,否则两套渲染器混用会看到不一致的文字与滤镜(见 reRenderPreservingStateCore)。 */
+let popupRenderer: 'svg' | 'canvas' | '' = '';
+/* 「正在隐藏宿主里构建、还没换屏」的弹窗实例。弹窗重建没有单飞队列(编辑回调可能从
+ * 取色器、文字、重置多处并发触发),必须自己挡住连发:否则两次构建都会换屏,先换上的那个
+ * 宿主留在叠加层里,变成叠了两层弹窗、旧实例也漏销毁。 */
+let popupBuilding: AnimationItem | null = null;
+let popupBuildingHost: HTMLDivElement | null = null;
+
 /* 销毁弹窗实例并清空容器:destroy() 会移除 lottie 自己创建的 SVG/Canvas 节点。
  * 用 try/catch 兜底 —— 实例尚未加载完(或已被销毁过)时 destroy 可能抛错,
  * 重建流程不该因此中断。 */
 function destroyPopupAnim() {
+  if (popupBuilding) {
+    discardAnimInstance(popupBuilding, popupBuildingHost);
+    popupBuilding = null;
+    popupBuildingHost = null;
+  }
   if (popupAnim) {
     try { popupAnim.destroy(); } catch { /* ignore */ }
     popupAnim = null;
   }
+  popupHost = null;
+  popupRenderer = '';
+  popupLastFrame = -1;
   popupLayer.innerHTML = '';
 }
 
-/* 重建弹窗叠加层:渲染器切换、文字/形状编辑、重置后都要整体重建 —— 改 JSON 不会自动生效,
+/* 重建弹窗叠加层:渲染器切换、颜色/形状编辑、重置后都要整体重建 —— 改 JSON 不会自动生效,
  * lottie 只在 loadAnimation 时读一次数据。
- * 两个关键点:
+ * 三个关键点:
  *  - loop 与 autoplay 都关:弹窗帧号完全由 tick 按主动画帧号驱动(goToAndStop),
  *    自己播放会与主动画漂移;
  *  - 新实例要挂上与主动画相同的渲染补丁(patch*RendererTree),否则弹窗里的投影、
- *    文字兜底渲染等行为与主动画不一致。 */
+ *    文字兜底渲染等行为与主动画不一致;
+ *  - 双缓冲:旧实例一直显示到新实例在同一帧就绪,换屏与销毁在同一个任务里完成,
+ *    所以编辑弹窗内容时叠加层不会出现空白帧。 */
 function rebuildPopupOverlay() {
-  destroyPopupAnim();
   // destroyAnim() 会清空 previewInner,弹窗层可能被移除,先重新挂回(即使当前隐藏也要保持挂载)
   if (!popupLayer.isConnected) previewInner.appendChild(popupLayer);
   if (!popupVisible || !popupData) {
+    destroyPopupAnim();
     popupLayer.hidden = true;
     return;
   }
   popupLayer.hidden = false;
   popupLayer.style.width = popupData.w + 'px';
   popupLayer.style.height = popupData.h + 'px';
+  // 连发保护:上一次还没换屏的构建直接丢掉(它的宿主也一起移除),只让最新一次生效
+  if (popupBuilding) {
+    discardAnimInstance(popupBuilding, popupBuildingHost);
+    popupBuilding = null;
+    popupBuildingHost = null;
+  }
+  const renderer = selRenderer.value === 'canvas' ? 'canvas' : 'svg';
+  const oldAnim = popupAnim;
+  const oldHost = popupHost;
+  const host = createAnimHost('preview-popup-host');
+  popupLayer.appendChild(host);
+  let next: AnimationItem;
   try {
-    const renderer = selRenderer.value === 'canvas' ? 'canvas' : 'svg';
-    popupAnim = lottie.loadAnimation({
-      container: popupLayer,
+    next = lottie.loadAnimation({
+      container: host,
       renderer,
       loop: false,
       autoplay: false,
       animationData: popupData,
       audioFactory,
     });
-    if (renderer === 'canvas') patchCanvasRendererTree((popupAnim as any).renderer);
-    else patchSvgRendererTree((popupAnim as any).renderer);
-    popupLastFrame = -1; // 下一帧 tick 自动同步到主动画当前帧
   } catch (e) {
+    popupBuilding = null;
+    popupBuildingHost = null;
+    discardAnimInstance(null, host);
     setStatus('弹窗载入失败: ' + (e as Error).message, true);
+    return;
   }
+  if (renderer === 'canvas') patchCanvasRendererTree(next.renderer as any);
+  else patchSvgRendererTree(next.renderer as any);
+  popupBuilding = next;
+  popupBuildingHost = host;
+  let swapped = false;
+  const swap = () => {
+    if (swapped) return;
+    swapped = true;
+    if (popupBuilding !== next) return; // 已被更新的构建顶替(它自己的宿主已清掉)
+    popupBuilding = null;
+    popupBuildingHost = null;
+    /* 新实例在第 0 帧建好,而界面此刻要显示的是主动画的当前帧:先画到同一帧再换屏,
+     * 否则会看到叠加层跳回第 0 帧一瞬。之后由 tick 继续逐帧驱动。 */
+    try { next.goToAndStop(Math.round(anim?.currentFrame ?? 0), true); } catch { /* ignore */ }
+    (next as any).__dfGlyph = !!(popupData?.chars && popupData.chars.length);
+    host.classList.remove('is-staging');
+    popupAnim = next;
+    popupHost = host;
+    popupRenderer = renderer;
+    popupLastFrame = -1;
+    discardAnimInstance(oldAnim, oldHost);
+  };
+  next.addEventListener('DOMLoaded', swap);
+  next.addEventListener('config_ready', swap);
+  requestAnimationFrame(() => { if (next.isLoaded) swap(); });
 }
 
-/* 保留当前帧地重建弹窗:先取出帧号(新实例会从第 0 帧开始),重建成功后再 goToAndStop 回去,
- * 并同步 popupLastFrame,避免 tick 下一帧再做一次多余的跳帧。
- * popupAnim 为空(弹窗未显示或上次重建失败)时无事可做,直接返回。 */
+/* 保留当前帧地重建弹窗:换屏由 rebuildPopupOverlay 在实例就绪时完成(新实例先画到主动画当前帧),
+ * 这里只需发起重建;popupAnim 为空(弹窗未显示或上次重建失败)时无事可做。 */
 function rebuildPopupPreservingState() {
   if (!popupAnim) return;
-  const frame = popupAnim.currentFrame;
   rebuildPopupOverlay();
-  if (popupAnim && typeof frame === 'number' && isFinite(frame)) {
-    popupAnim.goToAndStop(frame, true);
-    popupLastFrame = frame;
-  }
 }
 
 /* 写入文字对齐方式 j(0 = 左、1 = 右、2 = 居中,取值同 AE/Bodymovin)。
@@ -5144,8 +5310,7 @@ function setDikuangRectOpacity(val: number, ind?: number) {
   const tr = layer ? getDikuangRectTr(layer) : null;
   if (!tr?.o || tr.o.a !== 0) return;
   tr.o.k = Math.round(Math.max(0, Math.min(100, val)));
-  window.clearTimeout(textEditTimer);
-  textEditTimer = window.setTimeout(() => reRenderPreservingState(), 200);
+  scheduleHotRebuild();
 }
 
 /* 恢复该段「矩形 1」的基准不透明度：优先取这一段捕获的基准值（主段与二次扫描段
@@ -5160,8 +5325,7 @@ function resetDikuangRectOpacity(ind?: number) {
   if (!tr?.o || tr.o.a !== 0) return;
   const seg = dikuangSegByVisibleInd(ind);
   tr.o.k = seg ? seg.rectBaseOpacity : dikuangRectBaseOpacity;
-  window.clearTimeout(textEditTimer);
-  textEditTimer = window.setTimeout(() => reRenderPreservingState(), 200);
+  reRenderPreservingState(); // 重置是一次性动作,立即重建(双缓冲,不会闪)
 }
 
 
@@ -5227,14 +5391,16 @@ function capturePopupOriginalState() {
   }
 }
 
-/* 弹窗文字编辑回调（输入框每次 input 都触发，250ms 防抖）。
- * 顺序不能颠倒：先 await 内嵌字体加载完成再测量宽度 —— 字体未就绪时 measureText 用的是
- * 后备字体，量出的宽度偏小，底板会窄一截；之后才是底板适配 + 整体重建。 */
+/* 弹窗文字编辑回调(输入框每次 input 都触发)。
+ * 与主动画同一套做法:先写数据 → 即时改画面(liveApplyText,每敲一个字当帧可见),
+ * 180ms 后再提交一次重建;提交时先 await 内嵌字体加载完成再测量宽度 —— 字体未就绪时
+ * measureText 用的是后备字体,量出的宽度偏小,底板会窄一截。 */
 function onPopupTextEdited(ind: number, text: string) {
   if (!popupData) return;
   const layer = findLayerByInd(popupData.layers, ind);
   if (!layer) return;
   setLayerText(layer, text); // 居中由 j=2 原生保持,不挪锚点
+  liveApplyText(popupData, layer, popupAnim, text);
   window.clearTimeout(popupEditTimer);
   popupEditTimer = window.setTimeout(() => {
     void (async () => {
@@ -5242,38 +5408,35 @@ function onPopupTextEdited(ind: number, text: string) {
       adaptPopupPanelWidth(); // 文字宽度变化 → 底板宽度同步
       rebuildPopupPreservingState();
     })();
-  }, 250);
+  }, 180);
 }
 
-/* 弹窗文字改色：写入文本 doc 的 fc（hex → 0..1 三元组），防抖后重建弹窗 */
+/* 弹窗文字改色:写入文本 doc 的 fc(hex → 0..1 三元组),节流重建(拖动取色器时持续生效) */
 function onPopupColorChanged(ind: number, hex: string) {
   if (!popupData) return;
   const layer = findLayerByInd(popupData.layers, ind);
   if (!layer) return;
   setLayerColor(layer, hex);
-  window.clearTimeout(popupEditTimer);
-  popupEditTimer = window.setTimeout(() => rebuildPopupPreservingState(), 250);
+  schedulePopupRebuild();
 }
 
-/* 弹窗文字对齐：j 用 Bodymovin 编码 0=左、1=右、2=居中（注意 1/2 与直觉顺序相反） */
+/* 弹窗文字对齐:j 用 Bodymovin 编码 0=左、1=右、2=居中(注意 1/2 与直觉顺序相反) */
 function onPopupAlignChanged(ind: number, j: number) {
   if (!popupData) return;
   const layer = findLayerByInd(popupData.layers, ind);
   if (!layer) return;
   setLayerAlign(layer, j);
-  window.clearTimeout(popupEditTimer);
-  popupEditTimer = window.setTimeout(() => rebuildPopupPreservingState(), 250);
+  schedulePopupRebuild();
 }
 
-/* 弹窗形状改色：kind='fill' 写 fl.c，'stroke' 写 st.c，同样防抖后重建 */
+/* 弹窗形状改色:kind='fill' 写 fl.c,'stroke' 写 st.c,同样是连续型输入 */
 function onPopupShapeColorChanged(ind: number, hex: string, kind: 'fill' | 'stroke') {
   if (!popupData) return;
   const layer = findLayerByInd(popupData.layers, ind);
   if (!layer) return;
   if (kind === 'fill') setShapeFillColor(layer, hex);
   else setShapeStrokeColor(layer, hex);
-  window.clearTimeout(popupEditTimer);
-  popupEditTimer = window.setTimeout(() => rebuildPopupPreservingState(), 250);
+  schedulePopupRebuild();
 }
 
 /* 重置单个弹窗文本：文字 / 颜色 / 对齐都写回原始快照。数据写回后必须同步刷新侧栏控件值，
@@ -5299,7 +5462,7 @@ function onPopupTextReset(ind: number) {
       adaptPopupPanelWidth(); // 文字恢复原宽 → 底板恢复基准宽
       rebuildPopupPreservingState();
     })();
-  }, 250);
+  }, 180);
 }
 
 /* 重置单个弹窗形状颜色：原始快照里缺 fill/stroke 说明该图层本来就没有这一项，跳过不写 */
@@ -5314,8 +5477,7 @@ function onPopupShapeReset(ind: number) {
   if (fi && orig.fill) setColorPickerValue(fi, fcToHex(orig.fill));
   const si = popupShapeList.querySelector<HTMLInputElement>('.pt-stroke[data-ind="' + ind + '"]');
   if (si && orig.stroke) setColorPickerValue(si, fcToHex(orig.stroke));
-  window.clearTimeout(popupEditTimer);
-  popupEditTimer = window.setTimeout(() => rebuildPopupPreservingState(), 250);
+  rebuildPopupPreservingState(); // 重置是一次性动作,立即重建(双缓冲,不会闪)
 }
 
 /* 渲染弹窗侧栏的「文字」与「颜色图层」两个列表（每次数据变更后整体重绘）。要点：
@@ -5423,6 +5585,10 @@ chkPopup.addEventListener('change', () => {
  * 重建,期间的新请求合并为一次,待当前结束再补跑,任意点击速度都安全。 */
 let rerenderBusy = false;
 let rerenderQueued = false;
+/* 最近一次重建的实际耗时(墙钟,含 loadAnimation → DOMLoaded → 换屏)。连续型编辑用它当
+ * 节流下限:重动画(如 700 帧逐帧图的爆破弹窗)重建一次要几百毫秒,如果还按 80ms 的间隔
+ * 排重建,松手之后队列仍会空转好几轮,白白占满主线程。 */
+let lastRebuildCost = 0;
 
 /* 请求一次「保留状态的重渲染」：忙时只置排队标记（多次点击被合并成一次重建），
  * 当前这轮结束后补跑。调用方不需要等待，也不返回 Promise。 */
@@ -5437,9 +5603,11 @@ function reRenderPreservingState() {
     return;
   }
   rerenderBusy = true;
+  const startedAt = performance.now();
   /* 结束回调：清忙标记；有排队请求则推迟到下一帧补跑（用 rAF 而不是同步递归，
    * 避免在深层调用栈里继续重建，也给浏览器一次渲染机会）。 */
   const finish = () => {
+    lastRebuildCost = performance.now() - startedAt;
     rerenderBusy = false;
     if (rerenderQueued) {
       rerenderQueued = false;
@@ -5449,10 +5617,53 @@ function reRenderPreservingState() {
   reRenderPreservingStateCore(finish);
 }
 
-/* 单飞队列的执行体：记录状态 → 销毁旧实例 → 重新 loadAnimation → 恢复帧号与播放状态
- * → 放行队列。全程用 buildSerial 序号识别「自己是否已被更新的重建顶替」，被顶替时只放行
- * 队列、不再动画面。settle 幂等，保证正常路径、DOMLoaded、看门狗超时、异常分支都恰好放行
- * 一次队列，否则单飞标记会永久卡住、之后所有重建请求都被丢弃。 */
+/* ---------- 编辑触发的重建调度 ----------
+ * 编辑分两类,调度方式不同:
+ *  • 连续型(取色器、不透明度滑杆):拖动时 input 事件每秒几十个。不能被最后一个事件无限
+ *    推迟(那样拖动过程中画面完全不动),也不能每个事件都重建(一次 10~150ms,拖动会卡死)。
+ *    这里用固定间隔节流:第一次尽快执行,之后最多每 HOT_REBUILD_GAP 毫秒合并成一次;
+ *    重建还没结束时由 reRenderPreservingState 自己的单飞队列继续合并。
+ *  • 文字:走即时通道(见 liveApplyText),这里只负责 180ms 后的「提交重建」,把需要重建
+ *    才能对齐的东西(底框宽度、字形表、画布尺寸)补上。 */
+const HOT_REBUILD_GAP = 80;
+let hotRebuildTimer = 0;
+let hotRebuildAt = 0;
+function scheduleHotRebuild(): void {
+  if (hotRebuildTimer) return; // 已排期:这次改动合并进去
+  // 重动画不追 80ms 的节奏:重建本身要几百毫秒时,用它的耗时当间隔,松手后不会空转好几轮
+  const gap = Math.max(HOT_REBUILD_GAP, Math.min(600, lastRebuildCost));
+  const wait = Math.max(0, gap - (performance.now() - hotRebuildAt));
+  hotRebuildTimer = window.setTimeout(() => {
+    hotRebuildTimer = 0;
+    hotRebuildAt = performance.now();
+    reRenderPreservingState();
+  }, wait);
+}
+let textCommitTimer = 0;
+function scheduleTextRebuild(): void {
+  window.clearTimeout(textCommitTimer);
+  textCommitTimer = window.setTimeout(() => {
+    textCommitTimer = 0;
+    reRenderPreservingState();
+  }, 180);
+}
+/* 弹窗叠加层自己的节流(与主动画互不影响;弹窗实例很小,重建也快) */
+let popupHotTimer = 0;
+let popupHotAt = 0;
+function schedulePopupRebuild(): void {
+  if (popupHotTimer) return;
+  const wait = Math.max(0, HOT_REBUILD_GAP - (performance.now() - popupHotAt));
+  popupHotTimer = window.setTimeout(() => {
+    popupHotTimer = 0;
+    popupHotAt = performance.now();
+    rebuildPopupPreservingState();
+  }, wait);
+}
+
+/* 单飞队列的执行体:记录状态 → 在隐藏宿主里新建实例 → 就绪后在同一帧换屏并销毁旧实例
+ * → 放行队列。全程用 buildSerial 序号识别「自己是否已被更新的重建/换动画顶替」,被顶替时
+ * 只清理自己的实例、放行队列,不动画面。settle 幂等,保证正常路径、DOMLoaded、看门狗超时、
+ * 异常分支都恰好放行一次队列,否则单飞标记会永久卡住、之后所有重建请求都被丢弃。 */
 function reRenderPreservingStateCore(onSettled?: () => void) {
   let settled = false;
   const settle = () => {
@@ -5464,24 +5675,39 @@ function reRenderPreservingStateCore(onSettled?: () => void) {
     settle();
     return;
   }
-  // 记录重建前的状态：当前帧号（lottie 的 currentFrame，与合成帧号同一坐标系，0 为首帧）、
-  // 是否处于暂停、倍速与渲染器；重建后原样恢复，让用户察觉不到动画被整体换掉
+  // 记录重建前的状态:当前帧号(lottie 的 currentFrame,与合成帧号同一坐标系,0 为首帧)、
+  // 是否处于暂停、倍速与渲染器;换屏后原样恢复,让用户察觉不到动画被整体换掉
   const frame = anim.currentFrame;
   const wasPaused = anim.isPaused;
   const speed = parseFloat(rngSpeed.value);
   const renderer = selRenderer.value;
-
-  // 重建期间隐藏预览区:lottie 新实例就绪前会短暂呈现“半成品帧(只建出图标等)”,造成闪烁。
-  previewInner.style.visibility = 'hidden';
   const serial = ++buildSerial;
-  destroyAnim();
-  // 看门狗:若被 loadData(切换动画等)顶替,实例可能不再触发 DOMLoaded,需放行队列
+  /* 旧实例先留着继续显示:新实例在下面这个隐藏宿主里构建,就绪后整层换上。
+   * 以前是「隐藏预览区 → 销毁 → 重建 → 再显示」,用户看到的就是每改一步闪一下;
+   * 现在重建期间画面上一直是旧画面,换上的那一刻新画面已经是同一帧。 */
+  const oldAnim = anim;
+  const oldHost = animHost;
+  const host = createAnimHost();
+  attachAnimHost(host);
+  let newAnim: AnimationItem | null = null;
+  let failSafeTimer = 0;
+  /* 清理「没被采用」的新实例:构建期间被换动画顶替(serial 变了)或构建异常时调用,
+   * 否则它会留在隐藏宿主里继续跑 rAF,白占 CPU。 */
+  const discardNew = () => {
+    window.clearTimeout(watchdog);
+    window.clearTimeout(failSafeTimer);
+    discardAnimInstance(newAnim, host);
+    newAnim = null;
+    settle();
+  };
+  // 看门狗:若被 loadData(切换动画等)顶替,实例可能不再触发 DOMLoaded,需清理并放行队列
   const watchdog = window.setTimeout(() => {
-    if (serial !== buildSerial) settle();
+    if (serial !== buildSerial) discardNew();
   }, 900);
   /* 改字触发的重建走的是这条路径(不经过 loadData),所以字形表判定必须在这里也做一次:
    * 用户改成表外的字时丢掉 chars、退回浏览器文本引擎,否则新字会被渲染成空路径(文字消失)。 */
   dropCharsIfUncovered(currentData);
+  const nextGlyphMode = !!(currentData?.chars && currentData.chars.length);
   /* 反过来:字形表已经没了、而用户此刻正用 canvas 渲染器,就必须切回 SVG。
    * canvas 渲染器的文字靠 chars 里的字形轮廓画路径,表外字它画不出来,而且会把渲染器的
    * 透明度/变换累加器带歪 —— 整块画布变成空白(与导出那条完全同因,见 needsSvgRasterForEditedText)。
@@ -5492,12 +5718,11 @@ function reRenderPreservingStateCore(onSettled?: () => void) {
     selRenderer.value = 'svg';
     setStatus('改字后字形表不覆盖当前文字:canvas 渲染器画不出来,已自动切回 SVG 渲染器');
   }
-  let newAnim: AnimationItem;
-  /* loadAnimation 也可能同步抛错（数据异常 / 容器异常）：这条路径必须清掉看门狗并放行
-   * 单飞队列，否则后续所有重建请求都会被 rerenderBusy 挡住。 */
+  /* loadAnimation 也可能同步抛错(数据异常 / 容器异常):这条路径必须清掉看门狗、清掉宿主
+   * 并放行单飞队列,否则后续所有重建请求都会被 rerenderBusy 挡住。 */
   try {
     newAnim = lottie.loadAnimation({
-      container: previewInner,
+      container: host,
       renderer: useCanvasRenderer ? 'canvas' : 'svg',
       loop: chkLoop.checked,
       autoplay: false,
@@ -5505,53 +5730,70 @@ function reRenderPreservingStateCore(onSettled?: () => void) {
       audioFactory,
     });
   } catch (e) {
-    window.clearTimeout(watchdog);
-    if (serial === buildSerial) previewInner.style.visibility = 'visible';
+    discardAnimInstance(null, host);
     setStatus('载入失败: ' + (e as Error).message, true);
+    window.clearTimeout(watchdog);
     settle();
     return;
   }
-  anim = newAnim;
-  (window as any).__anim = newAnim;
+  const next = newAnim;
+  (next as any).__dfGlyph = nextGlyphMode;
+  // 注意:这里先不切全局 anim —— 旧实例还在显示,tick / 时间轴继续读它,换屏那一刻再切。
   (window as any).__lottie = lottie;
-  // 渲染器补丁要在实例刚建好时立刻挂上：loadAnimation 可能已同步构建好元素，
-  // 补丁内部会对已构建元素补做处理（图片序列层调色、投影、SVG 裁剪等两套渲染器的差异）
-  if (useCanvasRenderer) patchCanvasRendererTree(newAnim.renderer as any);
-  else patchSvgRendererTree(newAnim.renderer as any);
-  rebuildPopupOverlay();
-  newAnim.addEventListener('DOMLoaded', onAnimReady);
-  newAnim.addEventListener('config_ready', onAnimReady);
-  newAnim.setSpeed(speed);
-  // 兜底刷新时间轴帧范围上限：改时长/开关二次扫描都会重建动画，而 DOMLoaded 可能在本监听绑定前就已触发
-  scheduleFrameRangeRefresh(); // 调整时长等会重建动画,DOMLoaded 可能已错过,这里兜底刷新时间轴上限
-  // 恢复播放位置/播放状态必须等动画真正就绪(DOMLoaded)后再执行:
-  // lottie 元素在就绪前只完成了创建(变换未应用、文字未排版),此时若 goToAndStop
-  // 且之前处于暂停,画面会停在“只剩一个图标的半成品帧”,必须重新播放才恢复。
+  // 渲染器补丁要在实例刚建好时立刻挂上:loadAnimation 可能已同步构建好元素,
+  // 补丁内部会对已构建元素补做处理(图片序列层调色、投影、SVG 裁剪等两套渲染器的差异)
+  if (useCanvasRenderer) patchCanvasRendererTree(next.renderer as any);
+  else patchSvgRendererTree(next.renderer as any);
+  /* 弹窗叠加层有自己的一份数据,与主动画这次重建无关:以前每次都跟着重建,编辑时叠加层会闪。
+   * 只有两种情况需要跟上:① 还没有实例(没显示弹窗时它本来就是 null,代价很低);
+   * ② 上面把渲染器降级成了 SVG,叠加层必须一起换,否则两套渲染器混用。 */
+  const wantRenderer = useCanvasRenderer ? 'canvas' : 'svg';
+  if (!popupAnim || popupRenderer !== wantRenderer) rebuildPopupOverlay();
+  next.addEventListener('DOMLoaded', onRebuiltReady);
+  next.addEventListener('config_ready', onRebuiltReady);
+  next.setSpeed(speed);
+  // 调整时长等会改 totalFrames,DOMLoaded 可能在本监听绑定前就已触发,换屏后还会再刷新一次
   let restorePlayback = true;
-  const restorePlaybackState = () => {
+  const swapIn = () => {
     if (!restorePlayback) return;
     restorePlayback = false;
     requestAnimationFrame(() => {
-      if (serial !== buildSerial) { settle(); return; } // 已有更新的重建/切换,交给最新实例
-      try { newAnim.goToAndStop(frame, true); } catch { settle(); return; } // 已被销毁则放弃
-      if (!wasPaused) newAnim.play();
-      updateTransport();
-      previewInner.style.visibility = 'visible'; // 就位后才显示,避免半成品帧闪烁
-      window.clearTimeout(watchdog);
-      settle();
+      if (serial !== buildSerial) { discardNew(); return; } // 已有更新的重建/切换,交给最新实例
+      try { next.goToAndStop(frame, true); } catch { discardNew(); return; } // 已被销毁则放弃
+      /* 换屏:新实例此时已经在同一帧上画好。先让它可见,再同步销毁旧实例 —— 两步在同一个任务里,
+       * 浏览器不会在中间绘制,所以没有空白帧;声音也不会重叠(旧实例带着它的音频一起销毁)。 */
+      try {
+        host.classList.remove('is-staging');
+        anim = next;
+        animHost = host;
+        (window as any).__anim = next;
+        lastFrame = -1; // 让 tick 立刻按新实例刷新帧号/时间轴读数
+        discardAnimInstance(oldAnim, oldHost);
+        if (!wasPaused) next.play();
+        updateFrameRange();
+        updateTransport();
+        syncAllRangeFills();
+      } finally {
+        // 无论哪一步抛错都要放行单飞队列,否则之后所有编辑都会被 busy 标记挡掉
+        window.clearTimeout(watchdog);
+        window.clearTimeout(failSafeTimer);
+        settle();
+        next.removeEventListener('DOMLoaded', swapIn);
+        next.removeEventListener('config_ready', swapIn);
+      }
     });
   };
-  newAnim.addEventListener('DOMLoaded', restorePlaybackState);
-  newAnim.addEventListener('config_ready', restorePlaybackState);
+  next.addEventListener('DOMLoaded', swapIn);
+  next.addEventListener('config_ready', swapIn);
   requestAnimationFrame(() => {
-    // DOMLoaded 可能先于本帧触发(同步数据):已就绪则立即恢复
-    if (newAnim.isLoaded) restorePlaybackState();
+    // DOMLoaded 可能先于本帧触发(同步数据):已就绪则立即换屏
+    if (next.isLoaded) swapIn();
   });
-  // 兜底:若极端情况下(如实例被外部销毁且未触发任何事件)未完成,超时后放行队列
-  window.setTimeout(() => {
+  // 兜底:极端情况下(如实例被外部销毁且未触发任何事件)超时后清理并放行队列
+  failSafeTimer = window.setTimeout(() => {
     if (restorePlayback) {
       restorePlayback = false;
-      settle();
+      discardNew();
     }
   }, 1500);
 }
@@ -7165,19 +7407,17 @@ const plateParentXOriginal = new Map<number, number>(); // 空 2 ind → 原 p.x
  * 完全对称),纯数值很难替人眼定“正中”。提供 ±px 手动微调,叠加在 1920 上,
  * 只影响「显示图标」未勾选时的文字与其跟随的底框;SVG/Canvas、预览/导出一致。 */
 let iconCenterNudge = 0; // 合成单位,正值右移;0 = 关闭微调
-let nudgeRebuildTimer: number | undefined; // 连点微调防抖(220ms):一次快速连点只合并成一次重建
-/* 居中微调（合成单位 px，范围 ±8）：只影响「显示图标」未勾选时的文字及其跟随的底框。
- * 图标仍显示时微调值照样记录，但不重建（对显示态无影响）；
- * 连点走 220ms 防抖合并成一次重建，配合单飞队列不会出现交错重建。 */
+/* 居中微调(合成单位 px,范围 ±8):只影响「显示图标」未勾选时的文字及其跟随的底框。
+ * 图标仍显示时微调值照样记录,但不重建(对显示态无影响)。
+ * 已隐藏时:先把新位置写进数据(rerender=false),再走节流重建 —— 连点也能立刻看到位移,
+ * 又不会每次点击都整段重建。 */
 function changeIconNudge(delta: number) {
   iconCenterNudge = Math.max(-8, Math.min(8, iconCenterNudge + delta));
   const v = document.getElementById('iconNudgeVal');
   if (v) v.textContent = (iconCenterNudge > 0 ? '+' : '') + iconCenterNudge + ' px';
   if (!chkIcon.checked) {
-    // 已隐藏 → 重定位(含整段重渲染)。快速连点统一推迟到停手后再重建一次(配合单飞队列,
-    // 任意点击速度都不会交错重建)。
-    window.clearTimeout(nudgeRebuildTimer);
-    nudgeRebuildTimer = window.setTimeout(() => setIconVisible(false), 220);
+    setIconVisible(false, false); // 只写数据,渲染交给下面的节流重建
+    scheduleHotRebuild();
   }
 }
 /* 画面中心取 p.x=1920 而不做额外偏移(此前按“锚点偏移 −anchorX×缩放”≈1.18

@@ -1128,6 +1128,23 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   box-shadow: var(--shadow-2);
   border-radius: 2px;
 }
+/* 双缓冲宿主:一次编辑触发的整段重建,不再「清空画布 → 重新构建」,而是让新实例先在
+ * 这个隐藏宿主里建好,就绪后整层换上、旧实例才销毁(见 main.ts 的 reRenderPreservingStateCore)。
+ * 旧画面在新画面就位之前一直是显示的,所以编辑时不会出现空白帧/闪一下。
+ * 绝对定位:不参与画布盒的尺寸计算,换上前后几何完全一致。 */
+.preview-anim-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.preview-anim-host.is-staging { visibility: hidden; }
+/* 弹窗叠加层的双缓冲宿主:理由同上,叠加层按自己的数据重建时也整层换上。 */
+.preview-popup-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.preview-popup-host.is-staging { visibility: hidden; }
 .popup-layer { position: absolute; inset: 0; pointer-events: none; }
 .popup-layer[hidden] { display: none; }
 .preview-empty {
