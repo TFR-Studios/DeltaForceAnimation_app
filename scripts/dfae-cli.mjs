@@ -297,6 +297,20 @@ async function actionRelease() {
 }
 
 /* 找出本地已经打好的安装包 */
+/* 从 git 凭据管理器取 GitCode 令牌(即平时 git push 用的那份)。
+ * 只读一次、只在内存里用,不落盘、不打印。取不到就返回空串。 */
+function gitCredentialToken() {
+  try {
+    const r = spawnSync('git', ['credential', 'fill'], {
+      input: 'protocol=https' + NL + 'host=gitcode.com' + NL + NL,
+      encoding: 'utf8',
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    const m = /password=(.+)/.exec(r.stdout || '');
+    return m ? m[1].trim() : '';
+  } catch { return ''; }
+}
+
 function localAssets() {
   const found = [];
   const add = (dir, filter) => {
@@ -312,8 +326,24 @@ function localAssets() {
   /* 默认只列出当前版本的包:release\ 里可能还躺着 1.0.0 的旧 exe,
    * 补传时选错就会把旧版本传到新版本的发行版上。 */
   add('release', (n) => (n.endsWith('.exe') || n.endsWith('.zip')) && n.includes(pkgVersion()));
-  add(path.join('src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk', 'universal', 'release'), (n) => n.endsWith('.apk'));
-  add(path.join('src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk', 'universal', 'debug'), (n) => n.endsWith('.apk'));
+  /* 安卓产物:gradle 给的是 app-universal-release.apk,但发行版里必须叫
+   * dfae-<版本>-arm64-v8a.apk(发行说明、更新检查、用户认知都按这个名字)。
+   * 以前直接拿 gradle 的文件名上传,GitCode 上就会出现一个没人认识的名字。 */
+  const apkDirs = [
+    path.join('src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk', 'universal', 'release'),
+    path.join('src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk', 'universal', 'debug'),
+  ];
+  for (const dir of apkDirs) {
+    const full = path.join(ROOT, dir);
+    if (!existsSync(full)) continue;
+    for (const name of readdirSync(full)) {
+      if (!name.endsWith('.apk')) continue;
+      const f = path.join(full, name);
+      try { if (!statSync(f).isFile()) continue; } catch { continue; }
+      found.push({ name: 'dfae-' + pkgVersion() + '-arm64-v8a.apk', file: f, size: statSync(f).size });
+      break; /* 每个目录只取一个,debug 排在后面,有 release 就不会用到它 */
+    }
+  }
   return found.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -347,7 +377,12 @@ async function actionUpload() {
   const tag = (await ask('  传到哪个版本?(回车 = ' + latestTag() + '): ')).trim() || latestTag();
   if (tag.startsWith('(')) { warn('还没有标签可用,请先发布一个版本。'); return; }
 
-  let token = process.env.GITCODE_TOKEN || '';
+  /* 令牌来源,按"最省事"排序:
+   *   1) 环境变量 GITCODE_TOKEN
+   *   2) git 凭据管理器里 push GitCode 用的那份(平时 git push 成功过就一定有)
+   *   3) 手输(兜底;窗口里粘贴会显示出来,所以尽量别走到这一步) */
+  let token = process.env.GITCODE_TOKEN || gitCredentialToken();
+  if (token) info('已从 git 凭据管理器取到 GitCode 令牌');
   if (!token) {
     info('需要一个 GitCode 访问令牌(GitCode 右上角头像 → 设置 → 访问令牌)。');
     info('建议设成环境变量 GITCODE_TOKEN,这样以后不用每次输入。');

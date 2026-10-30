@@ -189,7 +189,14 @@ jobs:
       # 把同一批产物也同步到 GitCode 的普通仓库(代码 + 发行版同一个仓库)。
       # 没配 GITCODE_TOKEN 会让这一步失败(而不是静默跳过),否则“发布成功”会盖住
       # “GitCode 还停在旧版本”的事实。补同步:运行 Sync to GitCode 工作流。
+      #
+      # 这一步标成 continue-on-error:GitHub runner 到 GitCode 的上行太慢(302 MB 传 40 分钟还会断)。
+      # 2026-10-24 发 v1.1.0 就是在这里超时:旧脚本"先删同名附件再传",DELETE 成功、PUT 失败,
+      # GitCode 上的 Setup 和 APK 因此消失了好几天。现在脚本已改成"只补缺、绝不先删",
+      # 而且附件默认由维护者本机用「管理工具.bat → 3 上传安装包到 GitCode」补传(实测 11~19 MB/s)。
+      # 这里仍然跑,能补齐就补齐;补不齐不该把整条发布判成失败 —— 发行版本体已经发出去了。
       - name: 同步发行版到 GitCode
+        continue-on-error: true
         env:
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
           GITCODE_REPO: DeltaForceAnimation_app

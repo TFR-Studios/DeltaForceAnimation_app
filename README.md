@@ -417,6 +417,19 @@ GitCode 上只有一个仓库:
 > 原来的只读镜像仓库已经删除;v1.0.1 / v1.0.2 的旧发行版也一起清掉了。
 > 从 **v1.0.3** 开始,这里同时承载代码、标签和发行版。
 
+### 发行版附件:本地打包 + 上传(推荐)
+
+GitHub 的 Release 由打标签自动完成,但 **GitCode 的安装包默认在本地补传** —— GitHub runner 传到 GitCode
+只有几百 KB/s,302 MB 要传 40 分钟还会中断(2026-10-24 发 v1.1.0 时就是因为这个把 Setup 和 APK 弄丢过)。
+
+1. `构建应用.bat` 或 `npm run dist` 打 Windows 包,`npm run tauri android build -- --apk -t aarch64` 打 APK;
+2. 双击 `管理工具.bat` → **3「上传安装包到 GitCode」** → 选文件 → 选版本 → 回车;
+3. 令牌优先取环境变量 `GITCODE_TOKEN`,没有就读 git 凭据管理器(平时 push 用的那份),不用手输。
+
+- 同名附件**已存在就跳过**,不会删档;按体积从小到大上传,APK 先落地;
+- 手机上要用的话,APK 会自动改名成 `dfae-<版本>-arm64-v8a.apk`(gradle 产物名不适合直接发布);
+- 实测 11~19 MB/s,四个包半分钟。
+
 ### 代码:GitHub → GitCode
 
 GitCode 不再用「Pull 镜像」,因为镜像仓库是只读的,不能建新标签/发行版。
