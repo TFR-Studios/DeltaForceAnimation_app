@@ -423,7 +423,14 @@ async function actionUpload() {
 /* 对比两边的发行版附件 */
 async function fetchJson(url) {
   try {
-    const r = await fetch(url, { headers: { 'User-Agent': 'dfae-cli', Accept: 'application/vnd.github+json' } });
+    /* GitCode 的匿名接口有共享限流(实测会直接 429),带上令牌才稳定 ——
+     * 令牌来源与上传一致:环境变量 → git 凭据管理器。GitHub 侧不需要。 */
+    const headers = { 'User-Agent': 'dfae-cli', Accept: 'application/vnd.github+json' };
+    if (/gitcode\.com/i.test(url)) {
+      const tk = process.env.GITCODE_TOKEN || gitCredentialToken();
+      if (tk) headers.Authorization = 'Bearer ' + tk;
+    }
+    const r = await fetch(url, { headers });
     if (!r.ok) return { error: 'HTTP ' + r.status };
     return { data: await r.json() };
   } catch (e) { return { error: '连不上:' + String(e.message || e).slice(0, 60) }; }
