@@ -221,13 +221,14 @@ async function actionRelease() {
   console.log(dim('  接下来会自动做这些事:'));
   console.log(dim('    1. 改三个文件的版本号(package.json / tauri.conf.json / Cargo.toml)'));
   console.log(dim('    2. 按提交记录起草发布说明'));
-  console.log(dim('    3. 提交 + 推送 + 打标签 + 推标签'));
-  console.log(dim('    4. GitHub 云端双端打包(约 10 分钟)并同步到 GitCode'));
+  console.log(dim('    3. 提交 + 推送 + 打标签 + 推标签(标签一推,GitHub Actions 就开始打包)'));
+  console.log(dim('    4. 本地同时打包(Windows 安装包 + 安卓 APK,约 8-10 分钟)'));
+  console.log(dim('    5. 把本地包直接传到 GitCode 发行版(本机 10+ MB/s,几十秒)'));
   console.log('');
   const go = (await ask('  确认开始?(输入 y 回车开始,直接回车取消): ')).trim().toLowerCase();
   if (go !== 'y') { info('已取消。'); return; }
 
-  step('[1/4] 改版本号 + 起草说明');
+  step('[1/5] 改版本号 + 起草说明');
   const b = node('scripts/bump-version.mjs', bump, '--notes');
   console.log(indent(b.out));
   if (b.code !== 0) { bad('改版本号失败,已停止。'); return; }
@@ -246,21 +247,21 @@ async function actionRelease() {
     spawnSync('notepad', [notesFile], { stdio: 'inherit' });
   }
 
-  step('[2/4] 提交');
+  step('[2/5] 提交');
   const a2 = git('add', '-A');
   if (a2.code !== 0) { bad('git add 失败'); console.log(indent(a2.out)); return; }
   const c2 = git('commit', '-m', 'chore: ' + tag);
   if (c2.code !== 0) { bad('提交失败:'); console.log(indent(c2.out)); return; }
   ok('已提交 ' + tag);
 
-  step('[3/4] 推送到 GitHub + GitCode');
+  step('[3/5] 推送到 GitHub + GitCode');
   const u2 = git('push');
   if (u2.code !== 0) { bad('GitHub 推送失败。修好后重跑本工具,或手动 git push。'); console.log(indent(u2.out)); return; }
   ok('已推送到 GitHub');
   const g2 = await pushGitCode('HEAD:main');
   if (!g2) warn('GitCode 分支没推上去;云端发布会再补推,但建议修好后再重跑。');
 
-  step('[4/4] 打标签并推送(这一步触发云端打包)');
+  step('[4/5] 打标签并推送(这一步触发云端打包)');
   const exists = git('rev-parse', '-q', '--verify', 'refs/tags/' + tag).code === 0;
   const t1 = git('tag', '-f', tag);
   if (t1.code !== 0) { bad('打标签失败:'); console.log(indent(t1.out)); return; }
@@ -274,17 +275,63 @@ async function actionRelease() {
   ok('标签 ' + tag + ' 已推送到 GitHub + GitCode');
 
   console.log('');
+  info('GitHub 那边已经开工(标签触发 Actions:双端打包 → 建发行版),不用等它。');
+
+  /* [5/5] 本地打包 + 补传 GitCode。
+   * 为什么要本地打:GitHub runner 传到 GitCode 只有几百 KB/s,302 MB 传 40 分钟还会断
+   * (v1.1.0 就是在这里把 Setup 和 APK 弄丢的)。本机传实测 10~19 MB/s,几十秒。
+   * 顺序:先把标签推出去(云端先跑),再本地打 —— 两边并行,总耗时≈本机构建时间。 */
+  step('[5/5] 本地打包并上传到 GitCode');
+  console.log(dim('  说明:这一步会占用几分钟 CPU,期间不要关闭窗口。'));
+  console.log('');
+  const doLocal = (await ask('  现在本地打包并上传?(输入 y 开始,直接回车跳过): ')).trim().toLowerCase();
+  if (doLocal !== 'y') {
+    info('已跳过本地打包。GitHub 云端仍会出包;GitCode 缺附件时,以后用菜单 3「上传安装包到 GitCode」补。');
+  } else {
+    const builds = [
+      { name: 'Windows(安装包 + 便携版 + 免安装目录)', cmd: npmCmd(), args: ['run', 'dist'] },
+      { name: 'Android APK(aarch64 release)', cmd: npmCmd(), args: ['run', 'tauri', 'android', 'build', '--', '--apk', '-t', 'aarch64'], env: ndkEnv() },
+    ];
+    let buildOk = true;
+    for (const b of builds) {
+      step('打包:' + b.name);
+      const r = spawnSync(b.cmd, b.args, { cwd: ROOT, stdio: 'inherit', env: { ...process.env, ...(b.env || {}) } });
+      if (r.status !== 0) { bad(b.name + ' 打包失败(退出码 ' + r.status + ')'); buildOk = false; break; }
+      ok(b.name + ' 完成');
+    }
+
+    if (!buildOk) {
+      warn('本地打包没全成,GitCode 先用已有的包补传。修好可重跑菜单 3。');
+    }
+    const files = localAssets().filter((f) => f.name.includes(next) || f.name.startsWith('dfae-' + next));
+    if (!files.length) {
+      warn('本地没找到 ' + tag + ' 的安装包,跳过上传。');
+    } else {
+      const token = process.env.GITCODE_TOKEN || gitCredentialToken();
+      if (!token) {
+        warn('没有 GitCode 令牌,跳过上传。设置 GITCODE_TOKEN 或先 git push 一次 GitCode 再重跑菜单 3。');
+      } else {
+        console.log('');
+        console.log(dim('  将上传到 GitCode ' + tag + ':'));
+        for (const f of files) console.log(dim('    · ' + f.name + '  ' + mb(f.size)));
+        console.log('');
+        await pushAssetsToGitCode(tag, files, token);
+      }
+    }
+  }
+
+  console.log('');
   console.log(rule('═'));
-  console.log(bold(green('  发布流程已启动!')));
+  console.log(bold(green('  发布流程完成!')));
   console.log(rule('═'));
   console.log('');
-  console.log('  GitHub 云端会自动:');
+  console.log('  GitHub 云端(已触发,约 10 分钟):');
   console.log('    1. 校验版本号是否一致');
-  console.log('    2. Windows + Android 双端打包(约 10 分钟)');
+  console.log('    2. Windows + Android 双端打包');
   console.log('    3. 建 GitHub 发行版并挂上安装包');
-  console.log('    4. 把代码和安装包同步到 GitCode');
+  console.log('    4. 把代码和发行版同步到 GitCode(本地已传过的附件会跳过,绝不删档)');
   console.log('');
-  console.log('  你可以关掉这个窗口,关掉不影响打包。');
+  console.log('  核对两边是否一致: 管理工具 → 4「检查发布状态」');
   console.log('');
   console.log('  进度: ' + cyan('https://github.com/' + GH_REPO + '/actions'));
   console.log('  结果: ' + cyan('https://github.com/' + GH_REPO + '/releases'));
@@ -293,6 +340,33 @@ async function actionRelease() {
   const open = (await ask('  现在打开进度页吗?(输入 y 打开): ')).trim().toLowerCase();
   if (open === 'y') {
     spawnSync('cmd', ['/c', 'start', '', 'https://github.com/' + GH_REPO + '/actions'], { stdio: 'ignore' });
+  }
+}
+
+/* 打包用的小工具:npm 在 Windows 上是 npm.cmd;安卓要带 NDK 环境 */
+function npmCmd() {
+  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+}
+function ndkEnv() {
+  const base = path.join(process.env.LOCALAPPDATA || '', 'Android', 'Sdk', 'ndk', '25.2.9519653');
+  if (!existsSync(base)) return {};
+  return { NDK_HOME: base, ANDROID_NDK_HOME: base };
+}
+
+/* 把本地文件传到 GitCode 发行版:复制到临时目录后交给 publish-to-gitcode.mjs,
+ * 与菜单 3 走完全同一条上传逻辑(幂等、只补缺、按体积从小到大传)。 */
+async function pushAssetsToGitCode(tag, files, token) {
+  const tmp = mkdtempSync(path.join(tmpdir(), 'dfae-upload-'));
+  try {
+    for (const f of files) copyFileSync(f.file, path.join(tmp, f.name));
+    const notes = path.join(ROOT, 'docs', 'RELEASE_NOTES_' + tag + '.md');
+    const argv = [path.join(ROOT, 'scripts', 'publish-to-gitcode.mjs'), tag, tmp];
+    if (existsSync(notes)) argv.push(notes);
+    const r = spawnSync(process.execPath, argv, { cwd: ROOT, stdio: 'inherit', env: { ...process.env, GITCODE_TOKEN: token } });
+    if (r.status === 0) { console.log(''); ok('GitCode 附件已就绪'); }
+    else { console.log(''); bad('GitCode 上传失败(退出码 ' + r.status + '),可用菜单 3 补传。'); }
+  } finally {
+    try { rmSync(tmp, { recursive: true, force: true }); } catch { /* 忽略 */ }
   }
 }
 
@@ -333,7 +407,12 @@ function localAssets() {
     path.join('src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk', 'universal', 'release'),
     path.join('src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk', 'universal', 'debug'),
   ];
+  /* 只取一个 APK,且只认 release 目录。
+   * 这里以前把 debug 目录也扫了:debug APK 有 288 MB(release 27 MB),而且两个文件
+   * 改名后同名 —— 补传时会把 debug 包当成正式包传上去。 */
+  const apkPicked = { done: false };
   for (const dir of apkDirs) {
+    if (apkPicked.done) break;
     const full = path.join(ROOT, dir);
     if (!existsSync(full)) continue;
     for (const name of readdirSync(full)) {
@@ -341,10 +420,19 @@ function localAssets() {
       const f = path.join(full, name);
       try { if (!statSync(f).isFile()) continue; } catch { continue; }
       found.push({ name: 'dfae-' + pkgVersion() + '-arm64-v8a.apk', file: f, size: statSync(f).size });
-      break; /* 每个目录只取一个,debug 排在后面,有 release 就不会用到它 */
+      apkPicked.done = true;
+      break;
     }
   }
-  return found.sort((a, b) => a.name.localeCompare(b.name));
+  /* 兜底去重:同名只留第一个(优先级 = 前面的目录 / 前面的文件) */
+  const seen = new Set();
+  const unique = [];
+  for (const f of found) {
+    if (seen.has(f.name)) continue;
+    seen.add(f.name);
+    unique.push(f);
+  }
+  return unique.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
@@ -397,27 +485,9 @@ async function actionUpload() {
   const go = (await ask('  确认?(输入 y 回车开始): ')).trim().toLowerCase();
   if (go !== 'y') { info('已取消。'); return; }
 
-  /* 复制到临时目录,再交给已有的发布脚本 —— 复用同一套上传逻辑,避免两份实现 */
-  const tmp = mkdtempSync(path.join(tmpdir(), 'dfae-upload-'));
-  try {
-    for (const f of chosen) copyFileSync(f.file, path.join(tmp, f.name));
-    step('上传中...');
-    const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'publish-to-gitcode.mjs'), tag, tmp], {
-      cwd: ROOT,
-      stdio: 'inherit',
-      env: { ...process.env, GITCODE_TOKEN: token },
-    });
-    if (r.status === 0) {
-      console.log('');
-      ok('上传完成');
-      info('下载页: https://gitcode.com/' + GITCODE_REPO + '/releases');
-    } else {
-      console.log('');
-      bad('上传失败(退出码 ' + r.status + ')。看上面的输出定位原因。');
-    }
-  } finally {
-    try { rmSync(tmp, { recursive: true, force: true }); } catch {}
-  }
+  step('上传中...');
+  await pushAssetsToGitCode(tag, chosen, token);
+  info('下载页: https://gitcode.com/' + GITCODE_REPO + '/releases');
 }
 
 /* 对比两边的发行版附件 */
@@ -578,7 +648,7 @@ function header() {
 
 const MENU = [
   ['1', '提交代码', '把改动提交并同时推送到 GitHub + GitCode(不含打包)', actionCommit],
-  ['2', '发布新版本', '改版本号 → 起草说明 → 提交 → 打标签 → 云端自动打包发布', actionRelease],
+  ['2', '发布新版本', '改版本号 → 起草说明 → 提交 → 打标签(GitHub Actions 同时出包)→ 本地打包直传 GitCode', actionRelease],
   ['3', '上传安装包到 GitCode', '把本地打好的包补传到某个版本的发行版', actionUpload],
   ['4', '检查发布状态', '对比 GitHub 与 GitCode 两边的安装包', actionStatus],
   ['5', '从 GitHub 补同步到 GitCode', '某个版本只在 GitHub 发过、GitCode 缺安装包时,一键下载并补传', actionSyncGitHub],
