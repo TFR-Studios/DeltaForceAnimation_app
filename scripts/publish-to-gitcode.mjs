@@ -173,39 +173,42 @@ if (body) {
   }
 }
 
-/* 3) 逐个上传附件:同名先删再传,保证不会出现两份 */
-const files = (await readdir(assetsDir)).filter((n) => !n.startsWith('.') && !n.endsWith('.blockmap'));
-if (!files.length) { console.error('[GitCode] 产物目录是空的:', assetsDir); process.exit(1); }
+/* 3) 逐个上传附件:**只补缺,绝不先删**。
+ *
+ * 为什么要改(2026-10-24 v1.1.0 的真实事故):这里原来写的是"同名且大小不一致 → 先 DELETE 再 PUT"。
+ * 那一次 CI 的上传在 40 分钟后失败,而 DELETE 已经成功执行 —— 于是 GitCode 上
+ * Setup 和 APK 两个附件被删掉后没能传回来(用户几天后来问"APK 怎么没了")。
+ * 现在的规矩:
+ *   · 同名附件**存在就跳过**,不管大小是否一致(同一个 tag 下的产物就是同一版,
+ *     大小不同一般是"两次构建撞到同一个 tag",这种情况下删掉别人已传上去的包只会更糟);
+ *   · 大小不一致时打一行 WARN,让人去看,而不是自作主张删;
+ *   · 按体积**从小到大**上传:手机 APK 最先落地,后面大包即使失败,用户也已经有得下。 */
+const all = (await readdir(assetsDir)).filter((n) => !n.startsWith('.') && !n.endsWith('.blockmap'));
+if (!all.length) { console.error('[GitCode] 产物目录是空的:', assetsDir); process.exit(1); }
+const files = [];
+for (const n of all) {
+  const st = await stat(path.join(assetsDir, n));
+  if (st.isFile()) files.push({ name: n, size: st.size });
+}
+files.sort((a, b) => a.size - b.size);
 let failed = 0;
-for (const name of files) {
+for (const f of files) {
+  const name = f.name;
   const filePath = path.join(assetsDir, name);
-  const info = await stat(filePath);
-  if (!info.isFile()) continue;
+  const info = { size: f.size };
   console.log('[GitCode] 处理 ' + name + ' (' + (info.size / 1048576).toFixed(1) + ' MB)');
 
-  /* 3a) 已经存在且大小一致 → 直接跳过。
-   * 重跑工作流 / 补同步时不必把 100+ MB 的包再传一遍,也避免“上传失败前先删旧包”。 */
+  /* 3a) 已存在 → 跳过(不删、不覆盖) */
   const cur = await apiRetry('/releases/tags/' + encodeURIComponent(tag));
-  let existing = null;
   if (cur.status === 200) {
     const data = await cur.json();
-    existing = (data.assets || []).find((a) => a.name === name) || null;
-    if (existing && existing.browser_download_url) {
-      const size = await remoteSize(existing.browser_download_url);
-      if (size === info.size) {
-        console.log('        已存在且大小一致(' + size + ' 字节),跳过');
-        continue;
-      }
-    }
-  }
-
-  /* 3b) 同名旧附件(大小不一致)先删掉,再传新的 */
-  if (existing) {
-    const id = existing.id ?? existing.attach_file_id;
-    if (id == null) { console.log('        旧附件没有 id,跳过删除:', name); }
-    else {
-      const del = await apiRetry('/releases/' + encodeURIComponent(tag) + '/attach_files/' + id, { method: 'DELETE' });
-      console.log('        删除同名旧附件 id=' + id + ' → ' + del.status);
+    const existing = (data.assets || []).find((a) => a.name === name) || null;
+    if (existing) {
+      let remote = null;
+      if (existing.browser_download_url) remote = await remoteSize(existing.browser_download_url);
+      if (remote === info.size) console.log('        已存在且大小一致(' + remote + ' 字节),跳过');
+      else console.log('        WARN 已存在但大小不同(远端 ' + remote + ' / 本地 ' + info.size + '),跳过以免删掉可用附件;如需替换请手工删除后再传');
+      continue;
     }
   }
 
