@@ -104,8 +104,17 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   const aboutPath = document.getElementById('aboutPath');
 
   const pages: Record<PageId, HTMLElement | null> = { home: viewHome, editor: viewEditor, about: viewAbout };
-  const platform: Platform = hooks.isMobile ? 'android' : hooks.isDesktopApp ? 'windows' : 'web';
-  const channel = hooks.isDesktopApp ? '桌面版' : hooks.isMobile ? '手机版' : '网页版';
+  /* 「跑在桌面客户端里」与「用的是手机 UI」是两件事,判定必须**移动端优先**。
+   * 安卓 APK 里挂着同一个 window.dfaeDesktop 桥接层(它本来就叫这个名字,提供的是"能落盘 /
+   * 能开系统浏览器"这一层能力),所以 isDesktopApp 在手机上同样成立 —— 只看它,关于页就会
+   * 把手机写成「桌面版」,还露出只有桌面才有的「保存目录」,这正是用户报的"手机上被认成桌面端"。
+   * 用户看见的是哪套 UI,版本渠道就写哪一套;平台判定同样手机优先 ——
+   * 它决定更新检查去挑 APK 还是 Setup.exe,判错就会把 Windows 安装包塞到手机上。 */
+  const desktopClient = hooks.isDesktopApp && !hooks.isMobile;
+  const platform: Platform = hooks.isMobile ? 'android' : desktopClient ? 'windows' : 'web';
+  const channel = hooks.isMobile ? '手机版' : desktopClient ? '桌面版' : '网页版';
+  /** 「打开导出目录」是桌面客户端能力:手机上的落点是系统相册,没有可打开的文件夹 */
+  const canOpenDir = hooks.hasExportDir && desktopClient;
 
   let currentVersion = hooks.version;
   let current: PageId = 'home';
@@ -301,32 +310,54 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   async function downloadAndInstall(): Promise<void> {
     if (!bridge || !updateAsset || downloading || !bridge.downloadUpdate || !bridge.installUpdate) return;
     downloading = true;
+    promptBusy = true;
     const installBtn = document.getElementById('btnInstallUpdate') as HTMLButtonElement | null;
     if (installBtn) installBtn.disabled = true;
+    if (updPrimary) updPrimary.disabled = true;
     hideProgress();
+    hideUpdProgress();
     setProgress(0, '准备下载');
+    setUpdProgress(0, '准备下载');
+    if (updNoteEl && promptOpen) updNoteEl.textContent = '正在下载安装包…';
     setStatus('checking', chip('is-busy', 'refresh', '正在下载安装包…'));
     try {
       const res = await bridge.downloadUpdate(updateAsset.url, updateAsset.name);
       if (!res || !res.ok || !res.path) {
+        const why = (res && res.error) || '下载失败';
         hideProgress();
-        applyUpdate({ state: 'error', html: chip('is-error', 'alert', esc((res && res.error) || '下载失败')), title: '' });
+        hideUpdProgress();
+        if (promptOpen && updNoteEl) updNoteEl.textContent = '下载失败:' + why + '。可以再试一次,或者前往下载页手动下载。';
+        applyUpdate({ state: 'error', html: chip('is-error', 'alert', esc(why)), title: '' });
         return;
       }
       setProgress(100, '已下载,正在安装');
+      setUpdProgress(100, '已下载');
+      if (updNoteEl && promptOpen) updNoteEl.textContent = '安装包已就绪,正在启动安装程序…';
       applyUpdate({ state: 'latest', html: chip('is-plain', 'check', '安装包已就绪,正在启动安装程序…'), title: res.path });
       const inst = await bridge.installUpdate(res.path);
       if (!inst || !inst.ok) {
+        const why = (inst && inst.error) || '启动安装程序失败';
         hideProgress();
-        applyUpdate({ state: 'error', html: chip('is-error', 'alert', esc((inst && inst.error) || '启动安装程序失败')), title: '' });
+        hideUpdProgress();
+        if (promptOpen && updNoteEl) updNoteEl.textContent = '启动安装程序失败:' + why + '。可以稍后手动安装。';
+        applyUpdate({ state: 'error', html: chip('is-error', 'alert', esc(why)), title: '' });
       }
       /* 成功时主进程会退出自己,页面不用再做什么 */
     } catch (e) {
       hideProgress();
+      hideUpdProgress();
+      if (promptOpen && updNoteEl) updNoteEl.textContent = '更新失败:' + errText(e);
       applyUpdate({ state: 'error', html: chip('is-error', 'alert', '更新失败: ' + esc(errText(e))), title: '' });
     } finally {
       downloading = false;
+      promptBusy = false;
       if (installBtn) installBtn.disabled = false;
+      if (updPrimary) {
+        updPrimary.disabled = false;
+        updPrimary.textContent = canSelfUpdate && updateAsset
+          ? '下载并安装'
+          : isMobileUI() ? '去浏览器下载' : '前往下载页';
+      }
     }
   }
 
@@ -335,11 +366,15 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     bridge.onUpdateProgress((p) => {
       if (!p || !downloading) return;
       if (p.phase === 'downloading') {
-        setProgress(p.pct || 0, p.total ? Math.round((p.received / p.total) * 100) + '%' : '下载中');
+        const text = p.total ? Math.round((p.received / p.total) * 100) + '%' : '下载中';
+        setProgress(p.pct || 0, text);
+        setUpdProgress(p.pct || 0, text);
       } else if (p.phase === 'done') {
         setProgress(100, '已下载');
+        setUpdProgress(100, '已下载');
       } else if (p.phase === 'cancelled') {
         hideProgress();
+        hideUpdProgress();
         setStatus('idle');
       }
     });
@@ -348,9 +383,230 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     btnCancel.addEventListener('click', () => {
       void bridge?.cancelUpdate?.();
       hideProgress();
+      hideUpdProgress();
+      /* 浮层开着时把说明文字也退回"还没开始"的那一句,别停在"准备下载" */
+      if (promptOpen && updNoteEl && !promptBusy) paintUpdatePrompt();
       setStatus('idle');
     });
   }
+
+  /* ---------- 全屏更新提示 ----------
+   * 发现新版本时盖住整屏,由用户决定「现在更新 / 稍后再说 / 跳过这个版本」。
+   * 为什么值得一整屏:版本这件事最怕"用户从没看见"。以前只有关于页里一行小字 + 导航上的
+   * 一个小点 —— 自动检查真的发现了新版本,不进关于页的人永远不知道。
+   *
+   * 两端是两套版式(同一份 DOM,由 <html data-ui> 决定命中哪套 CSS):
+   *   · 桌面 —— 居中卡片,与导出浮层同一套浮层语言(遮罩 + 圆角 14 + --shadow-3);
+   *   · 手机 —— 占满整屏的面板:顶部品牌标记、正文可滚、动作通栏贴底并避开安全区,
+   *     拇指够得着;"稍后"与"跳过"的语义和桌面完全一致。
+   * 两端文案的差别只有一句"怎么装":桌面安装版能在应用内下载安装;手机 / 网页只能去浏览器取安装包。
+   *
+   * 两条纪律:
+   *  ① 「跳过这个版本」写进 localStorage:同一版永不再打扰,换版本才会再弹;
+   *  ② 自动检查对同一版本只弹一次;手动点「检查更新」是显式动作,允许再弹。 */
+  type PendingUpdate = {
+    version: string;
+    origin: string;
+    asset: { url: string; name: string } | null;
+    pageUrl: string;
+  };
+  const SKIP_KEY = 'dfae.ui.skipUpdate.v1';
+  const updOverlay = document.getElementById('updateOverlay');
+  const updLatestEl = document.getElementById('updLatest');
+  const updFromEl = document.getElementById('updFrom');
+  const updAssetEl = document.getElementById('updAsset');
+  const updNoteEl = document.getElementById('updNote');
+  const updProgressEl = document.getElementById('updProgress');
+  const updBarEl = document.getElementById('updBar');
+  const updFillEl = document.getElementById('updFill');
+  const updPctEl = document.getElementById('updPct');
+  const updPrimary = document.getElementById('updPrimary') as HTMLButtonElement | null;
+  const updLater = document.getElementById('updLater') as HTMLButtonElement | null;
+  const updSkip = document.getElementById('updSkip') as HTMLButtonElement | null;
+  const updClose = document.getElementById('updClose') as HTMLButtonElement | null;
+
+  let pendingUpdate: PendingUpdate | null = null;
+  let promptedFor = '';      // 本会话已经自动弹过的版本
+  let promptOpen = false;
+  let promptBusy = false;
+  let releasePromptFocus: (() => void) | null = null;
+  let skippedVersion = '';
+  try { skippedVersion = localStorage.getItem(SKIP_KEY) ?? ''; } catch { /* 存不了就只按会话内去重 */ }
+
+  /** 当前是不是"手机那套 UI"。hooks.isMobile 与 mobile.ts 的 resolveMobile 可能不同
+   *  (?ui=mobile / localStorage 调试口子),所以两处都认;data-ui 是渲染的既成事实。 */
+  function isMobileUI(): boolean {
+    return hooks.isMobile || document.documentElement.dataset.ui === 'mobile';
+  }
+
+  /* 焦点边界:浮层是模态的,焦点必须留在里面。做法与 main.ts 的 holdFocusInside 相同
+   * (浮层里有 Fluent 自定义元素,真正的焦点节点在 shadow DOM 里,自己算 Tab 顺序迟早算错):
+   * Tab 两端收口 + focusin 兜底。 */
+  function trapFocus(root: HTMLElement): () => void {
+    const focusable = (): HTMLElement[] =>
+      Array.from(root.querySelectorAll<HTMLElement>(
+        'a[href], button, input, select, textarea, fluent-button, fluent-toggle-button, [tabindex]:not([tabindex="-1"])',
+      )).filter((el) => !el.hasAttribute('disabled') && !el.hidden && el.getClientRects().length > 0);
+    let lastInside: HTMLElement | null = null;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Tab' || e.altKey || e.ctrlKey || e.metaKey) return;
+      const list = focusable();
+      if (!list.length) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (active === first || !active || !root.contains(active)) { e.preventDefault(); try { last.focus(); } catch { /* 忽略 */ } }
+      } else if (active === last || !active || !root.contains(active)) {
+        e.preventDefault();
+        try { first.focus(); } catch { /* 忽略 */ }
+      }
+    };
+    const onFocusIn = (e: FocusEvent): void => {
+      const t = e.target as HTMLElement | null;
+      if (t && root.contains(t)) { lastInside = t; return; }
+      const list = focusable();
+      if (!list.length) { try { root.focus(); } catch { /* 忽略 */ } return; }
+      const back = lastInside === list[list.length - 1] ? list[0] : list[list.length - 1];
+      try { back.focus(); } catch { /* 忽略 */ }
+      lastInside = back;
+    };
+    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('focusin', onFocusIn, true);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('focusin', onFocusIn, true);
+    };
+  }
+
+  /** 浮层里的进度条(与关于页那条共用同一次下载,两条都更新)。 */
+  function setUpdProgress(pct: number, text?: string): void {
+    if (!updProgressEl) return;
+    updProgressEl.hidden = false;
+    const v = Math.max(0, Math.min(100, Math.round(pct)));
+    /* 填充走 transform: scaleX(见 style.css 的 .upd-fill):不触发布局,
+     * 与导出 / 数据加载那两条进度条同一个"完成度"语义。 */
+    if (updFillEl) updFillEl.style.transform = 'scaleX(' + v / 100 + ')';
+    if (updPctEl) updPctEl.textContent = text || v + '%';
+    if (updBarEl) {
+      updBarEl.setAttribute('aria-valuenow', String(v));
+      updBarEl.setAttribute('aria-valuetext', text || v + '%');
+    }
+  }
+  function hideUpdProgress(): void {
+    if (updProgressEl) updProgressEl.hidden = true;
+    if (updFillEl) updFillEl.style.transform = 'scaleX(0)';
+  }
+
+  /** 把"怎么装"写清楚:这是两端唯一的文案差别,也是用户选择时最需要的那条信息。 */
+  function paintUpdatePrompt(): void {
+    const p = pendingUpdate;
+    if (!p) return;
+    if (updLatestEl) updLatestEl.textContent = 'v' + p.version;
+    if (updFromEl) updFromEl.textContent = '从 v' + currentVersion + ' 升级 · 来源 ' + p.origin;
+    if (updAssetEl) {
+      updAssetEl.textContent = p.asset
+        ? '安装包 ' + p.asset.name
+        : '这个发行版没有适用于本机的安装包,将打开发行版页面';
+    }
+    const mobile = isMobileUI();
+    if (updPrimary) {
+      updPrimary.textContent = canSelfUpdate && updateAsset
+        ? '下载并安装'
+        : mobile ? '去浏览器下载' : '前往下载页';
+      updPrimary.disabled = promptBusy;
+    }
+    if (updNoteEl && !promptBusy) {
+      updNoteEl.textContent = canSelfUpdate && updateAsset
+        ? '应用内下载并安装,装完会自动打开新版;已导出的视频与保存目录不受影响。'
+        : mobile
+          ? '在浏览器里下载 APK 后手动安装;已导出的视频保存在系统相册里,不受影响。'
+          : '在浏览器里下载安装包;已导出的视频与保存目录不受影响。';
+    }
+  }
+
+  function openUpdatePrompt(): void {
+    if (!updOverlay || !pendingUpdate || promptOpen) return;
+    promptOpen = true;
+    paintUpdatePrompt();
+    updOverlay.hidden = false;
+    releasePromptFocus?.();
+    releasePromptFocus = trapFocus(updOverlay);
+    try { (updPrimary ?? updOverlay).focus(); } catch { /* 忽略 */ }
+  }
+
+  function closeUpdatePrompt(): void {
+    if (!updOverlay || !promptOpen) return;
+    promptOpen = false;
+    releasePromptFocus?.();
+    releasePromptFocus = null;
+    updOverlay.hidden = true;
+  }
+
+  /** 检查结果到手后的唯一出口:决定"要不要弹"。force = 用户手动点的检查更新。 */
+  function maybePromptUpdate(force: boolean): void {
+    const p = pendingUpdate;
+    if (!p) return;
+    if (skippedVersion && p.version === skippedVersion) return; // 用户说过"这个版本别再问"
+    if (!force && promptedFor === p.version) return;           // 自动检查对同一版只弹一次
+    /* 导出 / 数据加载正在进行时不抢屏:那两层是 9000 / 9999,在本浮层(8800)之上 ——
+     * 弹出来既会被盖住,又会和它们的焦点边界互相拉。关于页那条行内状态照常显示"有新版本",
+     * 用户导出完再点「检查更新」,或者下次启动时会看到这里的全屏提示。 */
+    const expOv = document.getElementById('exportOverlay');
+    if (expOv && !expOv.hidden) return;
+    const dlOv = document.getElementById('dataLoading');
+    if (dlOv && !dlOv.hidden) return;
+    promptedFor = p.version;
+    openUpdatePrompt();
+  }
+
+  /** 非应用内安装的分支:交给系统浏览器。桌面桥接层有 openExternal(校验 http/https),
+   *  手机 / 网页退回 window.open —— 两条路都只是"把链接递出去",不在应用内下载安装包。 */
+  function openReleasePage(): void {
+    const url = (updateAsset && updateAsset.url) || (pendingUpdate && pendingUpdate.pageUrl) || '';
+    if (!url) return;
+    const opener = (window as any).dfaeDesktop?.openExternal;
+    if (typeof opener === 'function') {
+      try { void opener(url); return; } catch { /* 落到 window.open */ }
+    }
+    try { window.open(url, '_blank', 'noopener'); } catch { /* 被拦就什么也做不了 */ }
+  }
+
+  async function onPromptPrimary(): Promise<void> {
+    if (promptBusy) return;
+    if (canSelfUpdate && updateAsset && bridge) {
+      await downloadAndInstall();
+      return;
+    }
+    openReleasePage();
+  }
+
+  if (updPrimary) updPrimary.addEventListener('click', () => void onPromptPrimary());
+  if (updLater) updLater.addEventListener('click', closeUpdatePrompt);
+  if (updClose) updClose.addEventListener('click', closeUpdatePrompt);
+  if (updOverlay) {
+    updOverlay.addEventListener('click', (e) => {
+      if (e.target === updOverlay) closeUpdatePrompt(); // 点遮罩 = 稍后再说
+    });
+  }
+  if (updSkip) {
+    updSkip.addEventListener('click', () => {
+      const p = pendingUpdate;
+      if (p) {
+        skippedVersion = p.version;
+        try { localStorage.setItem(SKIP_KEY, p.version); } catch { /* 存不了就只记在本会话 */ }
+      }
+      closeUpdatePrompt();
+    });
+  }
+  /* Esc = 稍后再说。用 keydown 而不是 keyup:与画廊 / 下载列表一致,按下的那一刻就该响应。 */
+  document.addEventListener('keydown', (e) => {
+    if (!promptOpen || e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeUpdatePrompt();
+  });
+
 
   /** 统一检查入口:silent = 启动时自动查(不显示"检查中"、失败也不报错)。 */
   async function runCheck(silent = false): Promise<void> {
@@ -372,8 +628,20 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
         });
         const installBtn = document.getElementById('btnInstallUpdate');
         if (installBtn) installBtn.addEventListener('click', () => void downloadAndInstall());
+        /* 全屏提示:发现新版本就把"要不要现在更新"摆到用户面前。
+         * 手动检查(silent=false)允许再弹一次 —— 那是用户自己按的按钮;
+         * 自动检查对同一版本只弹一次,「跳过这个版本」则永久不再弹。 */
+        pendingUpdate = {
+          version: res.release.version,
+          origin: res.origin.label,
+          asset: updateAsset,
+          pageUrl: res.release.pageUrl,
+        };
+        maybePromptUpdate(!silent);
       } else if (res.kind === 'latest') {
         updateAsset = null;
+        pendingUpdate = null;
+        closeUpdatePrompt();
         markUpdateFound(false);
         applyUpdate({
           state: 'latest',
@@ -405,8 +673,8 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   }
 
   /* ---------- 关于页:打开保存目录(仅桌面) ---------- */
-  if (dirRow) dirRow.hidden = !hooks.hasExportDir;
-  if (btnOpenDir && hooks.hasExportDir) {
+  if (dirRow) dirRow.hidden = !canOpenDir;
+  if (btnOpenDir && canOpenDir) {
     btnOpenDir.addEventListener('click', () => {
       void hooks.openExportDir().then((ok) => {
         if (!ok) setStatus('error', chip('is-error', 'alert', '打不开保存目录:系统没有返回可打开的路径'));
@@ -423,7 +691,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
         paintVersion();
       }
       const dir = info && typeof info.exportDir === 'string' ? info.exportDir : '';
-      if (dir && aboutPath && dirRow && hooks.hasExportDir) {
+      if (dir && aboutPath && dirRow && canOpenDir) {
         aboutPath.textContent = dir;
         aboutPath.title = dir;
       }

@@ -60,6 +60,13 @@ const boot = await page.evaluate(async () => {
 check('首屏:「弹窗图层」可见且弹窗文字/颜色列表已渲染', boot.hidden === false && boot.list >= 1 && boot.shapes >= 1, boot);
 check('首屏:「显示弹窗」能真的打开弹窗(bootApp 已把弹窗数据落位)', boot.on.checked === true && boot.on.popupShown === true, boot.on);
 
+/* 上面那组量的是"首屏(主页)期间"的状态;从这里起量的是**编辑器**,先进去。
+ * 应用外壳改版后默认停在主页,编辑器不可见时:侧栏区块全在 [hidden] 里(跳转条算成
+ * "只剩一个区块"、整条收起)、开关与滑杆的几何都是 0×0、CSS 动画也不跑 ——
+ * 这些都是主页期间的正常行为,不是缺陷。旧版这个脚本直接量,得到的是一组假失败。 */
+await page.evaluate(() => document.querySelector('.rail-item[data-page="editor"]').click());
+await new Promise((r) => setTimeout(r, 1600));
+
 /* ---------- 1. 滑杆:自绘轨道 + 已选进度 ---------- */
 const range = await page.evaluate(() => {
   const r = document.getElementById('rngFrame');

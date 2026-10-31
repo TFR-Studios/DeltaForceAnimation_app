@@ -108,7 +108,7 @@
         <button type="button" class="anim-trigger" id="animTrigger" aria-haspopup="dialog" aria-expanded="false"
                 title="选择要编辑的动画(快捷键:斜杠 / 或 Ctrl+K)">
           <span class="anim-trigger-text">
-            <!-- 名称 + 总数在同一行:总数是"这套动画属于八套里的哪一个"的元信息,
+            <!-- 名称 + 总数在同一行:总数是"这套动画属于九套里的哪一个"的元信息,
                  贴在名字右侧比单独占一格更省宽度,也更容易读成一组。 -->
             <span class="anim-trigger-head">
               <span class="anim-trigger-name" id="animTriggerName">撤离动画</span>
@@ -275,6 +275,21 @@
       <!-- 除「动画信息」外,各区块默认 hidden,由 main.ts 按当前动画的数据能力逐块打开 -->
       <!-- 各区块标题后的 span 是图层数量计数,由 main.ts 写入 -->
       <aside class="side-panel">
+        <!-- 右侧编辑区的第一行 = 一键重置。
+             位置:检查器(右侧编辑区)的最上方、所有区块之前,并**吸顶** —— 侧栏最长会滚到 5900px,
+             这条动作必须一直看得见。视觉层级是主操作(实心 --brand,与「导出视频」同一档);
+             --danger 仍然只留给错误与失败。说明行写作用域,重置成功后换成结果。
+             手机端在底部面板的芯片条下方通栏 44px(见 mobile.css 第 5 节)。 -->
+        <div class="side-head" id="sideHead">
+          <button type="button" class="btn-reset-all" id="btnResetAnim" title="一键重置:清除这套动画上的所有改动,恢复出厂状态">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path fill-rule="evenodd" d="M8 3a5 5 0 1 1-4.546 2.914.5.5 0 0 0-.908-.417A6 6 0 1 0 8 2z"/>
+              <path d="M8 4.466V.534a.25.25 0 0 0-.41-.192L5.23 2.308a.25.25 0 0 0 0 .384l2.36 1.966A.25.25 0 0 0 8 4.466"/>
+            </svg>
+            <span>一键重置</span>
+          </button>
+          <p class="side-head-hint" id="resetHint">恢复「撤离动画」的出厂状态</p>
+        </div>
         <!-- 区块跳转(吸顶):侧栏里最长的撤离动画内容高约 5900px、10 个区块,
              「弹窗图层」在 5217px 处 —— 控件一直都在,只是埋在 13 个文字图层 + 22 个形状图层之后。
              这一条把任意区块变成一次选择,并且用它的当前值回答"我正在看哪一段"(滚动时自动跟随)。
@@ -473,7 +488,7 @@
           <img class="home-logo" src="/logo.svg" alt="" aria-hidden="true" />
           <p class="home-channel" id="homeChannel">桌面版 v1.0.5</p>
           <h1 class="home-title" id="homeTitle">把游戏动画改成你自己的</h1>
-          <p class="home-desc">八套由人工用 AE 制作的 HUD 动画。改文案、配色和图标,导出成带音效的 MP4 / AVI。</p>
+          <p class="home-desc">九套由人工用 AE 制作的 HUD 动画。改文案、配色和图标,导出成带音效的 MP4 / AVI。</p>
           <div class="home-actions">
             <button type="button" class="home-primary" id="btnOpenEditor">打开编辑器</button>
             <button type="button" class="home-ghost" id="btnGoAbout">关于与更新</button>
@@ -606,6 +621,49 @@
           <button id="btnExportSave" type="button" class="primary" hidden>保存到手机</button>
           <button id="btnExportRedownload" type="button" hidden>重新下载</button>
           <button id="btnExportCancel" type="button">取消导出</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 全屏更新提示:检查发现新版本时盖住整屏,把"现在更新 / 稍后再看 / 跳过这个版本"交给用户。
+         两端是两套版式(同一份 DOM、同一套状态,只是排版不同):
+           · 桌面 —— 居中的卡片,与导出浮层同一套浮层语言(遮罩 + 圆角 14 + --shadow-3),style.css 第 8.x 节;
+           · 手机 —— 占满整屏的面板(顶部品牌标记、正文可滚、动作通栏贴底 + 安全区),mobile.css 第 12 节。
+         逻辑与文案在 src/start-screen.ts 的「全屏更新提示」段:标题/版本/安装包/失败原因都写在那里,
+         这里只搭骨架 —— 与 #updateStatus 那条行内状态共用同一次检查结果,不重复发请求。 -->
+    <div class="upd-overlay" id="updateOverlay" hidden role="dialog" aria-modal="true" aria-labelledby="updTitle" aria-describedby="updAsset" tabindex="-1">
+      <div class="upd-card" id="updCard">
+        <div class="upd-top">
+          <span class="upd-mark" aria-hidden="true">
+            <svg class="bi bi-lg" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M8 1.2a.9.9 0 0 1 .9.9v6.03l1.53-1.53a.9.9 0 1 1 1.27 1.27l-3.06 3.06a.9.9 0 0 1-1.27 0L4.3 7.87a.9.9 0 0 1 1.27-1.27L7.1 8.13V2.1a.9.9 0 0 1 .9-.9z"/>
+              <path d="M2.4 11.2a.9.9 0 0 1 .9.9v1.1h9.4v-1.1a.9.9 0 1 1 1.8 0v1.5a1.4 1.4 0 0 1-1.4 1.4H2.9a1.4 1.4 0 0 1-1.4-1.4v-1.5a.9.9 0 0 1 .9-.9z"/>
+            </svg>
+          </span>
+          <button type="button" class="upd-close" id="updClose" title="稍后再说(Esc)" aria-label="稍后再说">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M4.65 4.65a.8.8 0 0 1 1.13 0L8 6.87l2.22-2.22a.8.8 0 1 1 1.13 1.13L9.13 8l2.22 2.22a.8.8 0 0 1-1.13 1.13L8 9.13l-2.22 2.22a.8.8 0 0 1-1.13-1.13L6.87 8 4.65 5.78a.8.8 0 0 1 0-1.13z"/>
+            </svg>
+          </button>
+        </div>
+        <h2 class="upd-title" id="updTitle">发现新版本</h2>
+        <p class="upd-ver"><b id="updLatest">v0.0.0</b><span class="upd-from" id="updFrom"></span></p>
+        <p class="upd-asset" id="updAsset">正在识别安装包…</p>
+        <div class="upd-progress" id="updProgress" hidden>
+          <div class="upd-bar" id="updBar" role="progressbar" aria-label="安装包下载进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="准备下载">
+            <div class="upd-fill" id="updFill"></div>
+          </div>
+          <span class="upd-pct" id="updPct">0%</span>
+        </div>
+        <p class="upd-note" id="updNote">更新会替换当前的安装,已导出的视频与保存目录不受影响。</p>
+        <!-- 动作的 DOM 顺序 = 视觉顺序 = Tab 顺序:桌面「稍后」在左、「下载并安装」在右(对话框惯例);
+             手机同一份 DOM 竖排,主操作因此落在最靠拇指的一档。 -->
+        <div class="upd-actions">
+          <button type="button" class="upd-secondary" id="updLater">稍后再说</button>
+          <button type="button" class="upd-primary" id="updPrimary">下载并安装</button>
+        </div>
+        <div class="upd-skip-row">
+          <button type="button" class="upd-skip" id="updSkip" title="这个版本不再提示;下一个版本仍会提示">跳过这个版本</button>
         </div>
       </div>
     </div>

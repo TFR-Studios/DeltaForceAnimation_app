@@ -13,14 +13,16 @@
  *   图片序列驱动(逐帧换 src / <image> href,并强制 lottie 重绘,否则静态层画过一次就不再更新)、
  *   叠加序列调色(feColorMatrix 做 colorize,滤镜宿主挂在 body 的隐藏 svg 上,预览与导出共用)。
  *
- * 八套动画(ANIMATIONS,按需加载):撤离动画(1920×1080)、位置暴露动画(画布加宽为 3840×1080,
+ * 九套动画(ANIMATIONS,按需加载):撤离动画(1920×1080)、位置暴露动画(画布加宽为 3840×1080,
  *   可把「二次扫描」第二段合并进同一条时间轴)、核电站功率动画(两条 359 帧透明序列叠加)、
  *   任务弹窗动画(1920×1080,自带一枚货币图标,可在「图标选择」里替换/上传并调不透明度)、
  *   地图标题动画(宽画布 2560×1024,纯文字 + 形状的「地图名称 / 地图地点」标题卡,
  *   文字左对齐、底框与描边随文字宽度自适应)、
  *   黑潮爆破默认弹窗动画(1920×1080,两张位图 + 696 帧逐帧序列 + 毛边/模糊形状做轨道遮罩)、
  *   大战场弹窗动画(1920×1080,两行占位文字「主标题 / 内容」+ 一条 HUD 弹窗 + 一张可换的图标)、
- *   撤离点开启动画(1920×1080,一行状态文字 + 一张小图标 + 轨道遮罩形状 + 整幅黑底)。
+ *   撤离点开启动画(1920×1080,一行状态文字 + 一张小图标 + 轨道遮罩形状 + 整幅黑底)、
+ *   首领入侵/曼德尔砖标题动画(1920×1080,一张可换、可整片上色的剪影立绘(画在最上层)+ 一行标题文字 +
+ *   红白 HUD 形状与 alpha 遮罩;comp_0 / comp_1 内部与一层纯黑垫片只在编辑区隐藏)。
  *
  * 编辑面板(编辑一律就地改渲染用的 JSON;文字另有「即时生效」通道,其余走双缓冲重建):
  *   • 文字:onTextEdited 先把同一份文档直接写进正在显示的 lottie 实例(updateDocumentData +
@@ -33,7 +35,7 @@
  *   • 图层列表(文字 / 形状 / 图片)—— 顶层与被引用的预合成(assets[] 里的合成)内部都列出,预合成项名字带「合成名 ›」前缀;
  *     预合成内部的 ind 会和顶层撞号,载入时统一平移到独立号段(见 normalizePrecompInds);
  *   • 主题颜色 —— 两个色块把「默认填充色 / 描边默认色」两族颜色值整族替换(按颜色值匹配,填充与描边一起换);
- *   • 图标替换(位置暴露两段可分别设置;任务弹窗动画、大战场弹窗动画单图标位,候选来自各自的图标目录)、
+ *   • 图标替换(位置暴露两段可分别设置;任务弹窗 / 大战场弹窗 / 撤离点开启 / 首领入侵标题动画单图标位,候选来自各自的素材目录)、
  *     图标不透明度、弹窗叠加层、动画时长(1–10s)与二次扫描时长;
  *   • 预设(仅大战场弹窗动画):列表来自 animations/animation_7/preset.txt(图标 + 预设名 + 两行文案),
  *     点一项就把图标与两行文字一起套用,之后还能在「文字图层 / 图标选择」里继续微调;
@@ -56,7 +58,7 @@ import { initThemeAndSwitch } from './ui-theme';
 /* 移动端外壳与触屏手势。非触屏设备上它什么都没做(见 src/mobile.ts 的判定),
  * 所以桌面端的行为与样式与本模块无关。 */
 import { initMobileUI } from './mobile';
-/* 开始页(应用的第一屏):版本 / 检查更新 / 打开编辑器 / 保存目录 / 八套动画联系表。
+/* 开始页(应用的第一屏):版本 / 检查更新 / 打开编辑器 / 保存目录 / 九套动画联系表。
  * 它只拿回调,不反向 import 本文件 —— 与 mobile.ts 同一条约定(互相 import 会成环)。 */
 import { initAppShell } from './start-screen';
 
@@ -1177,6 +1179,20 @@ function isBlastTintedUri(p: unknown): boolean {
 function blastTintKey(refId: string): string {
   return currentAnimKey + ':' + refId;
 }
+
+/* 首领入侵/曼德尔砖标题动画的立绘调色(与黑潮爆破的位图同一条路子:从原始图重新着色成 data URI)。
+ * 键同样用 '动画key:refId',一键重置时按前缀一起清(见 dropAnimDataCache)。
+ *   • mandelbrickOriginalUri —— 未着色时的资源地址:动画自带的打包地址,或用户上传的 data URI;
+ *   • mandelbrickTintHex —— 用户选定的颜色,侧栏取色器回填与切动画后恢复都靠它;
+ *   • mandelbrickTintedUri —— 最近一次着色结果。切走再切回时 applyIconsToData 会把资源写回
+ *     「图标原地址」,这里若「图标没换、颜色没变」就直接把这份结果写回去,颜色不会凭空消失。 */
+const mandelbrickOriginalUri = new Map<string, string>(); // '动画key:refId' → 未着色的原始地址
+const mandelbrickTintHex = new Map<string, string>(); // '动画key:refId' → 用户选定的颜色
+const mandelbrickTintedUri = new Map<string, { original: string; hex: string; uri: string }>();
+/* 立绘着色的键:与黑潮爆破同一套键规范('动画key:refId'),一键重置按前缀清空 */
+function imageAssetTintKey(refId: string): string {
+  return currentAnimKey + ':' + refId;
+}
 /* 逐帧序列的调色键:用**宿主图层名**(如「箭头 1_[00000-00695].png」)。
  * 为什么不复用 ind:预合成内的图层 ind 会被 normalizePrecompInds 重新编号 —— 实测 comp_1 里的宿主
  * ind 是 100001,但列表里拿到的对象 ind 是 1(与预合成内其它图层撞号),用它当键会串味。
@@ -2282,7 +2298,16 @@ function onAnimReady() {
   /* 第一帧到位:舞台再落定一次(首屏这一次正好是加载层开始淡出的同一刻,
    * 所以"应用出现"看到的就是画面从虚到实地落定) */
   pulseStage();
-  setStatus('已载入: ' + currentName);
+  /* 这次载入如果是"一键重置"(见 resetCurrentAnimation),状态栏要说重置的结果,
+   * 而不是一句"已载入" —— 用户按的是重置,他要确认的是"确实回去了"。 */
+  if (resetStatusKey && resetStatusKey === currentAnimKey) {
+    setStatus('已恢复「' + currentName + '」的默认状态');
+    /* 动作就在编辑区顶端,结果也写回那一行 —— 用户不必低头去看状态栏 */
+    paintResetHint('已恢复「' + currentName + '」的默认状态');
+  } else {
+    resetStatusKey = null;
+    setStatus('已载入: ' + currentName);
+  }
 }
 
 /* ---------- 播放控制 ---------- */
@@ -2589,7 +2614,7 @@ chkNextScan.addEventListener('change', () => {
   syncIconScopeUI(currentData);
   loadData(currentData, currentName);
   // 二次扫描合并/取消后,图片图层列表(百叶窗.png / 百叶窗2.png / 光.png)随之变化,需刷新
-  const hasTintImage = (currentAnimKey === 'blast' ? blastTintableLayers(currentData) : tintableImageLayers(currentData)).length > 0;
+  const hasTintImage = imageListLayers(currentData).length > 0;
   imageSection.hidden = !hasTintImage;
   if (hasTintImage) renderImageList(currentData);
   else imageList.innerHTML = '';
@@ -2880,7 +2905,9 @@ function textOfLayer(l: any): string {
 function collectTextLayers(data: any): { nm: string; ind: number; text: string }[] {
   const out: { nm: string; ind: number; text: string }[] = [];
   walkEditableLayers(data, (l, precompName) => {
-    if (l.ty === 5) out.push({ nm: displayLayerName(l.nm, precompName), ind: l.ind, text: textOfLayer(l) });
+    if (l.ty !== 5) return;
+    if (isEditorHiddenLayer(l, precompName)) return; // 侧栏不列出的图层(见 isEditorHiddenLayer)
+    out.push({ nm: displayLayerName(l.nm, precompName), ind: l.ind, text: textOfLayer(l) });
   });
   return out;
 }
@@ -3066,6 +3093,36 @@ function tintImageDataFast(src: ImageData, hexColor: string): ImageData {
       d[i + 1] = Math.round(hue2rgb(th) * 255);
       d[i + 2] = Math.round(hue2rgb(th - 1 / 3) * 255);
     }
+  }
+  return out;
+}
+
+/* 立绘原图是「纯黑 + alpha」的剪影(实测 6 万个不透明像素全是 #000000):
+ * 对这种图「保留亮度换色相」(tintImageDataFast)与乘色法都还是黑 —— 表现就是"拖了颜色,画面不动"。
+ * 所以先判断是不是剪影,是就把 RGB 整片换成目标色、只保留 alpha(等于给剪影上色);
+ * 用户上传的普通图片不是剪影,仍走色相替换,免得细节被压成一块单色。 */
+function isBlackSilhouette(src: ImageData): boolean {
+  const d = src.data;
+  let opaque = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] === 0) continue;
+    opaque++;
+    if (d[i] + d[i + 1] + d[i + 2] > 24) return false; // 有任何一个亮/彩色像素就不是剪影
+  }
+  return opaque > 0;
+}
+/* 给「纯黑剪影 + alpha」上色:RGB 换成目标色,alpha 原样保留 */
+function colorizeImageData(src: ImageData, hexColor: string): ImageData {
+  const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+  const d = out.data;
+  const tr = parseInt(hexColor.slice(1, 3), 16);
+  const tg = parseInt(hexColor.slice(3, 5), 16);
+  const tb = parseInt(hexColor.slice(5, 7), 16);
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] === 0) continue;
+    d[i] = tr;
+    d[i + 1] = tg;
+    d[i + 2] = tb;
   }
   return out;
 }
@@ -3421,6 +3478,19 @@ function displayLayerName(nm: string | undefined, precompName: string): string {
   return precompName ? precompName + PRECOMP_NAME_SEP + base : base;
 }
 
+/* 侧栏里**不列出**的图层(只影响编辑列表,画面照常渲染)。
+ * 判据按「当前动画 + 图层所属预合成 / 图层名」,不写死 ind(AE 重新导出后 ind 会变):
+ *   • 首领入侵/曼德尔砖标题动画的 comp_0 / comp_1 是 HUD 的内部组件(遮罩源、框、扫描条),
+ *     逐个列出来只会把侧栏拉长;整块收起后只留顶层可编辑层;
+ *   • 同一套动画顶层的「形状图层 25」是一层纯黑垫片,改色 / 透明度在画面上都看不出效果,
+ *     列出来反而让人以为能调,所以同样不列。
+ * 其它动画不受影响(返回 false,列表照旧)。 */
+function isEditorHiddenLayer(layer: any, precompName: string, key: string = currentAnimKey): boolean {
+  if (key !== 'mandelbrick') return false;
+  if (precompName === 'comp_0' || precompName === 'comp_1') return true;
+  return !precompName && String(layer?.nm ?? '').replace(/\s+/g, '') === '形状图层25';
+}
+
 /* ---------- 文字编辑 ---------- */
 
 /* 文字对齐由动画数据的 j 字段原生处理(lottie 每帧按实际文字宽度对齐):
@@ -3673,6 +3743,7 @@ function shapeLayerColorInfo(data: any): { ind: number; nm: string; fill: number
   walkEditableLayers(data, (l, precompName) => {
     if (l.ty !== 4) return;
     if (l.td === 1) return; // 轨道蒙版源图层不渲染,无需编辑颜色(如位置暴露动画的「底框」)
+    if (isEditorHiddenLayer(l, precompName)) return; // 侧栏不列出的图层(见 isEditorHiddenLayer)
     const { fills, strokes } = collectShapeFillsStrokes(l.shapes);
     const fill = fills.length > 0 && fills[0].c?.a === 0 ? fills[0].c.k : null;
     const stroke = strokes.length > 0 && strokes[0].c?.a === 0 ? strokes[0].c.k : null;
@@ -4014,6 +4085,29 @@ function blastTintableLayers(data: any): any[] {
   return out;
 }
 
+/* 首领入侵/曼德尔砖标题动画的「图片图层」:就是那张可换的立绘(顶层唯一一条 ty:2 位图)。
+ * 它同时也出现在「图标选择」里 —— 那里负责换图,这里负责调色与不透明度,改的是同一份资源。
+ * 按 refId 去重:调色本身就是"换资源",同一个资源被多层引用时列一项就够。 */
+function mandelbrickTintableLayers(data: any): any[] {
+  const out: any[] = [];
+  const seen = new Set<string>();
+  walkEditableLayers(data, (l, precompName) => {
+    if (l?.ty !== 2 || isSeqLayer(l) || typeof l.refId !== 'string') return;
+    if (isEditorHiddenLayer(l, precompName)) return; // 编辑区隐藏的图层同样不列(见 isEditorHiddenLayer)
+    if (seen.has(l.refId)) return;
+    seen.add(l.refId);
+    out.push(l);
+  });
+  return out;
+}
+/* 「图片图层」区块当前要列的图层:三处调用(首次载入 / 切换动画 / 重画列表)统一走这里,
+ * 各自再抄一份「blast 用哪套、mandelbrick 用哪套」迟早会漏掉一处。 */
+function imageListLayers(data: any): any[] {
+  if (currentAnimKey === 'blast') return blastTintableLayers(data);
+  if (currentAnimKey === 'mandelbrick') return mandelbrickTintableLayers(data);
+  return tintableImageLayers(data);
+}
+
 /* 图片图层在侧栏显示的图层名(预合成内容加「合成名 ›」前缀) */
 function imageLayerDisplayName(data: any, layer: any): string {
   let name = layer?.nm || '(未命名)';
@@ -4084,11 +4178,13 @@ function seqLayerElementByName(nm: string): any {
  *    记在 seqTints 里,所以键用 'seq:<ind>'。
  * 键通过 data-ref 传给回调,重置按钮复用同一个键。 */
 function renderImageList(data: any) {
-  /* 三套动画的「图片图层」来源不同:
+  /* 四套动画的「图片图层」来源不同:
    *  · 核电站功率:两条叠加序列(逐帧换图,走滤镜着色);
    *  · 位置暴露:百叶窗.png / 百叶窗2.png / 光.png 三张纹理(换资源 data URI);
-   *  · 黑潮爆破默认弹窗:提示条 / 图标 / HUD 底条 / 遮罩源 / 两张整幅图 + 一段 696 帧序列(见下)。 */
-  const layers = currentAnimKey === 'blast' ? blastTintableLayers(data) : tintableImageLayers(data);
+   *  · 黑潮爆破默认弹窗:提示条 / 图标 / HUD 底条 / 遮罩源 / 两张整幅图 + 一段 696 帧序列(见下);
+   *  · 首领入侵/曼德尔砖标题:那张可换的立绘(图标选择里换图,这里调色 / 不透明度)。
+   * 来源统一交给 imageListLayers(),避免 switchAnimation 与这里各写一份判据。 */
+  const layers = imageListLayers(data);
   imageCount.textContent = '· ' + layers.length + ' 个';
   imageList.innerHTML = layers
     .map((l: any) => {
@@ -4121,7 +4217,11 @@ function renderImageList(data: any) {
       }
       const blastHex = currentAnimKey === 'blast' && !seq
         ? (blastTintHex.get(blastTintKey(String(l.refId))) ?? (blastFill ? blastFill.color : '#ffffff')) : null;
-      const hex = blastHex ?? (seq
+      /* 首领入侵标题动画的立绘:取色器初值 = 当前着色;没调过色时显示白色(代表"素材原样")。
+       * 不能用下面"资源是 data URI 就取默认色"那条规则 —— 上传的自定义图标本身也是 data URI。 */
+      const mandHex = currentAnimKey === 'mandelbrick' && !seq
+        ? (mandelbrickTintHex.get(imageAssetTintKey(String(l.refId))) ?? '#ffffff') : null;
+      const hex = mandHex ?? blastHex ?? (seq
         ? (seqTints.get(seqTintKey(String(l.nm ?? ''))) ?? defaultHex ?? '')
         : asset && typeof asset.p === 'string' && asset.p.startsWith('data:image') ? defaultHex : '#ffffff');
       return (
@@ -4200,7 +4300,53 @@ function findFillTarget(data: any, layer: any): { layer: any; colorParam: any } 
   return hit;
 }
 
+/* 立绘着色:从**原始图**重新着色,结果写回 assets[].p(与其它纹理图层同一条路子)。
+ * 异步(要先解码原图),由 onImageColorChanged 防抖调用;mandelbrickTintSeq 保证连续拖动时
+ * 只有最后一次的结果会落地 —— 解码慢的时候旧颜色不会"追上来"覆盖新颜色。 */
+let mandelbrickTintTimer: number | undefined;
+let mandelbrickTintSeq = 0;
+function applyMandelBrickTint(refId: string, hex: string): void {
+  const key = imageAssetTintKey(refId);
+  const asset = findAssetByRef(mandelBrickData, refId);
+  if (!asset) return;
+  /* 当前 p 是不是本站的着色产物?是的话原图从记录里取;不是就把当前 p 当作原图记下来
+   * (上传的自定义图标本身也是 data URI,不能只靠"是不是 data URI"判断,要看记录的 uri) */
+  const prev = mandelbrickTintedUri.get(key);
+  const original = mandelbrickOriginalUri.get(key)
+    ?? (prev && asset.p === prev.uri ? prev.original : typeof asset.p === 'string' ? asset.p : '');
+  if (!original) return;
+  mandelbrickOriginalUri.set(key, original);
+  mandelbrickTintHex.set(key, hex);
+  const seq = ++mandelbrickTintSeq;
+  void getImageTintSource(original)
+    .then((src) => {
+      if (seq !== mandelbrickTintSeq) return; // 期间又拖到了别的颜色:这次结果作废
+      /* 内置立绘是纯黑剪影 → 整片上色;上传的普通图 → 保留亮度的色相替换(见 isBlackSilhouette) */
+      const tinted = isBlackSilhouette(src.data) ? colorizeImageData(src.data, hex) : tintImageDataFast(src.data, hex);
+      const canvas = document.createElement('canvas');
+      canvas.width = src.img.width;
+      canvas.height = src.img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.putImageData(tinted, 0, 0);
+      const uri = canvas.toDataURL('image/png');
+      asset.p = uri;
+      mandelbrickTintedUri.set(key, { original, hex, uri });
+      invalidateBitmapCaches(asset, original);
+      reRenderPreservingState();
+      setStatus('图标颜色已改为 ' + hex.toUpperCase());
+    })
+    .catch((e) => console.error('[图标着色失败]', e));
+}
+
 function onImageColorChanged(refId: string, hex: string) {
+  /* 首领入侵标题动画的立绘:同一条"把资源换成着色后的 data URI"的路子。
+   * 取色器拖动时连续触发,180ms 防抖且只认最后一次颜色(解码 + 逐像素着色是重活)。 */
+  if (currentAnimKey === 'mandelbrick') {
+    window.clearTimeout(mandelbrickTintTimer);
+    mandelbrickTintTimer = window.setTimeout(() => applyMandelBrickTint(refId, hex), 180);
+    return;
+  }
   /* 黑潮爆破的位图:把资源换成"从原始位图重新着色"的 data URI。
    * 两条纪律:① 原始地址只在**尚未着色**时记录(着色后 p 已是 data URI,再记就把着色结果当原图了);
    * ② 着色完把按地址的位图缓存清掉,否则重建时会命中旧图、表现为"拖了颜色画面不动"。 */
@@ -4328,6 +4474,26 @@ function onImageColorChanged(refId: string, hex: string) {
  *    图层的不透明度,立即生效不重建;
  *  - 纹理图把资源 data URI 换回缓存的原始图,取色器与滑块同步回默认色,并重建预览。 */
 function onImageColorReset(refId: string) {
+  /* 首领入侵标题动画的立绘:资源换回未着色的原始地址,取色器回到白色、记录清空 —— 相当于"从没调过色" */
+  if (currentAnimKey === 'mandelbrick') {
+    const key = imageAssetTintKey(refId);
+    const asset = findAssetByRef(currentData, refId);
+    const prev = mandelbrickTintedUri.get(key);
+    const original = mandelbrickOriginalUri.get(key) ?? prev?.original ?? '';
+    if (!asset || !original) return;
+    window.clearTimeout(mandelbrickTintTimer);
+    mandelbrickTintSeq++; // 让还没落地的着色结果作废
+    asset.p = original;
+    mandelbrickOriginalUri.delete(key);
+    mandelbrickTintHex.delete(key);
+    mandelbrickTintedUri.delete(key);
+    invalidateBitmapCaches(asset, original);
+    const ci = imageList.querySelector<HTMLInputElement>('.i-color[data-ref="' + refId + '"]');
+    if (ci) setColorPickerValue(ci, '#ffffff');
+    reRenderPreservingState();
+    setStatus('图标颜色已恢复原始素材色');
+    return;
+  }
   /* 黑潮爆破的位图:把资源换回原始地址、清缓存、清掉记录 —— 相当于"从没调过色" */
   if (currentAnimKey === 'blast' && seqIndOfRef(refId) === null && !isSeqNameRef(refId)) {
     /* 带 AE「填充」效果的图层:重置 = 把填充色还原成动画原始值(记在 fillOriginalColor 里) */
@@ -6043,6 +6209,7 @@ import mapTitleDataUrl from '../animations/animation_5/animation_data.json?url';
 import blastDataUrl from '../animations/animation_6/animation_data.json?url';
 import battlefieldDataUrl from '../animations/animation_7/animation_data.json?url';
 import evacPointDataUrl from '../animations/animation_8/animation_data.json?url';
+import mandelBrickDataUrl from '../animations/animation_9/animation_data.json?url';
 /* 黑潮爆破默认弹窗动画的位图素材(animations/animation_6/images/*.png):
  * JSON 里是相对路径(u:"images/"),站点产物里没有 images/ 目录,必须按静态资源打包后改写资源地址
  * (见 ensureBlastData)。目录里同时还有一份 AE 视频图层的素材(.gif / .mp4),它们随 ty:9 视频图层一起被丢掉。
@@ -6070,6 +6237,14 @@ const battlefieldImageModules = import.meta.glob('../animations/animation_7/imag
  * 数据里同样是相对路径(u:"images/"),站点产物里没有那个目录 —— 按静态资源打包再改写地址(见 ensureEvacPointData)。
  * 同样用 glob:重导出换名/加图都不用改代码。 */
 const evacPointImageModules = import.meta.glob('../animations/animation_8/images/*.png', {
+  eager: true,
+  query: '?url&no-inline',
+  import: 'default',
+}) as Record<string, string>;
+/* 首领入侵/曼德尔砖标题动画(animations/animation_9)的位图素材:目前只有一张 283×425 的立绘(德穆兰.png),
+ * 数据里同样是相对路径(u:"images/"),站点产物里没有那个目录 —— 按静态资源打包再改写地址(见 ensureMandelBrickData)。
+ * 同样用 glob:重导出换名/加图都不用改代码。 */
+const mandelBrickImageModules = import.meta.glob('../animations/animation_9/images/*.png', {
   eager: true,
   query: '?url&no-inline',
   import: 'default',
@@ -6895,6 +7070,71 @@ async function ensureEvacPointData(onProgress?: (p: number | null) => void): Pro
   return evacPointDataPromise;
 }
 
+/* ---------- 首领入侵/曼德尔砖标题动画(animations/animation_9)----------
+ * 数据 = animations/animation_9/animation_data.json(1920×1080 / 60fps / op=188 = 188 帧 ≈ 3.13s;
+ * 与其它弹窗 / 标题类动画一样**不配 caps.defaultDuration**,侧栏没有「动画时长」区块,时间轴按 AE 导出原样呈现)。
+ * 画面内容:一张 283×425 的德穆兰立绘(资产 image_0,第 34~49 帧淡入并伴随 34~53 帧的缩放、
+ *      第 152~166 帧淡出)+ 一条白色标题文字「安全总监莅临」(ProjectDTypeCurve-Bold 86.8px,
+ *      第 37~47 帧淡入、第 152~166 帧淡出)+ 一组红白 HUD 形状层(#ff3d3b / #ff0000 / #ffffff 的边框、
+ *      虚线、扫描条与两条预合成)+「空 4」与三个 NULL CONTROL 空对象分层带动整组;
+ *      形状层之间用 alpha 遮罩(tt=1/2)做开合/扫光(两份预合成里那份纯蓝 #0c00ff 的形状就是遮罩源,只提供几何、不上屏)。
+ *      ⚠ 立绘德穆兰.png 本身是一张**纯黑剪影**(实测 6 万个不透明像素全是 #000000,只有 alpha 出形),
+ *      所以调色必须"整片上色"而不是"保留亮度换色相"(见 isBlackSilhouette / colorizeImageData)。
+ * 可编辑项由通用面板 + 两处专用逻辑提供:
+ *      • 文字与文字颜色 —— 侧栏「文字图层」列表(collectTextLayers 自动发现这个 ty:5 图层);
+ *      • 画面颜色 / 每层不透明度 —— 「形状图层」列表里各层的填充/描边取色器与滑块;列表只列顶层的 17 层:
+ *        comp_0 / comp_1 预合成内部的 5 层与顶层纯黑垫片「形状图层 25」由 isEditorHiddenLayer 只从
+ *        **编辑区**隐藏(画面照常渲染,导出也不受影响);
+ *      • 立绘 —— 「图标选择」在 animations/animation_9/images/ 的可换图间切换(MANDELBRICK_ICON_OPTIONS),
+ *        也可以上传自定义图片(单图标位形态,没有分段选项卡);「图片图层」里给立绘调色(纯黑剪影整片上色)与调不透明度。
+ * 载入时做四件与其它弹窗类动画相近的事:
+ *      ① 位图资源是相对路径(u:"images/",p:"德穆兰.png"),按文件基名换成本地打包地址;
+ *      ② 防御性丢掉 ty:9 视频图层与「删完之后没人引用」的资源(本套导出里没有,理由见 ensureBlastData);
+ *      ③ 把立绘图层提到 layers 队首(最上层):AE 里它夹在 HUD 形状层中间,标题条 / 扫描线会盖住它;
+ *      ④ 给立绘资源写上 pr = MANDELBRICK_ICON_FIT,让上传的非正方自定义图「等比完整显示」而不是被裁切。
+ * 字体与其它动画共用(fName = ProjectDTypeCurve-Bold,运行时从 animations/animation_1/fonts/ 注册);
+ * chars 只烘焙了「安全总监莅临」六个字,改字后由 dropCharsIfUncovered 自动退回浏览器文本引擎。 */
+let mandelBrickData: any = null;
+let mandelBrickDataPromise: Promise<void> | null = null;
+const mandelBrickImageUrlByBase = new Map<string, string>();
+for (const [path, url] of Object.entries(mandelBrickImageModules)) {
+  const base = path.split('/').pop();
+  if (base) mandelBrickImageUrlByBase.set(base, url);
+}
+
+async function ensureMandelBrickData(onProgress?: (p: number | null) => void): Promise<void> {
+  if (mandelBrickData) return;
+  if (mandelBrickDataPromise) {
+    if (onProgress) onProgress(null); // 已在加载中:以不确定进度显示
+    return mandelBrickDataPromise;
+  }
+  mandelBrickDataPromise = (async () => {
+    try {
+      const [raw] = await fetchJsonBundle([mandelBrickDataUrl], onProgress);
+      const data = JSON.parse(raw);
+      rewriteRelativeImageAssets(data, mandelBrickImageUrlByBase); // ①
+      stripVideoLayersAndReclaimAssets(data); // ②
+      /* ③ 立绘图层提到最上层:lottie 的渲染顺序 = layers 数组顺序(第 0 项最上层;
+       *    SVG 侧是插到容器最前、Canvas 侧是最后绘制),数组位置不影响 parent 变换与遮罩配对
+       *    (本套的 tt 图层都带显式 tp)。改的是内存里的这份数据,数据文件保持 AE 导出原样 ——
+       *    重新导出也不会把「图标在最上层」这条改动弄丢。 */
+      const iconLayer = (data.layers ?? []).find((l: any) => l?.ty === 2 && !isSeqLayer(l) && typeof l.refId === 'string') ?? null;
+      if (iconLayer) data.layers = [iconLayer, ...data.layers.filter((l: any) => l !== iconLayer)];
+      /* ④ 立绘资源标记为「等比缩放、完整显示」(见 MANDELBRICK_ICON_FIT):
+       *    默认立绘与资源声明的画框(283×425)一致,slice 与 meet 结果相同(默认画面不变);
+       *    上传的任意长宽比自定义图在默认 slice 下会被裁掉一条边,这里统一兜住。 */
+      for (const a of data.assets ?? []) if (a?.w && a?.h && a.t !== 'seq') a.pr = MANDELBRICK_ICON_FIT;
+      mandelBrickData = data;
+    } catch (e) {
+      console.error('[首领入侵/曼德尔砖标题动画数据解析失败]', e);
+      setStatus('首领入侵/曼德尔砖标题动画数据解析失败: ' + (e as Error).message, true);
+    }
+    // 失败时允许下次重试
+    if (!mandelBrickData) mandelBrickDataPromise = null;
+  })();
+  return mandelBrickDataPromise;
+}
+
 /* 递归偏移对象中所有动画属性({a:1, k:[{t,...}]})的关键帧时刻 t */
 /* 说明：只平移动画属性（{a:1}）里关键帧的 t（帧号，60fps 下一帧 = 1）；数组直接递归；
  * 遇到 a===1 的 k 数组后不再向下递归，避免把关键帧的 s/e 值当成嵌套属性处理；
@@ -7155,6 +7395,15 @@ function pulseSidePanel(): void {
 let sideNavTargets: HTMLElement[] = [];
 let sideNavSpy: IntersectionObserver | undefined;
 let sideNavFlashTimer: number | undefined;
+/* 侧栏顶部「一键重置」那一行的实测高度。它是吸顶的,跳转条与区块标题都要让开它;
+ * main.ts 末尾的 syncSideHeadHeight 会把同一个值写进 --side-head-h 供 CSS 用,
+ * 这里给 JS 侧(滚动跟随 / 跳转落点)一个读数入口 —— 两处必须是同一个来源,不能各写一份。 */
+function sideHeadHeight(): number {
+  const el = document.getElementById('sideHead');
+  if (!el) return 0;
+  const h = el.getBoundingClientRect().height;
+  return Number.isFinite(h) && h > 0 ? h : 0;
+}
 
 /* 区块名取"第一个有内容的直接文本子节点":标题里的计数写在 <span> 里
  * (「文字图层 <span>· 13 个 · 可编辑</span>」),直接读 textContent 会把计数也带进去。
@@ -7199,7 +7448,10 @@ function syncSideNavOnScroll(): void {
   if (!sidePanelEl || !sideNavTargets.length || typeof IntersectionObserver === 'undefined') return;
   const update = () => {
     if (!sidePanelEl) return;
-    const line = sidePanelEl.getBoundingClientRect().top + (sideNav && !sideNav.hidden ? sideNav.getBoundingClientRect().height : 0);
+    /* 吸顶线 = 面板顶 + 顶部「一键重置」行 + 跳转条。少了第一项,当前区块会早报一节
+     * (标题其实还压在重置行底下没露出来)。 */
+    const headH = sideHeadHeight();
+    const line = sidePanelEl.getBoundingClientRect().top + headH + (sideNav && !sideNav.hidden ? sideNav.getBoundingClientRect().height : 0);
     let current = 0;
     sideNavTargets.forEach((h, i) => { if (h.getBoundingClientRect().top <= line + 2) current = i; });
     /* 到底了就直接认最后一节:最后一节的剩余内容往往比视口矮(撤离动画的「弹窗图层」只有
@@ -7220,8 +7472,9 @@ if (sideNavSelect) {
     const target = sideNavTargets[Number(sideNavSelect.value)];
     if (!target || !sidePanelEl) return;
     /* 目标位置 = 标题相对面板顶部的偏移,再减掉吸顶条自己的高度 —— 不减就会被它盖住 */
+    /* 落点要让开"顶部重置行 + 跳转条"两层,否则跳过去标题正好藏在吸顶行后面 */
     const navH = sideNav && !sideNav.hidden ? sideNav.getBoundingClientRect().height : 0;
-    const delta = target.getBoundingClientRect().top - sidePanelEl.getBoundingClientRect().top - navH;
+    const delta = target.getBoundingClientRect().top - sidePanelEl.getBoundingClientRect().top - sideHeadHeight() - navH;
     /* 瞬间移动而不是平滑滚动:跨度可能到 5000px,平滑滚要等一秒多,而这一行的价值是"立刻到"。
      * 落点由下面 700ms 的底色反馈交代(减少动效时它自然不播)。 */
     sidePanelEl.scrollTop += delta - 1;
@@ -7468,6 +7721,28 @@ const ANIMATIONS: AnimDef[] = [
      * 同样**没有 nextScan**:单段动画,没有第二段可接。 */
     caps: {},
   },
+  {
+    key: 'mandelbrick',
+    label: '首领入侵/曼德尔砖标题',
+    meta: {
+      tags: ['首领入侵', '曼德尔砖', '曼德尔', '首领', '入侵', '标题', '德穆兰', '安全总监莅临', '弹窗', 'mandelbrick', 'mandel', 'boss'],
+      accent: '#e11d48',
+      /* 188 帧 @60fps ≈ 3.13s(数据 op=188);载入后会按实测值校准 */
+      w: 1920, h: 1080, fps: 60, frames: 188,
+      features: ['图标可换', '文字可编辑'],
+    },
+    poster: posterOf('mandelbrick'),
+    data: () => mandelBrickData,
+    popup: () => null,
+    audioUrl: null,
+    loaded: () => !!mandelBrickData,
+    load: (p) => ensureMandelBrickData(p),
+    /* caps 全空:侧栏不出现「动画时长」区块,时间轴完全按 AE 导出原样呈现(188 帧 ≈ 3.13s)——
+     * 改时长的实现是把各图层末尾的淡出关键帧搬到新出点(见 applyMainDuration),
+     * 对这套动画会把立绘 / 文字的 152→166 淡出一起搬走,画面淡出时刻就与 AE 对不上了。
+     * 同样**没有 nextScan**:单段标题动画,没有第二段可接。 */
+    caps: {},
+  },
 ];
 let currentAnimKey = 'extraction';
 /* 当前动画的注册项。所有「按 key 走特殊逻辑」的地方都改成查这张表,
@@ -7562,6 +7837,23 @@ const EVACPOINT_ICON_DEFAULT_NAME =
   '';
 let iconEvacPointName = EVACPOINT_ICON_DEFAULT_NAME; // 撤离点开启动画当前选用的图标
 
+/* 首领入侵/曼德尔砖标题动画的可换图位:animations/animation_9/images/ 下的**全部 PNG**
+ * (当前只有一张 283×425 的立绘:德穆兰.png),也就是这套动画自己的素材目录 ——
+ * 换图就是在这几张之间切换,不去动其它动画的图标列表。
+ * 复用的就是上面载入资源地址时那个 glob(mandelBrickImageModules),所以往目录里丢新 PNG
+ * 重启后就会自动出现在列表里,不需要改代码。
+ * 默认项必须正好是数据里已经引用的那张德穆兰.png:applyIconsToData() 一进这套动画就会把资源地址
+ * 写成「当前选中的图」,默认项若不对,光是切进来就会凭空改掉画面。 */
+const MANDELBRICK_ICON_OPTIONS: { name: string; url: string }[] = Object.entries(mandelBrickImageModules)
+  .map(([path, url]) => ({ name: path.split('/').pop() ?? '', url }))
+  .filter((o) => o.name)
+  .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+const MANDELBRICK_ICON_DEFAULT_NAME =
+  MANDELBRICK_ICON_OPTIONS.find((o) => o.name === '德穆兰.png')?.name ??
+  MANDELBRICK_ICON_OPTIONS[0]?.name ??
+  '';
+let iconMandelBrickName = MANDELBRICK_ICON_DEFAULT_NAME; // 首领入侵/曼德尔砖标题动画当前选用的图
+
 /* 图标资源的 preserveAspectRatio(写在 assets[].pr 上)。
  *
  * 为什么必须显式指定:lottie 的默认值是 **`xMidYMid slice`** —— 把图片按资源声明的 w×h
@@ -7584,11 +7876,18 @@ const BATTLEFIELD_ICON_FIT = 'xMidYMid meet';
  * **完整塞进**画框并居中,不裁切也不拉伸,宽高比不符时只留透明边;SVG 与 Canvas 两条渲染路径都认这个值。 */
 const EVACPOINT_ICON_FIT = 'xMidYMid meet';
 
+/* 首领入侵/曼德尔砖标题动画立绘资源的 preserveAspectRatio,规则与大战场 / 撤离点完全一致:
+ * 默认立绘与资源声明画框(283×425)相同,slice 与 meet 结果没有差别,默认画面不变;
+ * 但「上传自定义图片」允许任意长宽比,默认的 slice 会按 283×425 画框铺满后居中裁切,
+ * 写成 meet 后一律等比缩放到**完整塞进**画框并居中,不裁切也不拉伸。 */
+const MANDELBRICK_ICON_FIT = 'xMidYMid meet';
+
 /* 只有「单个图标位」的动画:任务弹窗动画(数据里唯一那张位图)与大战场弹窗动画
- * (两条位图图层共用一份资源),以及撤离点开启动画(唯一那张 48×48 小图标)。
+ * (两条位图图层共用一份资源)、撤离点开启动画(唯一那张 48×48 小图标),
+ * 以及首领入侵/曼德尔砖标题动画(唯一那张 283×425 立绘)。
  * 这类动画没有选项卡、没有「跟随」概念,图标选择只作用于唯一那个图标位。 */
 function isSingleIconScope(key: string = currentAnimKey): boolean {
-  return key === 'mission' || key === 'battlefield' || key === 'evacpoint';
+  return key === 'mission' || key === 'battlefield' || key === 'evacpoint' || key === 'mandelbrick';
 }
 
 /* 定位当前动画的「图标图层」——用于判断该动画有没有图标位、以及不透明度滑块该挂在哪一层上。
@@ -7596,13 +7895,15 @@ function isSingleIconScope(key: string = currentAnimKey): boolean {
  *   • 任务弹窗:数据里唯一的那张位图图层(叠加序列图层不算,它们逐帧换图,没有单一资源);
  *   • 大战场弹窗:同样是位图层(数据里有两条 ind 5 / ind 6,共用同一份资源 image_0,
  *     这里只用来判断「有没有图标位」,改写资源时按 refId 去重逐个写,见 applyIconUrlToScope);
- *   • 撤离点开启:同样是唯一那张位图图层(ind 11,资源 image_0,数据里就是 83.png)。
+ *   • 撤离点开启:同样是唯一那张位图图层(ind 11,资源 image_0,数据里就是 83.png);
+ *   • 首领入侵/曼德尔砖标题:同样是唯一那张位图图层(ind 6,资源 image_0,数据里就是 德穆兰.png)。
  * 其它动画(撤离 / 核电站功率 / 地图标题 / 黑潮爆破)没有图标位,返回 null,「图标选择」区块整块隐藏。 */
 function iconLayerOf(data: any, key: string = currentAnimKey): any | null {
   const layers: any[] = data?.layers ?? [];
   if (key === 'mission') return layers.find((l: any) => l.ty === 2 && !isSeqLayer(l)) ?? null;
   if (key === 'battlefield') return layers.find((l: any) => l.ty === 2 && !isSeqLayer(l)) ?? null;
   if (key === 'evacpoint') return layers.find((l: any) => l.ty === 2 && !isSeqLayer(l)) ?? null;
+  if (key === 'mandelbrick') return layers.find((l: any) => l.ty === 2 && !isSeqLayer(l)) ?? null;
   if (key === 'exposed') return layers.find((l: any) => l.ty === 2 && l.nm === '图标_可替换') ?? null;
   return null;
 }
@@ -7765,11 +8066,13 @@ document.getElementById('btnNudgeReset')?.addEventListener('click', () => change
  *  • 位置暴露动画用 animations/animation_2/icon 下的干员技能图标(ICON_OPTIONS);
  *  • 任务弹窗动画用 animations/animation_4/icon 下的图标(MISSION_ICON_OPTIONS);
  *  • 大战场弹窗动画用动画自己素材目录里的几张图标(BATTLEFIELD_ICON_OPTIONS);
- *  • 撤离点开启动画同样用动画自己素材目录里的几张图标(EVACPOINT_ICON_OPTIONS)。
+ *  • 撤离点开启动画同样用动画自己素材目录里的几张图标(EVACPOINT_ICON_OPTIONS);
+ *  • 首领入侵/曼德尔砖标题动画同样用动画自己素材目录里的可换图(MANDELBRICK_ICON_OPTIONS)。
  * 用户上传的自定义图标对这几套动画都可见,排在前面便于一眼看到自己加的那张。 */
 function builtinIconOptions(): { name: string; url: string }[] {
   if (currentAnimKey === 'battlefield') return BATTLEFIELD_ICON_OPTIONS;
   if (currentAnimKey === 'evacpoint') return EVACPOINT_ICON_OPTIONS;
+  if (currentAnimKey === 'mandelbrick') return MANDELBRICK_ICON_OPTIONS;
   return currentAnimKey === 'mission' ? MISSION_ICON_OPTIONS : ICON_OPTIONS;
 }
 function allIconOptions() {
@@ -7786,10 +8089,11 @@ function findIconOption(name: string) {
 }
 
 /* 某段实际生效的图标名:二次扫描在「跟随位置暴露」时取位置暴露的值;
- * 任务弹窗 / 大战场弹窗 / 撤离点开启动画与分段无关,恒取它们自己的选择。 */
+ * 任务弹窗 / 大战场弹窗 / 撤离点开启 / 首领入侵标题动画与分段无关,恒取它们自己的选择。 */
 function effectiveIconName(scope: IconScope): string {
   if (currentAnimKey === 'battlefield') return iconBattlefieldName;
   if (currentAnimKey === 'evacpoint') return iconEvacPointName;
+  if (currentAnimKey === 'mandelbrick') return iconMandelBrickName;
   if (currentAnimKey === 'mission') return iconMissionName;
   if (scope === 'main') return iconMainName;
   return followMainIcon ? iconMainName : iconNextName;
@@ -7845,6 +8149,34 @@ function applyIconUrlToScope(scope: IconScope, url: string): boolean {
     for (const id of ids) if (setAssetImageUrl(evacPointData, id, url)) updated = true;
     return updated;
   }
+  /* 首领入侵/曼德尔砖标题动画:与撤离点开启同形 —— ty:2 位图图层引用的资源,
+   * 按 refId 去重后逐个改写,重新导出换了资源 id / 加减图层都不会漏改。
+   * 这条动画的立绘还能调色(见 applyMandelBrickTint),所以写地址时要带上着色记录,
+   * 否则每次切回这套动画都会把颜色冲回原图。 */
+  if (currentAnimKey === 'mandelbrick') {
+    const ids = new Set<string>();
+    for (const l of mandelBrickData?.layers ?? []) {
+      if (l?.ty === 2 && !isSeqLayer(l) && typeof l.refId === 'string') ids.add(l.refId);
+    }
+    for (const id of ids) {
+      const key = imageAssetTintKey(id);
+      const tint = mandelbrickTintHex.get(key);
+      const rec = mandelbrickTintedUri.get(key);
+      if (tint && rec && rec.original === url && rec.hex === tint) {
+        /* 图标没换、颜色也没变(典型场景:切走再切回来):把上次的着色结果写回去 */
+        if (setAssetImageUrl(mandelBrickData, id, rec.uri)) updated = true;
+      } else {
+        /* 换成别的图标(或记录对不上):旧着色作废,新图先按原色显示 */
+        if (tint) {
+          mandelbrickTintHex.delete(key);
+          mandelbrickOriginalUri.delete(key);
+          mandelbrickTintedUri.delete(key);
+        }
+        if (setAssetImageUrl(mandelBrickData, id, url)) updated = true;
+      }
+    }
+    return updated;
+  }
   if (scope === 'main') {
     // 位置暴露(主段):资源恒为 image_0。注意不能顺带写 image_0_n ——那是第二段的资源
     if (setAssetImageUrl(animation2Data, 'image_0', url)) updated = true;
@@ -7860,7 +8192,7 @@ function applyIconUrlToScope(scope: IconScope, url: string): boolean {
 /* 按当前状态刷新两段图标资源。两段都写:即便处于「跟随」状态,二次扫描资源也要对齐,
  * 否则取消跟随、或关闭再开启二次扫描时第二段会退回内置 PNG。 */
 function applyIconsToData(): boolean {
-  // 单图标位动画(任务弹窗 / 大战场弹窗)只有一个图标位,写一次即可
+  // 单图标位动画(任务弹窗 / 大战场弹窗 / 撤离点开启 / 首领入侵标题)只有一个图标位,写一次即可
   if (isSingleIconScope()) return applyIconUrlToScope('main', effectiveIconUrl('main'));
   let updated = false;
   if (applyIconUrlToScope('main', effectiveIconUrl('main'))) updated = true;
@@ -7875,6 +8207,8 @@ function setIconForScope(scope: IconScope, name: string) {
     iconBattlefieldName = name; // 单图标位:没有分段与跟随
   } else if (currentAnimKey === 'evacpoint') {
     iconEvacPointName = name; // 单图标位:没有分段与跟随
+  } else if (currentAnimKey === 'mandelbrick') {
+    iconMandelBrickName = name; // 单图标位:没有分段与跟随
   } else if (currentAnimKey === 'mission') {
     iconMissionName = name;
   } else if (scope === 'main') {
@@ -7887,10 +8221,16 @@ function setIconForScope(scope: IconScope, name: string) {
       chkFollowMainIcon.checked = false;
     }
   }
+  /* 首领入侵标题动画换图时,立绘的着色记录会作废(见 applyIconUrlToScope 的 mandelbrick 分支):
+   * 先记下当前是否着过色,换完再重画「图片图层」让取色器回到白色,并说明一句。 */
+  const hadMandelTint = currentAnimKey === 'mandelbrick' && mandelbrickTintHex.size > 0;
   applyIconsToData();
+  const lostMandelTint = hadMandelTint && mandelbrickTintHex.size === 0;
   syncIconScopeUI();
+  if (currentAnimKey === 'mandelbrick' && !imageSection.hidden) renderImageList(currentData);
   refreshBattlefieldPresetHighlight(); // 换了图标 → 预设高亮可能要跟着变
   reRenderPreservingState();
+  if (lostMandelTint) setStatus('已换图:图标颜色恢复原始素材色,可重新调色');
 }
 
 /* 切换图标选项卡（位置暴露 / 二次扫描）：只刷新 UI，不改数据也不重建动画 */
@@ -8077,7 +8417,8 @@ iconFile.addEventListener('change', () => {
     setIconForScope(iconScope, name);
     const where = isSingleIconScope()
       ? (currentAnimKey === 'battlefield' ? '大战场弹窗动画'
-        : currentAnimKey === 'evacpoint' ? '撤离点开启动画' : '任务弹窗动画')
+        : currentAnimKey === 'evacpoint' ? '撤离点开启动画'
+        : currentAnimKey === 'mandelbrick' ? '首领入侵/曼德尔砖标题动画' : '任务弹窗动画')
       : iconScope === 'next' ? '二次扫描' : '位置暴露';
     setStatus('已应用自定义图标「' + iconDisplayName(name) + '」到' + where);
   };
@@ -8325,7 +8666,7 @@ async function switchAnimation(key: string) {
   // 主题颜色区块:当前动画里存在这两族颜色(填充族/描边族)时显示,并回填当前色与计数
   syncThemeSection(data);
   // 图片图层区块:含可调色纹理(百叶窗.png 等)、叠加序列,或黑潮爆破的位图/序列时显示
-  const hasTintable = (currentAnimKey === 'blast' ? blastTintableLayers(data) : tintableImageLayers(data)).length > 0;
+  const hasTintable = imageListLayers(data).length > 0;
   imageSection.hidden = !hasTintable;
   if (hasTintable) renderImageList(data);
   else imageList.innerHTML = '';
@@ -8382,6 +8723,210 @@ async function switchAnimation(key: string) {
    * 先把实例以"暂停"建好,再淡出开始页。 */
   await loadData(data, def.label);
 }
+/* ==================== 一键重置(整套动画恢复出厂) ====================
+ * 九套动画的编辑都是**就地改内存里那份数据对象**(见文件顶部「编辑面板」段),颜色、文字、
+ * 图标、时长、不透明度、弹窗、预设全都落在同一个 JSON 上。所以「恢复默认」不能靠逐个字段撤回:
+ * 那要枚举二十多个改动点,漏一处就是"重置了但没完全重置"——而漏掉的那一处,
+ * 用户只有在下一次导出时才会发现(画面和第一次打开不一样)。
+ *
+ * 这里走唯一可靠的路径:把**这套动画的数据缓存整份丢掉**,再按打包的出厂 JSON 重新载入一次。
+ * 重新取的是打包资源(桌面/APK 里是本地文件,网页版有 HTTP 缓存),不会真的从网上再拉一遍;
+ * 代价只是一次 JSON.parse,换来的是与"第一次打开这套动画"逐字节相同的状态。
+ *
+ * 三个不能漏的前置条件:
+ *  ① 只丢**当前这套**的缓存:别的动画的编辑状态(以及它们的下载缓存)与这次动作无关;
+ *  ② 调色类状态不在数据里(按 '动画key:图层名' 记在 seqTints / blastTint* / fillBake* 上),
+ *     不清掉的话新载入的出厂位图会立刻被套上旧颜色 —— 现象是"颜色还留着";
+ *  ③ 模块级的编辑开关(二次扫描 / 显示图标 / 报酬显隐 / 居中微调 / 图标选择 / 默认时长已应用过)
+ *     必须一起归位,否则数据是出厂的、界面还停在改过的状态,下一次重建又会把改动写回去。 */
+
+/** 丢掉的只是"缓存引用":下一次 load() 会重新下载并解析出全新的对象。 */
+function dropAnimDataCache(key: string): void {
+  switch (key) {
+    case 'extraction':
+      bootAnimation = null;
+      extractionPopupData = null;
+      bootDataPromise = null;
+      break;
+    case 'exposed':
+      animation2Data = null;
+      animation2NextData = null;
+      exposedDataPromise = null;
+      /* 三张原始位图(百叶窗.png / 百叶窗2.png / 光.png)的 data URI 是载入时记录的:
+         不清掉,重新载入会把"上次记录的图"当成原图,调色重置回到的就是改过的画面。 */
+      baiyechuangOriginalData = null;
+      baiyechuang2OriginalData = null;
+      guangOriginalData = null;
+      break;
+    case 'blinds':
+      blindsData = null;
+      blindsDataPromise = null;
+      break;
+    case 'mission':
+      missionData = null;
+      missionDataPromise = null;
+      break;
+    case 'maptitle':
+      mapTitleData = null;
+      mapTitleDataPromise = null;
+      break;
+    case 'blast':
+      blastData = null;
+      blastDataPromise = null;
+      break;
+    case 'battlefield':
+      battlefieldData = null;
+      battlefieldDataPromise = null;
+      break;
+    case 'evacpoint':
+      evacPointData = null;
+      evacPointDataPromise = null;
+      break;
+    case 'mandelbrick':
+      mandelBrickData = null;
+      mandelBrickDataPromise = null;
+      break;
+    default:
+      break;
+  }
+  /* ② 调色记录:键一律以 '动画key:' 开头(见 seqTintKey / blastTintKey) */
+  const prefix = key + ':';
+  for (const m of [
+    seqTints, blastTintHex, blastOriginalImageUri, blastFillOriginalColor, fillBakeOriginalUri,
+    mandelbrickTintHex, mandelbrickOriginalUri, mandelbrickTintedUri,
+  ]) {
+    for (const k of Array.from(m.keys())) if (k.startsWith(prefix)) m.delete(k);
+  }
+  /* 按图片地址缓存的解码结果:出厂资源重新进来后应当从原图重算;顺便把用户上传的图标、
+     着色出来的 data URI 占的内存一起放掉(重置是个"清干净"的动作)。 */
+  imageTintCaches.clear();
+}
+
+/** 模块级编辑开关回到出厂值。必须在 loadData 之前做完:
+ *  loadData 会按这些开关决定要不要在载入时就改数据(隐藏图标 / 报酬显隐)。 */
+function resetAnimEditState(key: string): void {
+  /* 二次扫描:默认关闭,第二段时长回到 3.2s */
+  showNextScan = false;
+  nextDuration = 3.2;
+  if (chkNextScan) chkNextScan.checked = false;
+  if (nextDurationRow) nextDurationRow.hidden = true;
+  /* 图标:两段都回到默认图标,「二次扫描跟随位置暴露」默认开;
+     用户上传的图标只活在本次会话里,重置等于回到出厂素材,一并清空 */
+  iconScope = 'main';
+  iconMainName = DEFAULT_ICON_NAME;
+  iconNextName = DEFAULT_ICON_NAME;
+  followMainIcon = true;
+  if (chkFollowMainIcon) chkFollowMainIcon.checked = true;
+  customIcons = [];
+  /* 「显示图标」默认勾选(仅位置暴露):隐藏态会把图标压成透明、把文字与底框搬到画面中心
+     —— 那是写进数据的改动,开关不一起复位的话,重置后仍是隐藏态(而且下一次重建会把隐藏写回去) */
+  iconVisible = true;
+  if (chkIcon) chkIcon.checked = true;
+  iconCenterNudge = 0;
+  const nudgeVal = document.getElementById('iconNudgeVal');
+  if (nudgeVal) nudgeVal.textContent = '0 px';
+  /* 主题颜色:「当前这一族颜色」记在模块变量上(改色是整族替换,下一次接着从新值替换),
+   * 不归位的话重置后色块仍显示改过的颜色,而那一族在出厂数据里已经不存在了 ——
+   * 用户会以为"颜色没重置"(实际是色块值没刷新,计数是 0 处)。 */
+  themeFillCurrent = THEME_FILL_DEFAULT;
+  themeStrokeCurrent = THEME_STROKE_DEFAULT;
+  /* 报酬信息(仅任务弹窗动画)默认显示 */
+  missionRewardShown = true;
+  if (chkMissionReward) chkMissionReward.checked = true;
+  /* 弹窗叠加层默认关闭 */
+  popupVisible = false;
+  if (chkPopup) chkPopup.checked = false;
+  /* 注册项里的「默认时长」只在首次载入时套用一次:重置 = 重新首次载入 */
+  defaultDurationApplied.delete(key);
+  /* 拖着时长滑杆还没结算的那次防抖:不清掉的话 200ms 后会把刚重置的数据再改一次 */
+  window.clearTimeout(durationTimer);
+}
+
+const btnResetAnim = $<HTMLButtonElement>('btnResetAnim');
+/* 右侧编辑区顶部那一行里的说明文字:重置的是"这一套动画",所以名字必须写在文案里。
+ * 侧栏只有 272-336px 宽,所以这一行只说作用域,清哪些东西进 title;
+ * 重置成功后这里换成结果(带 is-done 提亮),下一次切动画由 writeAnimTrigger 复原。 */
+const resetHint = $<HTMLElement>('resetHint');
+function paintResetHint(custom?: string): void {
+  if (!resetHint) return;
+  const def = animDef();
+  const short = def ? '恢复「' + def.label + '」的出厂状态' : '';
+  const full = def
+    ? '清除「' + def.label + '」上的文字 / 颜色 / 图标 / 时长 / 不透明度 / 弹窗等全部改动,按出厂数据重新载入'
+    : '';
+  resetHint.textContent = custom ?? short;
+  resetHint.title = custom ?? full;
+  resetHint.classList.toggle('is-done', !!custom);
+}
+let resettingAnim = false;
+/* 「已恢复默认」这句话要等**实例就绪**才说:重建是异步的,onAnimReady 里还会把
+ * 「已载入:名字」再写一次状态栏 —— 提前写会被它盖掉(实测用户只看到"已载入")。
+ * 这里记下"本次载入是一次重置",onAnimReady 据此改口径;切走别的动画后自动失效。 */
+let resetStatusKey: string | null = null;
+
+/** 一键重置当前动画。整个过程约等于"切走再切回来",只是切回来时用的是出厂数据。 */
+async function resetCurrentAnimation(): Promise<void> {
+  const key = currentAnimKey;
+  const def = animDef(key);
+  if (!def || resettingAnim || !currentData) return;
+  /* 导出期间数据是导出管线正在逐帧读的那一份:此时换掉它会得到半截视频/空帧 */
+  if (exporting) {
+    setStatus('正在导出:等这次导出结束再重置', true);
+    return;
+  }
+  resettingAnim = true;
+  const label = def.label;
+  if (btnResetAnim) {
+    btnResetAnim.disabled = true;
+    btnResetAnim.classList.add('is-busy');
+  }
+  setStatus('正在恢复「' + label + '」的默认状态…');
+  try {
+    resetAnimEditState(key);
+    dropAnimDataCache(key);
+    resetStatusKey = key;
+    await switchAnimation(key);
+    if (!def.data()) {
+      resetStatusKey = null;
+      setStatus('恢复默认失败:「' + label + '」的数据没能重新载入,请检查网络后重试', true);
+      return;
+    }
+    /* 成功的那句在 onAnimReady 里说(那时第一帧才真的画出来)。
+     * 兜底:实例若因渲染器问题迟迟不 ready,6 秒后也要把标记放掉,
+     * 免得下一次普通载入被误写成"已恢复默认"。 */
+    window.setTimeout(() => { if (resetStatusKey === key) resetStatusKey = null; }, 6000);
+  } catch (e) {
+    resetStatusKey = null;
+    setStatus('恢复默认失败: ' + (e as Error).message, true);
+  } finally {
+    resettingAnim = false;
+    if (btnResetAnim) {
+      btnResetAnim.disabled = false;
+      btnResetAnim.classList.remove('is-busy');
+    }
+  }
+}
+btnResetAnim?.addEventListener('click', () => void resetCurrentAnimation());
+
+/* 侧栏顶部那一行是**吸顶**的,而跳转条与各区块标题都要停在它下面 —— 偏移量必须等于它的
+ * 真实高度(按钮 32 + 说明行一行 + 上下内边距)。高度会随字体加载与系统缩放变化,
+ * 所以不写死:用 ResizeObserver 把实测值写进 --side-head-h(CSS 里的 70px 只是首帧近似)。 */
+const sideHeadEl = $<HTMLElement>('sideHead');
+function syncSideHeadHeight(): void {
+  if (!sideHeadEl || !sidePanelEl) return;
+  const h = Math.round(sideHeadEl.getBoundingClientRect().height);
+  if (h > 0) sidePanelEl.style.setProperty('--side-head-h', h + 'px');
+}
+syncSideHeadHeight();
+if (sideHeadEl && typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(syncSideHeadHeight).observe(sideHeadEl);
+}
+window.addEventListener('resize', syncSideHeadHeight);
+/* 字体是 swap 加载的:字体到位后说明行的高度会变一次,补量一次 */
+if (document.fonts && typeof document.fonts.ready?.then === 'function') {
+  void document.fonts.ready.then(() => syncSideHeadHeight()).catch(() => { /* 忽略 */ });
+}
+
 /* ---------- 视频导出 ---------- */
 // 导出单飞锁:导出期间为 true,再次点击导出按钮直接返回。
 // 两个导出并行会互抢 GPU 编码器与渲染容器,还会互相覆盖进度浮层。
@@ -10918,6 +11463,14 @@ function writeAnimTrigger() {
   animTriggerMeta.textContent = m.w + '×' + m.h + ' · ' + m.fps + 'fps';
   animTriggerCount.textContent = ANIMATIONS.length + ' 套';
   selAnim.value = def.key;
+  /* 一键重置的标题跟着当前动画名走:控件自己要说清"重置的是哪一套",
+   * 只写「重置本动画」而名字在别处,用户点之前无法确认作用域(这是破坏性动作)。 */
+  if (btnResetAnim) {
+    btnResetAnim.title = '一键重置:清除「' + def.label + '」上的所有改动(文字 / 颜色 / 图标 / 时长 / 不透明度 / 弹窗),恢复出厂状态';
+    btnResetAnim.setAttribute('aria-label', btnResetAnim.title);
+  }
+  /* 说明行跟着动画名走;切动画也顺手把上一次的"已恢复"结果清掉 */
+  paintResetHint();
   if (animPickerOpen()) renderAnimGallery();
 }
 

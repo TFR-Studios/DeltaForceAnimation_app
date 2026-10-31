@@ -274,6 +274,28 @@ html[data-ui='mobile'] .timeline {
   gap: var(--sp-2);
 }
 html[data-ui='mobile'] .timeline .frame { font-size: 11px; }
+/* 右侧编辑区的第一行(一键重置):手机上它是底部面板的第一块内容(芯片条下面),
+ * 通栏 44px 实心按钮 —— 触屏主操作尺寸,不用在密集的检查器行里找;
+ * 负边距抵消面板内边距,让底色铺满整块面板宽度。
+ * 手机端**不吸顶**:面板一次只显示一个分区(芯片切换),内容本身很短,吸顶只会吃掉面板高度;
+ * 桌面那一栏是 5900px 的长滚动,才需要吸顶。 */
+html[data-ui='mobile'] .side-head {
+  position: static;
+  gap: 0;
+  /* 面板收起时只有约 140px 高:这一行要压到 52px(40 按钮 + 6+6),把剩下的高度留给分区内容。
+   * 40px 仍是 PRODUCT.md 的触屏下限,通栏宽度也保证它不是"小按钮"。 */
+  margin: 0 calc(-1 * var(--m-pad-r)) 0 calc(-1 * var(--m-pad-l));
+  padding: 6px var(--m-pad-r) 6px var(--m-pad-l);
+  border-bottom: 1px solid var(--line);
+}
+html[data-ui='mobile'] .btn-reset-all {
+  height: 40px;
+  min-height: 40px;
+  font-size: 13px;
+}
+html[data-ui='mobile'] .btn-reset-all .bi { width: 16px; height: 16px; }
+/* 手机上不显示说明行:按钮已经通栏,"恢复哪一套"由顶栏的动画选择器回答 */
+html[data-ui='mobile'] .side-head-hint { display: none; }
 
 html[data-ui='mobile'] .transport {
   flex-wrap: nowrap;
@@ -797,6 +819,70 @@ html[data-ui='mobile'] .about-craft-card { padding: var(--sp-3); }
 /* 手机上的顶栏:动画选择器 / 下载入口只在编辑器页出现(与桌面同一套规则,
  * 但手机端 .anim-switch 的 grid-area 由顶栏网格决定,隐藏时那一格自然空出) */
 html[data-ui='mobile']:not([data-page='editor']) .topbar { grid-template-rows: var(--topbar-h) var(--m-craft-h); }
+
+/* ---------- 12. 全屏更新提示(手机版式) ----------
+ * 与桌面是同一份 DOM、同一套状态,版式完全不同:
+ *   桌面 = 居中的卡片(压在半透明遮罩上);手机 = **占满整屏**的面板。
+ * 为什么整屏:卡片 + 遮罩在手机上会留出四周一圈背景,视觉重心被稀释,
+ * 而这一屏只有一件事要用户决定;整屏还顺带躲开了地址栏收放时的居中抖动。
+ * 三个排版约束:
+ *   ① 动作通栏贴底(margin-top:auto),主操作落在最靠拇指的一档;
+ *   ② 上下内边距带上安全区,刘海 / 圆角 / 手势条不会压住标题或按钮;
+ *   ③ 内容区可滚(小屏 + 大字号),动作区永远留在可见范围内。 */
+html[data-ui='mobile'] .upd-overlay {
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
+  /* 整屏面板不需要遮罩与模糊:底下没有"还能看见一点"的内容 */
+  background: var(--bg);
+  backdrop-filter: none;
+}
+html[data-ui='mobile'] .upd-card {
+  width: 100%;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  padding: calc(var(--sp-5) + var(--m-safe-t)) var(--m-pad-r) calc(var(--sp-4) + var(--m-safe-b)) var(--m-pad-l);
+  background: var(--bg);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+html[data-ui='mobile'] .upd-top { margin-bottom: var(--sp-4); }
+html[data-ui='mobile'] .upd-mark { width: 44px; height: 44px; border-radius: var(--r-lg); }
+html[data-ui='mobile'] .upd-mark .bi { width: 22px; height: 22px; }
+html[data-ui='mobile'] .upd-close {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  border-color: var(--line);
+}
+html[data-ui='mobile'] .upd-close .bi { width: 15px; height: 15px; }
+html[data-ui='mobile'] .upd-title { font-size: 23px; }
+html[data-ui='mobile'] .upd-ver b { font-size: 30px; }
+html[data-ui='mobile'] .upd-from { font-size: 12px; }
+html[data-ui='mobile'] .upd-asset { padding: 10px 12px; font-size: 11.5px; }
+html[data-ui='mobile'] .upd-note { font-size: 12.5px; line-height: 1.7; margin-bottom: var(--sp-4); }
+/* 动作区贴在屏幕底部:主操作在最靠拇指的一档,「稍后」在它上面 */
+html[data-ui='mobile'] .upd-actions {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: var(--sp-4);
+}
+html[data-ui='mobile'] .upd-primary,
+html[data-ui='mobile'] .upd-secondary {
+  width: 100%;
+  height: 48px;
+  min-height: 48px;
+  font-size: 14.5px;
+}
+html[data-ui='mobile'] .upd-skip-row { justify-content: center; margin-top: var(--sp-3); }
+html[data-ui='mobile'] .upd-skip { height: 40px; min-height: 40px; padding: 0 10px; font-size: 12.5px; }
 
 /* ---------- 10. 减少动效 ---------- */
 

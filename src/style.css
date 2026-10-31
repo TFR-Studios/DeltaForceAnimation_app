@@ -894,7 +894,7 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   flex: 1 1 auto;
   line-height: 1.15;
 }
-/* 名称 + 总数同一行:总数是"这套动画属于八套里的哪一个",贴在名字右边成一组 */
+/* 名称 + 总数同一行:总数是"这套动画属于九套里的哪一个",贴在名字右边成一组 */
 .anim-trigger-head {
   display: flex;
   align-items: center;
@@ -1069,7 +1069,10 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
 /* ============================================================================
  * 6. 主区骨架
  * ========================================================================== */
-.layout { flex: 1; display: flex; min-height: 0; }
+/* min-width: 0 是这一行的关键:flex 项默认 min-width:auto,而编辑区里含有 nowrap 的
+ * 说明文字(编辑区第一行的「一键恢复」提示)—— 不清零,整列的 min-content 会被记成 601px,
+ * 900px / 390px 的窗口里 .layout 就比视口宽 29px / 267px,横向滚动条随之出现。 */
+.layout { flex: 1; display: flex; min-height: 0; min-width: 0; }
 
 .preview-panel {
   flex: 1;
@@ -1078,6 +1081,66 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   flex-direction: column;
   background: var(--bg-deep);
 }
+
+/* ---------- 右侧编辑区的第一行:一键重置 ----------
+ * 位置:检查器(右侧编辑区)最上方、所有区块之前,并**吸顶** —— 侧栏最长滚到 5900px,
+ * 这条动作必须一直看得见;而"改东西"的地方本来就在这一栏,它也就该在这一栏的头一格。
+ * 视觉层级:实心 --brand,与「导出视频」「打开编辑器」同一档(--danger 只留给错误)。
+ * 高度：--side-head-h 是它的实测高度(32 按钮 + 6 间距 + 一行说明 + 上下各 8)，
+ * 下面的 .side-nav 与各区块标题的吸顶偏移都要靠它顺延，否则两段粘性内容会叠在一起。 */
+.side-head {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* 负边距抵消侧栏左右内边距:吸顶条的底色要铺满整栏,不能只在内容盒里 */
+  margin: 0 calc(-1 * var(--sp-4));
+  padding: 8px var(--sp-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.btn-reset-all {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--h-ctl);
+  /* Fluent 的 :host 上有 min-width:96px / min-height:32px:不清零会被撑形 */
+  min-width: 0;
+  min-height: var(--h-ctl);
+  padding: 0 var(--sp-3);
+  color: var(--on-brand);
+  background: var(--brand);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.btn-reset-all .bi { width: 14px; height: 14px; flex: none; }
+.btn-reset-all:hover { background: var(--brand-hover); box-shadow: var(--shadow-1); }
+.btn-reset-all:active { background: var(--brand-pressed); transform: scale(0.985); }
+.btn-reset-all[disabled] { color: var(--text-disabled); background: var(--surface-3); cursor: progress; transform: none; box-shadow: none; }
+/* 重置进行中:图标匀速转一圈(与关于页「检查更新」同一个语言:转 = 正在做) */
+.btn-reset-all.is-busy .bi { animation: about-spin 900ms linear infinite; }
+/* 说明行:作用域。重置成功后这里换成结果(见 main.ts 的 paintResetHint),全文进 title */
+.side-head-hint {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.side-head-hint.is-done { color: var(--text); }
 
 /* ---------- 预览舞台:滚轮缩放、指针拖拽平移 ---------- */
 .preview-stage {
@@ -1224,7 +1287,6 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   white-space: nowrap;
 }
 .timeline .frame b { color: var(--text); font-weight: 600; }
-
 /* ---------- 播放 / 导出条 ----------
  * 结构:传输控件(左)→ 分隔 → 导出设置 → 导出按钮 → 弹性空隙 → 渲染设置(右)。
  * 窄屏靠 flex-wrap 折行;导出按钮用 Fluent 的 primary 外观,是这一条里唯一的主操作。 */
@@ -1462,6 +1524,10 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
    * 跳转条不在时(只剩一个区块)必须回到 0 —— 否则标题上方会留出一条 40px 的缝,
    * 内容从那道缝里滚过去,看起来像坏掉。所以由 main.ts 挂 .has-nav 来控制。 */
   --side-nav-h: 0px;
+  /* 顶部"一键重置"一行的高度:下面的跳转条与区块标题都要在它下面吸顶。
+   * 70px 只是首帧近似值 —— main.ts 的 syncSideHeadHeight 会用实测值覆盖它
+   * (字体 swap 加载完成后高度会变,写死就会差一两像素、两段粘性内容叠在一起)。 */
+  --side-head-h: 70px;
 }
 .side-panel.has-nav { --side-nav-h: 40px; }
 
@@ -1471,7 +1537,7 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
  * 底边描边与区块标题对齐 —— 吸顶条要"一眼可寻",不与正文融为一体。 */
 .side-nav {
   position: sticky;
-  top: 0;
+  top: var(--side-head-h);
   z-index: 3;
   display: flex;
   align-items: center;
@@ -1505,7 +1571,7 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
  * 检查器里全是 12.5px 的标签,标题必须靠字号站出来,否则整栏读起来是一整块。 */
 .side-panel h3 {
   position: sticky;
-  top: var(--side-nav-h);
+  top: calc(var(--side-head-h) + var(--side-nav-h));
   z-index: 2;
   margin: var(--sp-4) 0 var(--sp-2);
   padding: 7px 0;
@@ -3049,6 +3115,160 @@ html[data-ui='mobile'] .rail-item.has-update::after { top: 8px; right: 26%; }
   to { background-position: 138% 0; }
 }
 
+
+/* ---------- 全屏更新提示(桌面版式) ----------
+ * 有版本可更新这件事,只在用户真看见时才有意义 —— 所以它值得一整屏,而不是关于页里的一行小字。
+ * 形态沿用本站浮层语言:半透明遮罩 + 一张 --surface-2 的卡片(圆角 14 / --shadow-3),
+ * 与导出浮层、数据加载浮层是同一族。层级 8800:高于内容与导航,低于导出(9000)与数据加载(9999)——
+ * 它是"需要表态"的提示,不是"进行中的任务",不该盖住用户正在等的那件事。
+ * 手机是另一套版式(占满整屏的面板,见 mobile.css 第 12 节):同一份 DOM,由 <html data-ui> 分流。 */
+.upd-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 8800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+  background: color-mix(in srgb, var(--bg-deep) 76%, transparent);
+  backdrop-filter: blur(2px);
+  animation: df-overlay-in 240ms var(--ease-out) both;
+}
+.upd-overlay[hidden] { display: none; }
+.upd-card {
+  width: 460px;
+  max-width: 92vw;
+  padding: var(--sp-5);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
+}
+.upd-top { display: flex; align-items: center; margin-bottom: var(--sp-3); }
+/* 标记只做一件事:说明"这是更新",所以它是下载箭头,不是装饰性图形 */
+.upd-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  color: var(--text);
+}
+.upd-mark .bi { width: 16px; height: 16px; }
+.upd-close {
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.upd-close:hover { background: var(--surface-hover); border-color: var(--line); color: var(--text); }
+.upd-close:active { background: var(--surface-3); transform: scale(0.97); }
+.upd-close .bi { width: 13px; height: 13px; }
+.upd-title {
+  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+/* 版本号是这张卡片里唯一被放大的数字:用户只需要认出"新的是哪个版本"。 */
+.upd-ver { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin: 0 0 var(--sp-3); }
+.upd-ver b {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.upd-from { color: var(--text-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+/* 安装包名是"数据",所以走等宽 + 内嵌槽;一行放不下就省略号,title 由 main 侧写 */
+.upd-asset {
+  margin: 0 0 var(--sp-3);
+  padding: 7px 10px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  /* 这一行可能是一串文件名,也可能是一句中文("没有适用于本机的安装包…")——
+   * 用界面字体,文件名不会因此难认;等宽留给真正的代码与路径(hex / about-path)。 */
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upd-progress { display: flex; align-items: center; gap: var(--sp-2); margin: 0 0 var(--sp-3); }
+.upd-progress[hidden] { display: none; }
+.upd-bar { flex: 1; min-width: 0; height: 4px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
+.upd-fill {
+  /* 进度填充用 transform: scaleX() 而不是 width:这是"完成度"这个量本身(与导出 / 数据加载
+   * 那两条进度条同一语义),但 width 会触发布局,scaleX 只在合成层上动 —— 同样是 160ms 线性,
+   * 观感一致、不占布局预算。圆角交给轨道(.upd-bar 的 overflow:hidden)裁。 */
+  width: 100%;
+  height: 100%;
+  background: var(--brand);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 160ms linear;
+}
+.upd-pct { flex: none; min-width: 44px; text-align: right; color: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* 说明文字是"更新会发生什么"的正文,不是脚注:用 --text-2(在 --surface-2 上 6.9:1),
+ * 而不是 --text-3 那一档(只有 4.56:1,过得去但不该拿最低档承载承诺性文案)。 */
+.upd-note { margin: 0 0 var(--sp-4); color: var(--text-2); font-size: 11.5px; line-height: 1.65; }
+.upd-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); }
+.upd-primary,
+.upd-secondary {
+  height: var(--h-cta);
+  min-width: 0;
+  min-height: var(--h-cta);
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.upd-primary { color: var(--on-brand); background: var(--brand); border: 1px solid transparent; font-weight: 600; }
+.upd-primary:hover { background: var(--brand-hover); }
+.upd-primary:active { background: var(--brand-pressed); transform: scale(0.985); }
+.upd-primary[disabled] { color: var(--text-disabled); background: var(--surface-3); cursor: progress; transform: none; }
+.upd-secondary { color: var(--text-2); background: var(--surface-2); border: 1px solid var(--line-strong); }
+.upd-secondary:hover { background: var(--surface-hover); border-color: var(--line-accent); color: var(--text); }
+.upd-secondary:active { background: var(--surface-3); transform: scale(0.985); }
+/* 「跳过这个版本」是第三档:一句话、一行字、默认不抢注意力,但点得到、读得懂 */
+.upd-skip-row { display: flex; justify-content: flex-end; margin-top: var(--sp-2); }
+.upd-skip {
+  height: var(--h-sm);
+  min-width: 0;
+  min-height: var(--h-sm);
+  padding: 0 4px;
+  color: var(--text-3);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--line-strong);
+  transition: color var(--dur) var(--ease), text-decoration-color var(--dur) var(--ease);
+}
+.upd-skip:hover { color: var(--text); text-decoration-color: currentColor; }
+.upd-skip:active { color: var(--text); }
+
 /* 顶栏里只有编辑器页用得到的东西:其它页把动画选择器与下载入口收起来,
  * 让顶栏只剩"我是谁 + 主题 + 制作声明"。 */
 html:not([data-page='editor']) .anim-switch,
@@ -3180,6 +3400,8 @@ html:not([data-page='editor']) .dw-open { display: none; }
  *    第一行标题、第二行搜索框 + 关闭按钮,关闭按钮仍在最右。 */
 @media (max-width: 480px) {
   .ap-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+  /* 编辑区第一行的「一键重置」在窄窗里照旧带文字:它不参与时间轴的 min-content
+   * (那一行原来被它撑到 413px 的问题随位置一起消失了),这里不需要任何降级。 */
   .export-card, .dl-card { width: 94vw; padding: var(--sp-4); }
   .export-percent { font-size: 28px; }
   .anim-switch { order: 1; flex: 1 1 100%; }
@@ -3241,6 +3463,8 @@ html.is-theme-fading *::after {
   .preview-stage.is-registering .preview-canvas { animation-name: df-canvas-fade; }
   /* 播放中的呼吸环是持续循环的状态装饰,减少动效时不画(状态由图标与 aria 承载) */
   #btnPlay[aria-pressed='true']::after { display: none; }
+  /* 重置进行中的转圈同理:按钮已经禁用(状态栏也写着"正在恢复…"),图标静止不影响理解 */
+  .btn-reset-all.is-busy .bi { animation: none; }
   .export-percent.done,
   .export-percent.error,
   .export-percent.cancel { animation: none; }

@@ -1,5 +1,5 @@
 /* 界面状态走查(开发期辅助,不参与构建):
- * 前两个走查脚本查的是"静态第一屏"。这个脚本查**状态**:八套动画各自打开之后,
+ * 前两个走查脚本查的是"静态第一屏"。这个脚本查**状态**:九套动画各自打开之后,
  * 侧栏出现了哪些区块、有没有"有标题没内容"的空壳、有没有零高度却仍占位的区块;
  * 三个浮层(数据加载 / 导出 / 画廊)打开后的几何是否成立。
  *
@@ -68,7 +68,10 @@ await page.setViewport({ width: 1600, height: 1000, deviceScaleFactor: 1 });
 const errs = [];
 page.on('pageerror', (e) => errs.push('pageerror: ' + String(e.message).slice(0, 200)));
 page.on('console', (m) => { if (m.type() === 'error') errs.push('console: ' + m.text().slice(0, 160)); });
-await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+/* 应用外壳改版后默认停在**主页**;编辑器不可见时侧栏每个区块都是 0 高,
+ * 这个走查量到的会是一整片"有标题没内容"的假失败。所以显式落在编辑器上。 */
+const target = url + (url.includes('?') ? '&' : '?') + 'view=editor';
+await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60000 });
 await page.waitForFunction(() => document.querySelector('#app-loading')?.classList.contains('is-hidden'), { timeout: 90000, polling: 250 }).catch(() => {});
 await page.waitForFunction(() => document.querySelectorAll('#selAnim option').length > 0, { timeout: 30000, polling: 200 }).catch(() => {});
 await new Promise((r) => setTimeout(r, 1200));

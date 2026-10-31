@@ -56,6 +56,15 @@ const FRAME_RATIO = {
  *   find: 在页面里定位该元素的函数(由 puppeteer 投到浏览器里执行,必须是自包含的),
  *         返回**相对 stage 的 CSS 矩形**;找不到返回 null(此时封面按老样子生成,不画标注)。
  *   label: 画在圆圈下方的说明文字(用系统字体,不走站点字体)。 */
+/* 内容包围盒的判定阈值(相对「最亮那一格」的比例)。
+ * 默认 0.25:把与背景色差不足最亮格 1/4 的格子当作背景,免得整幅的暗渐变 / 微弱辉光把包围盒撑满。
+ * 但少数动画的画面主体是「暗底 + 暗红 HUD」,内容与背景的色差本来就小,25% 会把暗部整段丢掉 ——
+ * 首领入侵/曼德尔砖标题动画就是:hud 底条与红条只比背景亮一点点,按 0.25 裁出来只剩画面 1.6%
+ * 的一条白字。这类 key 单独调低比例,让红色底条与立绘也进入包围盒。 */
+const CROP_THR_RATIO = {
+  mandelbrick: 0.08,
+};
+
 const POSTER_HIGHLIGHT = {
   battlefield: {
     label: '图标可换',
@@ -108,7 +117,7 @@ async function ensureServer() {
  *   ④ 等比缩放着放进 640×360,四周用背景色补齐 —— 所有封面统一 16:9,
  *      卡片网格用同一套 object-fit,宽画布动画(位置暴露 3840×1080)也不会被裁掉内容。
  *   找不到内容(纯色帧)时退回整帧,不会产出一张空图。 */
-const POSTER_IN_PAGE = async (b64, stageRect, innerRect, bgHex, outWidth, outHeight, highlightRect, highlightLabel) => {
+const POSTER_IN_PAGE = async (b64, stageRect, innerRect, bgHex, outWidth, outHeight, highlightRect, highlightLabel, cropThrRatio) => {
   const img = new Image();
   img.src = 'data:image/png;base64,' + b64;
   await img.decode();
@@ -150,7 +159,7 @@ const POSTER_IN_PAGE = async (b64, stageRect, innerRect, bgHex, outWidth, outHei
     cell[i] = d;
     if (d > maxCell) maxCell = d;
   }
-  const thr = Math.max(24, maxCell * 0.25);
+  const thr = Math.max(24, maxCell * (cropThrRatio || 0.25));
   let gx0 = GW, gy0 = GH, gx1 = -1, gy1 = -1;
   for (let y = 0; y < GH; y++) {
     for (let x = 0; x < GW; x++) {
@@ -287,6 +296,23 @@ async function main() {
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded', timeout: 180_000 });
   await page.waitForFunction(() => !document.getElementById('app-loading'), { timeout: 300_000, polling: 200 });
 
+  /* 编辑器不是首页:当前应用外壳用 <html data-page> 在「主页 / 编辑器 / 关于」之间切页,
+   * 停在主页时编辑器那一列(.layout)带 hidden,#stage 量出来是 0×0 —— 直接截封面会截到空白。
+   * 所以先点一下导航轨的「编辑器」把切过去,再等 .layout 不再是 hidden 为止。
+   * (切页本身是同步的,这里再等一拍只是让布局与适配算法把舞台量准。) */
+  const enterEditor = async () => {
+    await page.evaluate(() => {
+      const el = document.querySelector('.rail-item[data-page="editor"]') || document.getElementById('btnOpenEditor');
+      if (el) el.click();
+    });
+    await page.waitForFunction(() => {
+      const layout = document.querySelector('.layout');
+      return document.documentElement.dataset.page === 'editor' && !!layout && !layout.hidden;
+    }, { timeout: 30_000, polling: 100 });
+    await sleep(600);
+  };
+  await enterEditor();
+
   const allTargets = await page.evaluate(() =>
     [...document.querySelectorAll('#selAnim option')].map((o) => ({ key: o.value, label: o.textContent })));
   if (!allTargets.length) throw new Error('页面上没有读到任何动画(兼容 select #selAnim 为空)');
@@ -334,6 +360,8 @@ async function main() {
     /* 最多试 3 次:页面在生成过程中被 HMR 重载时,当前这一张从头再来(其余已生成的图不受影响)。 */
     for (let attempt = 1; attempt <= 3 && !result; attempt++) {
       const navBase = navCount;
+      /* HMR 可能把页面整页重载回主页 —— 每轮都确认一次还在编辑器页,否则舞台又是 0×0 */
+      await enterEditor();
       await page.select('#selAnim', key);
       const loaded = await waitForLoaded(key, label, navBase);
       if (!loaded) {
@@ -378,7 +406,7 @@ async function main() {
       });
       const poster = await page.evaluate(
         POSTER_IN_PAGE, shot, stageRect, innerRect, bgHex, OUT_WIDTH, OUT_HEIGHT,
-        highlightRect, hl ? hl.label : null);
+        highlightRect, hl ? hl.label : null, CROP_THR_RATIO[key] || 0.25);
       if (navCount !== navBase) continue; // 截图期间被重载,这一张作废重来
       result = {
         key, label, frame: frame.f + '/' + frame.total, crop: poster.crop,
