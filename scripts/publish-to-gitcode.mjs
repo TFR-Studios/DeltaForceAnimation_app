@@ -231,7 +231,9 @@ for (let i = 0; i < 8; i++) {
   if (final.status === 200) {
     const data = await final.json();
     names = (data.assets || []).map((a) => a.name);
-    if (files.every((want) => names.includes(want))) break;
+    /* files 里是 { name, size } 对象,和 names(字符串数组)比必须取 name ——
+     * 以前这里直接 includes(want),永远为 false,于是每次上传成功也会报「缺少附件」(exit 1)。 */
+    if (files.every((want) => names.includes(want.name))) break;
   } else if (final.status === 404) {
     names = null;
   }
@@ -244,7 +246,7 @@ if (names === null) {
 console.log('[GitCode] 发行版现有附件:');
 for (const n of names) console.log('    - ' + n);
 for (const want of files) {
-  if (!names.includes(want)) { console.error('[GitCode] 缺少附件: ' + want); failed++; }
+  if (!names.includes(want.name)) { console.error('[GitCode] 缺少附件: ' + want.name); failed++; }
 }
 if (failed) {
   console.error('[GitCode] 同步未完成:失败 ' + failed + ' 项。修好后可重跑本脚本(幂等)。');
