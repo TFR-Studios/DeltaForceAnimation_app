@@ -40,7 +40,8 @@ export default defineConfig({
          * 黑潮爆破默认弹窗(animations/animation_6/animation_data.json)、
          * 大战场弹窗(animations/animation_7/animation_data.json)、
          * 撤离点开启(animations/animation_8/animation_data.json)、
-         * 首领入侵/曼德尔砖标题(animations/animation_9/animation_data.json)。 */
+         * 首领入侵/曼德尔砖标题(animations/animation_9/animation_data.json)、
+         * 物品搜索(animations/animation_10/animation_data1_1.json —— 素材原名如此,不重命名)。 */
         manualChunks(id: string) {
           const q = id.split('?')[0].replace(/\\/g, '/');
           if (q.endsWith('animations/animation_1/animation_data.json') || q.includes('windows animation/windows_animation.json')) return 'data-extraction';
@@ -57,6 +58,8 @@ export default defineConfig({
           if (q.includes('/animations/animation_8/') && /[\/]animation_data\.json$/.test(q)) return 'data-evacpoint';
           // 首领入侵/曼德尔砖标题动画的数据(65KB 左右,资源只有一张 283×425 立绘),同样单独成 chunk 只为与其它动画保持一致
           if (q.includes('/animations/animation_9/') && /[\/]animation_data\.json$/.test(q)) return 'data-mandelbrick';
+          // 物品搜索动画的数据(83KB 左右,资源是 195 张序列帧 + 两张单图);文件名与其它几套不同,按原名匹配
+          if (q.includes('/animations/animation_10/') && /[\/]animation_data1_1\.json$/.test(q)) return 'data-itemsearch';
           return undefined;
         },
       },

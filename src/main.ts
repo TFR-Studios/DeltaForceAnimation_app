@@ -13,7 +13,7 @@
  *   图片序列驱动(逐帧换 src / <image> href,并强制 lottie 重绘,否则静态层画过一次就不再更新)、
  *   叠加序列调色(feColorMatrix 做 colorize,滤镜宿主挂在 body 的隐藏 svg 上,预览与导出共用)。
  *
- * 九套动画(ANIMATIONS,按需加载):撤离动画(1920×1080)、位置暴露动画(画布加宽为 3840×1080,
+ * 十套动画(ANIMATIONS,按需加载):撤离动画(1920×1080)、位置暴露动画(画布加宽为 3840×1080,
  *   可把「二次扫描」第二段合并进同一条时间轴)、核电站功率动画(两条 359 帧透明序列叠加)、
  *   任务弹窗动画(1920×1080,自带一枚货币图标,可在「图标选择」里替换/上传并调不透明度)、
  *   地图标题动画(宽画布 2560×1024,纯文字 + 形状的「地图名称 / 地图地点」标题卡,
@@ -22,7 +22,9 @@
  *   大战场弹窗动画(1920×1080,两行占位文字「主标题 / 内容」+ 一条 HUD 弹窗 + 一张可换的图标)、
  *   撤离点开启动画(1920×1080,一行状态文字 + 一张小图标 + 轨道遮罩形状 + 整幅黑底)、
  *   首领入侵/曼德尔砖标题动画(1920×1080,一张可换、可整片上色的剪影立绘(画在最上层)+ 一行标题文字 +
- *   红白 HUD 形状与 alpha 遮罩;comp_0 / comp_1 内部与一层纯黑垫片只在编辑区隐藏)。
+ *   红白 HUD 形状与 alpha 遮罩;comp_0 / comp_1 内部与一层纯黑垫片只在编辑区隐藏)、
+ *   物品搜索动画(1920×1080,195 帧「放大镜」逐帧序列 + 一张可换的物品图标 + 一行物品名文字 +
+ *   整片物品颜色叠加形状;图标与文字都在预合成 comp_1 里,物品颜色在 comp_2 里)。
  *
  * 编辑面板(编辑一律就地改渲染用的 JSON;文字另有「即时生效」通道,其余走双缓冲重建):
  *   • 文字:onTextEdited 先把同一份文档直接写进正在显示的 lottie 实例(updateDocumentData +
@@ -35,7 +37,7 @@
  *   • 图层列表(文字 / 形状 / 图片)—— 顶层与被引用的预合成(assets[] 里的合成)内部都列出,预合成项名字带「合成名 ›」前缀;
  *     预合成内部的 ind 会和顶层撞号,载入时统一平移到独立号段(见 normalizePrecompInds);
  *   • 主题颜色 —— 两个色块把「默认填充色 / 描边默认色」两族颜色值整族替换(按颜色值匹配,填充与描边一起换);
- *   • 图标替换(位置暴露两段可分别设置;任务弹窗 / 大战场弹窗 / 撤离点开启 / 首领入侵标题动画单图标位,候选来自各自的素材目录)、
+ *   • 图标替换(位置暴露两段可分别设置;任务弹窗 / 大战场弹窗 / 撤离点开启 / 首领入侵标题 / 物品搜索动画单图标位,候选来自各自的素材目录)、
  *     图标不透明度、弹窗叠加层、动画时长(1–10s)与二次扫描时长;
  *   • 预设(仅大战场弹窗动画):列表来自 animations/animation_7/preset.txt(图标 + 预设名 + 两行文案),
  *     点一项就把图标与两行文字一起套用,之后还能在「文字图层 / 图标选择」里继续微调;
@@ -58,7 +60,7 @@ import { initThemeAndSwitch } from './ui-theme';
 /* 移动端外壳与触屏手势。非触屏设备上它什么都没做(见 src/mobile.ts 的判定),
  * 所以桌面端的行为与样式与本模块无关。 */
 import { initMobileUI } from './mobile';
-/* 开始页(应用的第一屏):版本 / 检查更新 / 打开编辑器 / 保存目录 / 九套动画联系表。
+/* 开始页(应用的第一屏):版本 / 检查更新 / 打开编辑器 / 保存目录 / 十套动画联系表。
  * 它只拿回调,不反向 import 本文件 —— 与 mobile.ts 同一条约定(互相 import 会成环)。 */
 import { initAppShell } from './start-screen';
 
@@ -3326,7 +3328,10 @@ function findLayerByInd(layers: any[], ind: number): any | null {
  * 与顶层 ind 直接撞号。侧栏所有编辑控件都用 data-ind 回查图层,撞号就会改错层。
  * 因此载入时把「被引用到的预合成」内部图层 ind 整体平移到独立号段(PRECOMP_IND_BASE),
  * 同一合成内的 parent(父子关系)与 tp(遮罩源)一起平移:这两者都只在合成内解析,
- * lottie 的渲染结果不受影响(有逐像素对比验证)。平移是幂等的(已平移过就跳过)。 */
+ * lottie 的渲染结果不受影响(有逐像素对比验证)。平移是幂等的(已平移过就跳过)。
+ * ⚠ 每份预合成必须各占**一段**(见 normalizePrecompInds 里的 stride),不能都只加同一个 PRECOMP_IND_BASE:
+ * 那样 comp_0 / comp_1 / comp_2 的第一层都会变成 100001,彼此继续撞号 —— 侧栏按 ind 回查图层时
+ * 永远命中排在前面那一份里的同号图层,改字 / 改色静默写到别的层上(物品搜索动画实测:改物品名无效)。 */
 const PRECOMP_IND_BASE = 100000;
 /* 图层名里标注来源合成,便于在侧栏区分(顶层图层保持原样) */
 const PRECOMP_NAME_SEP = ' › ';
@@ -3378,13 +3383,26 @@ function offsetCompositionInds(layers: any[], delta: number) {
   apply(layers);
 }
 
-/* 载入时调用一次:把被引用的预合成内部 ind 挪到独立号段(幂等)。 */
+/* 载入时调用一次:把被引用的预合成内部 ind 挪到**各自独立的号段**(幂等)。
+ * 段长 stride = 所有预合成里的最大 ind + 1(下限 1000),第 i 份预合成的偏移是
+ * PRECOMP_IND_BASE + i × stride —— 这样任意两份合成的号段都不相交,侧栏的 data-ind 才能唯一回查到图层。
+ * 已平移过的数据(同一份数据被重复载入)按「有没有 >= PRECOMP_IND_BASE 的 ind」跳过,结果不变。 */
 function normalizePrecompInds(data: any) {
-  for (const a of referencedPrecompAssets(data)) {
+  const comps = referencedPrecompAssets(data);
+  let maxInd = 0;
+  const scan = (ls: any[]) => {
+    for (const l of ls ?? []) {
+      if (typeof l?.ind === 'number' && l.ind < PRECOMP_IND_BASE) maxInd = Math.max(maxInd, l.ind);
+      if (Array.isArray(l?.layers)) scan(l.layers);
+    }
+  };
+  for (const a of comps) scan(a.layers ?? []);
+  const stride = Math.max(1000, maxInd + 1);
+  comps.forEach((a, i) => {
     const layers: any[] = a.layers ?? [];
-    if (layers.some((l: any) => (l?.ind ?? 0) >= PRECOMP_IND_BASE)) continue; // 已平移过
-    offsetCompositionInds(layers, PRECOMP_IND_BASE);
-  }
+    if (layers.some((l: any) => (l?.ind ?? 0) >= PRECOMP_IND_BASE)) return; // 已平移过
+    offsetCompositionInds(layers, PRECOMP_IND_BASE + i * stride);
+  });
 }
 
 /* ---------- 字形表(chars)兜底 ----------
@@ -6375,6 +6393,9 @@ import blastDataUrl from '../animations/animation_6/animation_data.json?url';
 import battlefieldDataUrl from '../animations/animation_7/animation_data.json?url';
 import evacPointDataUrl from '../animations/animation_8/animation_data.json?url';
 import mandelBrickDataUrl from '../animations/animation_9/animation_data.json?url';
+/* 物品搜索动画的数据文件在素材目录里叫 animation_data1_1.json(不是 animation_data.json),
+ * 按素材原样引用,不重命名用户交付的文件 —— 分包规则(vite.config.ts)也照这个名字匹配。 */
+import itemSearchDataUrl from '../animations/animation_10/animation_data1_1.json?url';
 /* 黑潮爆破默认弹窗动画的位图素材(animations/animation_6/images/*.png):
  * JSON 里是相对路径(u:"images/"),站点产物里没有 images/ 目录,必须按静态资源打包后改写资源地址
  * (见 ensureBlastData)。目录里同时还有一份 AE 视频图层的素材(.gif / .mp4),它们随 ty:9 视频图层一起被丢掉。
@@ -6410,6 +6431,16 @@ const evacPointImageModules = import.meta.glob('../animations/animation_8/images
  * 数据里同样是相对路径(u:"images/"),站点产物里没有那个目录 —— 按静态资源打包再改写地址(见 ensureMandelBrickData)。
  * 同样用 glob:重导出换名/加图都不用改代码。 */
 const mandelBrickImageModules = import.meta.glob('../animations/animation_9/images/*.png', {
+  eager: true,
+  query: '?url&no-inline',
+  import: 'default',
+}) as Record<string, string>;
+/* 物品搜索动画(animations/animation_10)的位图素材:197 张 PNG —— 一张 1920×1080 的斜条纹黑底、
+ * 一张 286×300 的物品图标,以及 **195 张「放大镜」逐帧序列**(文件名统一带 `00000-00194` 帧号段)。
+ * 数据里同样是相对路径(u:"images/"),站点产物里没有那个目录 —— 按静态资源打包再改写地址(见 ensureItemSearchData)。
+ * ?url&no-inline 不能省(理由与黑潮爆破的 700 张序列帧相同):这 195 帧每张只有 35KB,
+ * Vite 默认只内联 4KB 以下的,但统一 no-inline 才能保证主 chunk 里只留 URL 字符串。 */
+const itemSearchImageModules = import.meta.glob('../animations/animation_10/images/*.png', {
   eager: true,
   query: '?url&no-inline',
   import: 'default',
@@ -7300,6 +7331,119 @@ async function ensureMandelBrickData(onProgress?: (p: number | null) => void): P
   return mandelBrickDataPromise;
 }
 
+/* ---------- 物品搜索动画(animations/animation_10)----------
+ * 数据 = animations/animation_10/animation_data1_1.json(1920×1080 / 60fps / op=237 = 237 帧 ≈ 3.95s;
+ * 与其它弹窗类动画一样**不配 caps.defaultDuration**,侧栏没有「动画时长」区块,时间轴按 AE 导出原样呈现)。
+ * 画面内容(自下而上):
+ *      · 整幅斜条纹黑底 —— comp_0 里的 image_0(1920×1080 单图);
+ *      · 195 帧「放大镜」逐帧序列 —— 顶层引用的 sequence_0 预合成(内部 195 条单帧 imgSeq_* 图层,
+ *        ip/op 依次 0-1-2…194,天然就是一本翻页书,lottie 原生支持,不需要额外的序列驱动补丁);
+ *      · 物品颜色叠加 —— comp_2 里的三条形状层(色块 / 辉光 / 发光),用 alpha 遮罩切出物品轮廓;
+ *      · 物品图标 + 物品名文字 —— comp_1 里的 image_1(286×300)与一行「非洲之心」(ProjectDType-Medium);
+ *      · 底层框框 —— 顶层的渐变底条(白描边是占位色,侧栏按占位色规则隐藏,见 hideShapeStroke)。
+ * 可编辑项全部由通用面板自动发现,没有为本套动画新写遍历逻辑:
+ *      • 文字与文字颜色 —— 「文字图层」列表(walkEditableLayers 会走预合成 comp_1,图层名带「comp_1 › 」前缀);
+ *      • 形状颜色 / 每层不透明度 —— 「形状图层」列表(comp_2 的三条颜色层与顶层底条都在里面);
+ *      • 物品图标 —— 「图标选择」(单图标位形态,没有分段选项卡),候选 = 素材目录里的单图
+ *        (195 张序列帧按文件名里的帧号段排除,见文件下方 itemSearchIconOptions 的拼装)。
+ * 载入时做三件事:
+ *      ① 位图资源是相对路径(u:"images/",p:"________00000000.png" 等),按文件基名换成本地打包地址;
+ *      ② 防御性丢掉 ty:9 视频图层与「删完之后没人引用」的资源(本套导出里没有视频层;数据里那三份数值 id
+ *         的重复预合成会因此一起被回收 —— 它们和 comp_0/comp_1/comp_2 是同一批图层,留着只会多建三份);
+ *      ③ 给位图资源写上 pr = ITEMSEARCH_ICON_FIT,让上传的非正方图标「等比完整显示」而不是被裁切。
+ * 字体与其它动画共用(fName = ProjectDType-Medium,运行时从 animations/animation_1/fonts/ 注册);
+ * chars 只烘焙了「非洲之心」四个字,改字后由 dropCharsIfUncovered 自动退回浏览器文本引擎。 */
+let itemSearchData: any = null;
+let itemSearchDataPromise: Promise<void> | null = null;
+/* 图标位(可换图)的资源 id:载入时认一次就固定下来 —— 它是 comp_1 里那条唯一与画布不同尺寸的位图。
+ * 换图标(applyIconUrlToScope)与判「有没有图标位」(iconLayerOf)都靠它,不必每次重新遍历整棵树。 */
+let itemSearchIconRefId = '';
+/* 「图标选择」的候选与默认项:载入成功后才算(要先知道哪张是图标、哪张是整幅背景)。 */
+let itemSearchIconOptions: { name: string; url: string }[] = [];
+let itemSearchIconDefaultName = '';
+let iconItemSearchName = ''; // 物品搜索动画当前选用的图标
+
+/* 素材目录里 195 张序列帧的文件名都带 `00000-00194` 这段帧号;按它把「单图」和「序列帧」分开,
+ * 不写死具体文件名 —— 重新导出后帧数变了,只要 AE 仍按同一命名规则导出就照样分得开。 */
+const ITEMSEARCH_SEQ_FRAME_RE = /00000-\d{5}/;
+
+/* 在**改写资源地址之前**认一遍数据里的两类位图资源(此时的 p 还是原始文件名,改写后就成哈希地址了):
+ *   · 图标 —— 非序列位图里尺寸与画布不同的那条(comp_1 的 286×300);
+ *   · 整幅背景 —— 非序列位图里尺寸与画布相同的那条(comp_0 的 1920×1080)。
+ * 两类的判据都是「资源声明的画框 vs 画布」,AE 重新导出换了文件名也不影响。 */
+function itemSearchAssetRolesOf(data: any): { iconRefId: string; iconBase: string; bgBase: string } {
+  let iconRefId = '';
+  let iconBase = '';
+  let bgBase = '';
+  walkEditableLayers(data, (l) => {
+    if (l?.ty !== 2 || isSeqLayer(l) || typeof l.refId !== 'string') return;
+    const asset = (data.assets ?? []).find((a: any) => String(a.id) === l.refId);
+    if (!asset || typeof asset.p !== 'string') return;
+    /* 逐帧序列那 195 张不参与「图标 / 背景」的角色判定:它们与画布同尺寸,不排掉就会被当成整幅背景
+     * (walkEditableLayers 会先走到 sequence_0 里的第一条 imgSeq 图层),真正的斜条纹黑底就漏了。 */
+    if (asset.t === 'seq' || String(asset.id).startsWith('imgSeq_')) return;
+    const base = asset.p.split(/[\/\\]/).pop() ?? '';
+    if (!base) return;
+    if (asset.w === data.w && asset.h === data.h) {
+      if (!bgBase) bgBase = base;
+      return;
+    }
+    if (!iconRefId) {
+      iconRefId = l.refId;
+      iconBase = base;
+    }
+  });
+  return { iconRefId, iconBase, bgBase };
+}
+
+async function ensureItemSearchData(onProgress?: (p: number | null) => void): Promise<void> {
+  if (itemSearchData) return;
+  if (itemSearchDataPromise) {
+    if (onProgress) onProgress(null); // 已在加载中:以不确定进度显示
+    return itemSearchDataPromise;
+  }
+  itemSearchDataPromise = (async () => {
+    try {
+      const [raw] = await fetchJsonBundle([itemSearchDataUrl], onProgress);
+      const data = JSON.parse(raw);
+      /* ① 先认图标 / 背景(要用原始文件名),再改写资源地址 */
+      const roles = itemSearchAssetRolesOf(data);
+      itemSearchIconRefId = roles.iconRefId;
+      const urlByBase = new Map<string, string>();
+      for (const [path, url] of Object.entries(itemSearchImageModules)) {
+        const base = path.split('/').pop();
+        if (base) urlByBase.set(base, url);
+      }
+      rewriteRelativeImageAssets(data, urlByBase);
+      stripVideoLayersAndReclaimAssets(data); // ②
+      /* ③ 位图资源标记为「等比缩放、完整显示」(见 ITEMSEARCH_ICON_FIT):
+       *    内置图标与资源声明的画框(286×300)一致,slice 与 meet 结果相同(默认画面不变);
+       *    上传的任意长宽比自定义图在默认 slice 下会被裁掉一条边,这里统一兜住。 */
+      for (const a of data.assets ?? []) if (a?.w && a?.h && a.t !== 'seq') a.pr = ITEMSEARCH_ICON_FIT;
+      itemSearchData = data;
+      /* 「图标选择」候选 = 素材目录里的**单图**(排掉 195 张序列帧与整幅背景);目录里只有一张图标时
+       * 列表就只有它一项,不会出现一堆帧。复用的就是上面那个 glob,往目录里丢新 PNG 重启后会自动出现。 */
+      itemSearchIconOptions = Object.entries(itemSearchImageModules)
+        .map(([path, url]) => ({ name: path.split('/').pop() ?? '', url }))
+        .filter((o) => o.name && !ITEMSEARCH_SEQ_FRAME_RE.test(o.name) && o.name !== roles.bgBase)
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+      /* 默认项必须正好是数据里已经引用的那张图标:applyIconsToData() 一进这套动画就会把资源地址
+       * 写成「当前选中的图标」,默认项若不对,光是切进来就会凭空改掉画面。 */
+      itemSearchIconDefaultName =
+        itemSearchIconOptions.find((o) => o.name === roles.iconBase)?.name ??
+        itemSearchIconOptions[0]?.name ??
+        '';
+      if (!iconItemSearchName) iconItemSearchName = itemSearchIconDefaultName;
+    } catch (e) {
+      console.error('[物品搜索动画数据解析失败]', e);
+      setStatus('物品搜索动画数据解析失败: ' + (e as Error).message, true);
+    }
+    // 失败时允许下次重试
+    if (!itemSearchData) itemSearchDataPromise = null;
+  })();
+  return itemSearchDataPromise;
+}
+
 /* 递归偏移对象中所有动画属性({a:1, k:[{t,...}]})的关键帧时刻 t */
 /* 说明：只平移动画属性（{a:1}）里关键帧的 t（帧号，60fps 下一帧 = 1）；数组直接递归；
  * 遇到 a===1 的 k 数组后不再向下递归，避免把关键帧的 s/e 值当成嵌套属性处理；
@@ -7921,6 +8065,29 @@ const ANIMATIONS: AnimDef[] = [
      * 同样**没有 nextScan**:单段标题动画,没有第二段可接。 */
     caps: {},
   },
+  {
+    key: 'itemsearch',
+    label: '物品搜索动画',
+    no: 10,
+    meta: {
+      tags: ['物品搜索', '物品', '搜索', '搜刮', '拾取', '检视', '放大镜', '弹窗', 'itemsearch', 'search', 'loot'],
+      accent: '#84cc16',
+      /* 237 帧 @60fps ≈ 3.95s(数据 op=237;放大镜序列只到第 195 帧,后面是物品与底框的收尾);载入后按实测校准 */
+      w: 1920, h: 1080, fps: 60, frames: 237,
+      features: ['图标可换', '文字可编辑'],
+    },
+    poster: posterOf('itemsearch'),
+    data: () => itemSearchData,
+    popup: () => null,
+    audioUrl: null,
+    loaded: () => !!itemSearchData,
+    load: (p) => ensureItemSearchData(p),
+    /* caps 全空:侧栏不出现「动画时长」区块,时间轴完全按 AE 导出原样呈现(237 帧 ≈ 3.95s)——
+     * 改时长的实现是把各图层末尾的淡出关键帧搬到新出点(见 applyMainDuration),
+     * 而本套动画的放大镜序列是**逐帧单帧图层**(每条 ip→op 只有一帧),搬关键帧等于把翻页书撕开。
+     * 同样**没有 nextScan**:单段搜索动画,没有第二段可接。 */
+    caps: {},
+  },
 ];
 
 /* ---------- 动画编号(快速管理用的唯一编号) ----------
@@ -8113,12 +8280,19 @@ const EVACPOINT_ICON_FIT = 'xMidYMid meet';
  * 写成 meet 后一律等比缩放到**完整塞进**画框并居中,不裁切也不拉伸。 */
 const MANDELBRICK_ICON_FIT = 'xMidYMid meet';
 
+/* 物品搜索动画图标资源的 preserveAspectRatio,规则与大战场 / 撤离点 / 首领入侵完全一致:
+ * 内置图标(286×300 那张)与资源声明画框相同,slice 与 meet 结果没有差别,默认画面不变;
+ * 但「上传自定义图标」允许任意长宽比,默认的 slice 会按 286×300 画框铺满后居中裁切,
+ * 写成 meet 后一律等比缩放到**完整塞进**画框并居中,不裁切也不拉伸。 */
+const ITEMSEARCH_ICON_FIT = 'xMidYMid meet';
+
 /* 只有「单个图标位」的动画:任务弹窗动画(数据里唯一那张位图)与大战场弹窗动画
  * (两条位图图层共用一份资源)、撤离点开启动画(唯一那张 48×48 小图标),
- * 以及首领入侵/曼德尔砖标题动画(唯一那张 283×425 立绘)。
+ * 首领入侵/曼德尔砖标题动画(唯一那张 283×425 立绘),以及物品搜索动画(预合成 comp_1 里那张 286×300 物品图标)。
  * 这类动画没有选项卡、没有「跟随」概念,图标选择只作用于唯一那个图标位。 */
 function isSingleIconScope(key: string = currentAnimKey): boolean {
-  return key === 'mission' || key === 'battlefield' || key === 'evacpoint' || key === 'mandelbrick';
+  return key === 'mission' || key === 'battlefield' || key === 'evacpoint' || key === 'mandelbrick'
+    || key === 'itemsearch';
 }
 
 /* 定位当前动画的「图标图层」——用于判断该动画有没有图标位、以及不透明度滑块该挂在哪一层上。
@@ -8127,7 +8301,9 @@ function isSingleIconScope(key: string = currentAnimKey): boolean {
  *   • 大战场弹窗:同样是位图层(数据里有两条 ind 5 / ind 6,共用同一份资源 image_0,
  *     这里只用来判断「有没有图标位」,改写资源时按 refId 去重逐个写,见 applyIconUrlToScope);
  *   • 撤离点开启:同样是唯一那张位图图层(ind 11,资源 image_0,数据里就是 83.png);
- *   • 首领入侵/曼德尔砖标题:同样是唯一那张位图图层(ind 6,资源 image_0,数据里就是 德穆兰.png)。
+ *   • 首领入侵/曼德尔砖标题:同样是唯一那张位图图层(ind 6,资源 image_0,数据里就是 德穆兰.png);
+ *   • 物品搜索:位图图层藏在预合成 comp_1 里(顶层只有预合成引用),所以按载入时认出的资源 id 全树找
+ *     (见 itemSearchIconRefId);同名的整幅背景 image_0 不算图标位。
  * 其它动画(撤离 / 核电站功率 / 地图标题 / 黑潮爆破)没有图标位,返回 null,「图标选择」区块整块隐藏。 */
 function iconLayerOf(data: any, key: string = currentAnimKey): any | null {
   const layers: any[] = data?.layers ?? [];
@@ -8135,6 +8311,15 @@ function iconLayerOf(data: any, key: string = currentAnimKey): any | null {
   if (key === 'battlefield') return layers.find((l: any) => l.ty === 2 && !isSeqLayer(l)) ?? null;
   if (key === 'evacpoint') return layers.find((l: any) => l.ty === 2 && !isSeqLayer(l)) ?? null;
   if (key === 'mandelbrick') return layers.find((l: any) => l.ty === 2 && !isSeqLayer(l)) ?? null;
+  if (key === 'itemsearch') {
+    if (!itemSearchIconRefId) return null;
+    let hit: any = null;
+    walkEditableLayers(data, (l) => {
+      if (hit || l?.ty !== 2 || isSeqLayer(l)) return;
+      if (l.refId === itemSearchIconRefId) hit = l;
+    });
+    return hit;
+  }
   if (key === 'exposed') return layers.find((l: any) => l.ty === 2 && l.nm === '图标_可替换') ?? null;
   return null;
 }
@@ -8298,12 +8483,15 @@ document.getElementById('btnNudgeReset')?.addEventListener('click', () => change
  *  • 任务弹窗动画用 animations/animation_4/icon 下的图标(MISSION_ICON_OPTIONS);
  *  • 大战场弹窗动画用动画自己素材目录里的几张图标(BATTLEFIELD_ICON_OPTIONS);
  *  • 撤离点开启动画同样用动画自己素材目录里的几张图标(EVACPOINT_ICON_OPTIONS);
- *  • 首领入侵/曼德尔砖标题动画同样用动画自己素材目录里的可换图(MANDELBRICK_ICON_OPTIONS)。
+ *  • 首领入侵/曼德尔砖标题动画同样用动画自己素材目录里的可换图(MANDELBRICK_ICON_OPTIONS);
+ *  • 物品搜索动画同样用动画自己素材目录里的单图(itemSearchIconOptions,载入后按数据拼,
+ *    195 张放大镜序列帧与整幅背景都不进列表)。
  * 用户上传的自定义图标对这几套动画都可见,排在前面便于一眼看到自己加的那张。 */
 function builtinIconOptions(): { name: string; url: string }[] {
   if (currentAnimKey === 'battlefield') return BATTLEFIELD_ICON_OPTIONS;
   if (currentAnimKey === 'evacpoint') return EVACPOINT_ICON_OPTIONS;
   if (currentAnimKey === 'mandelbrick') return MANDELBRICK_ICON_OPTIONS;
+  if (currentAnimKey === 'itemsearch') return itemSearchIconOptions;
   return currentAnimKey === 'mission' ? MISSION_ICON_OPTIONS : ICON_OPTIONS;
 }
 function allIconOptions() {
@@ -8320,11 +8508,12 @@ function findIconOption(name: string) {
 }
 
 /* 某段实际生效的图标名:二次扫描在「跟随位置暴露」时取位置暴露的值;
- * 任务弹窗 / 大战场弹窗 / 撤离点开启 / 首领入侵标题动画与分段无关,恒取它们自己的选择。 */
+ * 任务弹窗 / 大战场弹窗 / 撤离点开启 / 首领入侵标题 / 物品搜索动画与分段无关,恒取它们自己的选择。 */
 function effectiveIconName(scope: IconScope): string {
   if (currentAnimKey === 'battlefield') return iconBattlefieldName;
   if (currentAnimKey === 'evacpoint') return iconEvacPointName;
   if (currentAnimKey === 'mandelbrick') return iconMandelBrickName;
+  if (currentAnimKey === 'itemsearch') return iconItemSearchName;
   if (currentAnimKey === 'mission') return iconMissionName;
   if (scope === 'main') return iconMainName;
   return followMainIcon ? iconMainName : iconNextName;
@@ -8408,6 +8597,12 @@ function applyIconUrlToScope(scope: IconScope, url: string): boolean {
     }
     return updated;
   }
+  /* 物品搜索动画:唯一那个图标位在预合成 comp_1 里(顶层没有 ty:2 图层),所以写的是
+   * 载入时认出来的那个资源 id(itemSearchIconRefId),而不是"遍历顶层位图层"。 */
+  if (currentAnimKey === 'itemsearch') {
+    if (itemSearchIconRefId && setAssetImageUrl(itemSearchData, itemSearchIconRefId, url)) updated = true;
+    return updated;
+  }
   if (scope === 'main') {
     // 位置暴露(主段):资源恒为 image_0。注意不能顺带写 image_0_n ——那是第二段的资源
     if (setAssetImageUrl(animation2Data, 'image_0', url)) updated = true;
@@ -8423,7 +8618,7 @@ function applyIconUrlToScope(scope: IconScope, url: string): boolean {
 /* 按当前状态刷新两段图标资源。两段都写:即便处于「跟随」状态,二次扫描资源也要对齐,
  * 否则取消跟随、或关闭再开启二次扫描时第二段会退回内置 PNG。 */
 function applyIconsToData(): boolean {
-  // 单图标位动画(任务弹窗 / 大战场弹窗 / 撤离点开启 / 首领入侵标题)只有一个图标位,写一次即可
+  // 单图标位动画(任务弹窗 / 大战场弹窗 / 撤离点开启 / 首领入侵标题 / 物品搜索)只有一个图标位,写一次即可
   if (isSingleIconScope()) return applyIconUrlToScope('main', effectiveIconUrl('main'));
   let updated = false;
   if (applyIconUrlToScope('main', effectiveIconUrl('main'))) updated = true;
@@ -8440,6 +8635,8 @@ function setIconForScope(scope: IconScope, name: string) {
     iconEvacPointName = name; // 单图标位:没有分段与跟随
   } else if (currentAnimKey === 'mandelbrick') {
     iconMandelBrickName = name; // 单图标位:没有分段与跟随
+  } else if (currentAnimKey === 'itemsearch') {
+    iconItemSearchName = name; // 单图标位:没有分段与跟随
   } else if (currentAnimKey === 'mission') {
     iconMissionName = name;
   } else if (scope === 'main') {
@@ -8649,7 +8846,8 @@ iconFile.addEventListener('change', () => {
     const where = isSingleIconScope()
       ? (currentAnimKey === 'battlefield' ? '大战场弹窗动画'
         : currentAnimKey === 'evacpoint' ? '撤离点开启动画'
-        : currentAnimKey === 'mandelbrick' ? '首领入侵/曼德尔砖标题动画' : '任务弹窗动画')
+        : currentAnimKey === 'mandelbrick' ? '首领入侵/曼德尔砖标题动画'
+        : currentAnimKey === 'itemsearch' ? '物品搜索动画' : '任务弹窗动画')
       : iconScope === 'next' ? '二次扫描' : '位置暴露';
     setStatus('已应用自定义图标「' + iconDisplayName(name) + '」到' + where);
   };
@@ -8959,7 +9157,7 @@ async function switchAnimation(key: string) {
   await loadData(data, def.label);
 }
 /* ==================== 一键重置(整套动画恢复出厂) ====================
- * 九套动画的编辑都是**就地改内存里那份数据对象**(见文件顶部「编辑面板」段),颜色、文字、
+ * 十套动画的编辑都是**就地改内存里那份数据对象**(见文件顶部「编辑面板」段),颜色、文字、
  * 图标、时长、不透明度、弹窗、预设全都落在同一个 JSON 上。所以「恢复默认」不能靠逐个字段撤回:
  * 那要枚举二十多个改动点,漏一处就是"重置了但没完全重置"——而漏掉的那一处,
  * 用户只有在下一次导出时才会发现(画面和第一次打开不一样)。
@@ -9021,6 +9219,16 @@ function dropAnimDataCache(key: string): void {
       mandelBrickData = null;
       mandelBrickDataPromise = null;
       break;
+    case 'itemsearch':
+      /* 图标位 / 候选列表都是载入时按出厂数据算出来的:数据换掉就一起作废,
+         下次载入会重新认一遍(见 ensureItemSearchData)。 */
+      itemSearchData = null;
+      itemSearchDataPromise = null;
+      itemSearchIconRefId = '';
+      itemSearchIconOptions = [];
+      itemSearchIconDefaultName = '';
+      iconItemSearchName = '';
+      break;
     default:
       break;
   }
@@ -9069,6 +9277,8 @@ function resetAnimEditState(key: string): void {
      已经不存在了 —— 用户会以为"颜色没重置"(实际是色块值没刷新,计数是 0 处)。 */
   mandelThemeCurrent = MANDEL_THEME_DEFAULT;
   mandelThemeTouched.clear(); // 记录的是旧数据里的颜色项对象,数据要被整个换掉,引用不能留
+  /* 物品搜索动画的图标选择同理回到出厂那张(itemSearchIconDefaultName 是上一次载入时认出来的) */
+  iconItemSearchName = itemSearchIconDefaultName;
   /* 报酬信息(仅任务弹窗动画)默认显示 */
   missionRewardShown = true;
   if (chkMissionReward) chkMissionReward.checked = true;
@@ -10863,7 +11073,10 @@ function base64ToBytes(b64: string): Uint8Array | null {
 }
 
 /* 光栅化用字体 CSS:全部用 blob URL 引用(见上)。每次导出只构建一次,导出结束统一释放。
- * 单个字体取不回只是字形回退,因此每个 fetch 都限时并跳过失败项 —— 绝不让字体拖住整段导出。 */
+ * 单个字体取不回只是字形回退,因此每个 fetch 都限时并跳过失败项 —— 绝不让字体拖住整段导出。
+ * ⚠ 这份 CSS 只作兜底:序列化出来的 SVG 用 <img> 加载时是隔离文档,blob:/http(s) 字体都会被静默丢弃,
+ * 只有 data: 字体才进得去。真正的字体保证是上面「文字→位图」(replaceSvgTextWithGlyphImages):
+ * 能被换掉的文字都不再依赖字体,剩下的极少数(渐变填充等)才落到这份 CSS。 */
 const FONT_FETCH_TIMEOUT_MS = 10000;
 async function buildSvgRasterFontCss(list: any[]): Promise<string> {
   let css = '';
@@ -10941,13 +11154,157 @@ async function svgRasterInlineImage(href: string): Promise<string | null> {
   return data;
 }
 
-/* 一次导出结束后释放栅格化用的图片缓存与上一帧的图片:
+/* 一次导出结束后释放栅格化用的图片缓存、文字位图缓存与上一帧的图片:
  * 黑潮爆破这类动画会把上百张 data URI(合计几十 MB)留在内存里,连点几次导出就会持续堆积,
  * 手机上的标签页很容易因此被系统回收(表现又是"卡住")。 */
 function releaseSvgRasterImageCache() {
   svgRasterImageCache.clear();
+  svgRasterGlyphCache.clear();
   svgRasterLastKey = '';
   svgRasterLastImg = null;
+}
+
+/* ---------- SVG 帧里的文字 → 位图 ----------
+ * 为什么必须换:<img> 加载的 SVG 是**独立文档**,只能访问文档内嵌的 data: 资源;
+ * blob:/http(s) 字体一律被静默丢弃(实测 Chromium 126 / 156 都是如此,等待多久都不会回补)。
+ * 而 lottie 的 SVG 渲染器在没有 chars 字形轮廓时,文字是真实 <text>、字形完全取决于字体 ——
+ * 核电站功率动画(共用轨道遮罩 → 导出必须走 SVG 光栅化,JSON 又没有 chars)因此会掉字体:
+ * 预览正常(字体由主文档 FontFace 提供),导出却回退系统字体;手机没装这套字体就露馅。
+ * 之前用 blob URL 引字体还「看起来更快」,其实是因为字体压根没加载,直接用了本机装好的同名字体。
+ *
+ * 解法:在克隆帧里把每个 <text> 用**主文档的字体**(含 FontFace,手机上就是站点自己注册的那份)
+ * 画成一张小 PNG,替换成 <image>。这样:
+ *   · 不依赖系统装没装字体,也不依赖字体能不能在隔离文档里加载;
+ *   · data: 图片在隔离文档里是允许的(序列帧就是这么内联的);
+ *   · 位图按「字 + 字体 + 字号 + 颜色 + 墨迹框」缓存 —— 一套动画只有几十个字(核电站实测 27 个),
+ *     整段导出每帧只做几十次 DOM 替换,不做任何字体解析,比往每帧里塞 2~5MB 字体快得多。
+ * 渐变/图案填充(url(#…))没法用 fillText 复现,这种文字保持原样(本项目素材里没有)。 */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const XLINK_NS = 'http://www.w3.org/1999/xlink';
+/* 文字位图四周留的透明边:抗锯齿/描边可能略微超出 getBBox */
+const RASTER_GLYPH_PAD = 2;
+/* 位图倍率上限:文字在合成里被放大到 5× 时按 5× 渲染,导出画面才不会糊 */
+const RASTER_GLYPH_MAX_SCALE = 6;
+/* 键 → PNG data URI。只缓存「字形本身」,与每帧的位移/旋转无关。 */
+const svgRasterGlyphCache = new Map<string, string>();
+
+/* 把一个 <text> 画成位图元素;返回 null 表示这一帧仍交给原来的 <text>(见上一条注释)。 */
+function svgTextToGlyphImage(el: SVGTextElement): SVGImageElement | null {
+  // 带子元素(<tspan> 等)的排版不是单一基线,不在这里处理
+  if (el.childElementCount > 0) return null;
+  const text = el.textContent ?? '';
+  if (!text.trim()) return null; // 空白没有墨迹,留着也不会掉字形
+  let cs: CSSStyleDeclaration;
+  try { cs = getComputedStyle(el); } catch { return null; }
+  if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return null;
+  const fill = cs.fill || '';
+  const stroke = cs.stroke || '';
+  if (/^url\(/i.test(fill) || /^url\(/i.test(stroke)) return null;
+  const fillAlpha = Number.isFinite(Number(cs.fillOpacity)) ? Math.min(1, Math.max(0, Number(cs.fillOpacity))) : 1;
+  const strokeAlpha = Number.isFinite(Number(cs.strokeOpacity)) ? Math.min(1, Math.max(0, Number(cs.strokeOpacity))) : 1;
+  const strokeWidth = parseFloat(cs.strokeWidth || '0') || 0;
+  const strokeJoin = (/^(miter|round|bevel)$/.test(cs.strokeLinejoin) ? cs.strokeLinejoin : 'miter') as CanvasLineJoin;
+  const strokeCap = (/^(butt|round|square)$/.test(cs.strokeLinecap) ? cs.strokeLinecap : 'butt') as CanvasLineCap;
+  const strokeMiter = parseFloat(cs.strokeMiterlimit || '4') || 4;
+  const hasFill = !!fill && fill !== 'none' && fillAlpha > 0;
+  const hasStroke = !!stroke && stroke !== 'none' && strokeWidth > 0 && strokeAlpha > 0;
+  if (!hasFill && !hasStroke) return null;
+  let b: DOMRect;
+  try { b = el.getBBox(); } catch { return null; }
+  if (!(b.width > 0.05) || !(b.height > 0.05)) return null;
+  /* 渲染倍率取「这个字在合成里的实际放大倍数」:getCTM() 是到 SVG 视口的变换,
+   * 不含预览舞台那层 CSS 缩放。defs 里的文字(遮罩源)拿不到 CTM,按 1× 处理。 */
+  let scale = 1;
+  try {
+    const m = (el as SVGGraphicsElement).getCTM?.();
+    if (m) scale = Math.hypot(m.a, m.b) || 1;
+  } catch { /* ignore */ }
+  let S = Math.min(RASTER_GLYPH_MAX_SCALE, Math.max(2, Math.ceil(scale * 2)));
+  /* 单个字的位图护栏:再大的文字也只到 4096px,避免异常数据(比如整段文字被塞进一个
+   * <text> 再放大几十倍)把一张位图做到几千万像素、直接把手机内存打满。 */
+  const longest = Math.max(b.width, b.height);
+  if (longest * S > 4096) S = Math.max(1, Math.floor(4096 / longest));
+  const font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+  /* lottie 的 SVG 文字不用 x/y 定位(位置全在 transform 里),但手写/其它导出器可能用:
+     有就按它画 —— getBBox 的坐标是含 x/y 的,两者一起才对得上。 */
+  const tx = parseFloat(el.getAttribute('x') || '') || 0;
+  const ty = parseFloat(el.getAttribute('y') || '') || 0;
+  const key = [text, font, fill, stroke, strokeWidth, strokeJoin, strokeCap, strokeMiter, fillAlpha, strokeAlpha, S,
+    b.x.toFixed(2), b.y.toFixed(2), b.width.toFixed(2), b.height.toFixed(2)].join('|');
+  let uri = svgRasterGlyphCache.get(key);
+  if (!uri) {
+    const pad = RASTER_GLYPH_PAD;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil((b.width + pad * 2) * S));
+    canvas.height = Math.max(1, Math.ceil((b.height + pad * 2) * S));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.scale(S, S);
+    /* getBBox 的坐标相对文字基线(且含 x/y);平移 pad - b.x / pad - b.y 后,在 (tx, ty)
+     * 基线处 fillText,墨迹框左上角正好落在 (pad, pad),与下面的 <image x/y> 一一对应。 */
+    ctx.translate(pad - b.x, pad - b.y);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = font;
+    if (hasFill) {
+      ctx.globalAlpha = fillAlpha;
+      ctx.fillStyle = fill;
+      ctx.fillText(text, tx, ty);
+    }
+    if (hasStroke) {
+      ctx.globalAlpha = strokeAlpha;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = strokeWidth;
+      ctx.lineJoin = strokeJoin;
+      ctx.lineCap = strokeCap;
+      ctx.miterLimit = strokeMiter;
+      ctx.strokeText(text, tx, ty);
+    }
+    try { uri = canvas.toDataURL('image/png'); } catch { return null; }
+    svgRasterGlyphCache.set(key, uri);
+  }
+  const img = document.createElementNS(SVG_NS, 'image') as SVGImageElement;
+  img.setAttribute('x', String(b.x - RASTER_GLYPH_PAD));
+  img.setAttribute('y', String(b.y - RASTER_GLYPH_PAD));
+  img.setAttribute('width', String(b.width + RASTER_GLYPH_PAD * 2));
+  img.setAttribute('height', String(b.height + RASTER_GLYPH_PAD * 2));
+  img.setAttribute('preserveAspectRatio', 'none');
+  img.setAttributeNS(XLINK_NS, 'xlink:href', uri);
+  img.setAttribute('href', uri);
+  /* 只搬「影响这张图怎么摆」的属性:变换 / 不透明度 / 显示样式 / 裁剪与遮罩。
+     不能搬 x/y —— 位置已经按墨迹框重新算过了。 */
+  for (const attr of ['id', 'transform', 'opacity', 'style', 'clip-path', 'mask', 'filter', 'class', 'visibility']) {
+    const v = el.getAttribute(attr);
+    if (v !== null) img.setAttribute(attr, v);
+  }
+  /* opacity 不是继承属性,computed 拿到的就是元素自己的值;lottie 写在属性上,
+   * 但样式表/行内样式也可能给 —— 属性缺失时补一次,免得整层不透明度丢了。 */
+  if (el.getAttribute('opacity') === null) {
+    const ownOpacity = Number(cs.opacity);
+    if (Number.isFinite(ownOpacity) && ownOpacity < 1) img.setAttribute('opacity', String(ownOpacity));
+  }
+  return img;
+}
+
+/* 把克隆帧里的 <text> 逐个换成位图。按文档顺序与源 SVG 一一对应(克隆与源结构相同),
+ * 必须在**任何剪枝之前**调用:剪枝会删节点,顺序就对不上了。 */
+function replaceSvgTextWithGlyphImages(liveSvg: SVGSVGElement, clone: SVGSVGElement): void {
+  const liveTexts = liveSvg.querySelectorAll('text');
+  const clonedTexts = clone.querySelectorAll('text');
+  const n = Math.min(liveTexts.length, clonedTexts.length);
+  let replaced = 0;
+  for (let i = 0; i < n; i++) {
+    const img = svgTextToGlyphImage(liveTexts[i] as SVGTextElement);
+    if (!img) continue;
+    const target = clonedTexts[i];
+    if (!target.parentNode) continue;
+    target.parentNode.replaceChild(img, target);
+    replaced++;
+  }
+  if (import.meta.env.DEV) {
+    // 自检:一帧里还剩多少真实 <text>。剩下的一般只有空白;若出现别的字,说明它们会回退系统字体。
+    (window as any).__rasterTextStats = { textsInFrame: n, replaced, leftAsText: n - replaced };
+  }
 }
 
 /* 把当前已渲染到 DOM 的一帧 SVG 光栅化并画到目标画布 */
@@ -10958,8 +11315,6 @@ async function rasterizeSvgFrameToCtx(
   h: number,
   styleTag: string,
 ): Promise<boolean> {
-  const NS_SVG = 'http://www.w3.org/2000/svg';
-  const XLINK = 'http://www.w3.org/1999/xlink';
   const clone = svgEl.cloneNode(true) as SVGSVGElement;
   /* 剔除 lottie 的图片预载元素与字体 <style>。
    * ⚠ 必须用**直接子选择器** defs > image:预载元素是 <defs> 的直接子节点,
@@ -10967,6 +11322,11 @@ async function rasterizeSvgFrameToCtx(
    * 蒙版随即变空,导出画面里整条蒙版动画直接消失(实测:导出丢蒙版,预览正常)。 */
   clone.querySelectorAll('defs > image').forEach((n) => n.remove());
   clone.querySelectorAll('defs style').forEach((n) => n.remove());
+  /* 文字→位图。顺序很关键:
+   *   · 必须在上面两条清理**之后** —— <defs> 里也有文字(遮罩源),换出来的 <image> 是 <defs> 的直接子节点,
+   *     先换就会被 defs > image 那条当成预载图删掉;
+   *   · 必须在下面的剪枝**之前** —— 映射按文档顺序一一对应,剪枝删节点后就对不上了。 */
+  replaceSvgTextWithGlyphImages(svgEl, clone);
   // 强制按导出尺寸重建视口:clone 沿用了 lottie 写在 <svg> 上的尺寸属性,
   // 不覆盖的话 <img> 会按原尺寸呈现,合成到输出画布上位置和大小都会错位。
   clone.setAttribute('width', String(w));
@@ -10985,7 +11345,7 @@ async function rasterizeSvgFrameToCtx(
       const m = /#([^)"'\s]+)/.exec(v);
       if (m) referencedIds.add(m[1]);
     }
-    const href = n.getAttribute('href') || n.getAttributeNS(XLINK, 'href');
+    const href = n.getAttribute('href') || n.getAttributeNS(XLINK_NS, 'href');
     if (href && href.charAt(0) === '#') referencedIds.add(href.slice(1));
   });
   const mustKeep = new Set<Element>();
@@ -11002,12 +11362,12 @@ async function rasterizeSvgFrameToCtx(
   // 逐个内联 <image> 的地址:同时写 xlink:href 与 href 两份(SVG 2 解析器读 href,老解析器只认 xlink:href),
   // 本来就是 data: 的跳过;单张图失败不阻断整帧。
   for (const im of imgs) {
-    const href = im.getAttributeNS(XLINK, 'href') || im.getAttribute('href') || '';
+    const href = im.getAttributeNS(XLINK_NS, 'href') || im.getAttribute('href') || '';
     if (!href || href.startsWith('data:')) continue;
     const data = await svgRasterInlineImage(href);
     // 取不回(404 / 超时)就先保留原地址:渲染时会静默丢这张图,但整帧与整段导出继续往下走
     if (!data) continue;
-    im.setAttributeNS(XLINK, 'href', data);
+    im.setAttributeNS(XLINK_NS, 'href', data);
     im.setAttribute('href', data);
   }
   // 叠加序列调色用的是 SVG filter(feColorMatrix),滤镜定义挂在站点的隐藏 <svg> 里。
@@ -11199,8 +11559,9 @@ async function exportVideo() {
          * 预载图片是 <defs> 的直接子节点,而遮罩源图层是 <defs> 里 <g id=…> 的子节点 ——
          * 用后代选择器会把导出实例自己的遮罩源删掉,蒙版随即变空,导出视频里整条蒙版动画直接消失。 */
         svgRoot.querySelectorAll('defs > image').forEach((n) => n.remove());
-        // lottie 会把字体 base64(TTF,约 5MB)塞进 <defs><style>:栅格化时改用下面注入的 WOFF2 版本,
-        // 否则每帧要白白序列化+解析两份字体(实测这是导出最慢的一环)
+        // lottie 会把字体 base64(TTF,约 5MB)塞进 <defs><style>:每帧都要白白序列化这 5MB。
+        // 文字已经改成位图(见 replaceSvgTextWithGlyphImages),这里直接摘掉;剩下的字体 CSS 只兜底渐变文字,
+        // 而且 blob 字体在 <img> 文档里本来就不生效 —— 别把它当成「字体已经内联好了」。
         svgRoot.querySelectorAll('defs > style').forEach((n) => n.remove());
       }
     } else {

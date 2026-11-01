@@ -1,6 +1,6 @@
 # 三角洲行动动画编辑器 · Windows + Android
 
-把九套已经做好的游戏动画(Lottie / JSON)变成普通人也能改的东西:预览、改文字、改颜色、换图标、
+把十套已经做好的游戏动画(Lottie / JSON)变成普通人也能改的东西:预览、改文字、改颜色、换图标、
 调时长,再导出成带音频的 MP4 / AVI。**Windows 端与 Android 端共用同一份前端产物**,
 平台差异全部收在编译期与运行期分支里(见[两个外壳,一份前端](#两个外壳一份前端))。
 
@@ -614,7 +614,7 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 │   ├── main.ts                # 编辑器全部逻辑(513 KB,文件开头有总览)
 │   ├── style.css              # 全局样式
 │   └── vite-env.d.ts
-├── animations/                # 九套动画素材(114.7 MB)
+├── animations/                # 十套动画素材(约 130 MB)
 ├── posters/                   # 动画画廊卡片预览图(由 tools/fit-posters.py 重新构图过)
 ├── tools/                     # 开发/排障脚本(上游带来的,多数非必需)
 │   └── fit-posters.py         # 按内容包围盒重新构图封面(内容太小/偏一边时跑一次)

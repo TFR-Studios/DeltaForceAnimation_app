@@ -50,7 +50,7 @@ try {
   const options = await page.evaluate(() =>
     [...document.querySelectorAll('#selAnim option')].map((o) => ({ key: o.value, label: o.textContent })));
   console.log('[1] 注册表里的动画数:' + options.length);
-  check(options.length === 9, '注册表里有 9 套动画', options.length);
+  check(options.length === 10, '注册表里有 10 套动画', options.length);
   check(options.some((o) => o.key === KEY && o.label === LABEL), '列表里有「' + LABEL + '」且名字正确', options.find((o) => o.key === KEY));
 
   await page.evaluate(() => { window.__prevAnim = window.__anim; });

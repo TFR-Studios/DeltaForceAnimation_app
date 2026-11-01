@@ -894,7 +894,7 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   flex: 1 1 auto;
   line-height: 1.15;
 }
-/* 名称 + 总数同一行:总数是"这套动画属于九套里的哪一个",贴在名字右边成一组 */
+/* 名称 + 总数同一行:总数是"这套动画属于十套里的哪一个",贴在名字右边成一组 */
 .anim-trigger-head {
   display: flex;
   align-items: center;
