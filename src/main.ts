@@ -1189,6 +1189,10 @@ function blastTintKey(refId: string): string {
 const mandelbrickOriginalUri = new Map<string, string>(); // '动画key:refId' → 未着色的原始地址
 const mandelbrickTintHex = new Map<string, string>(); // '动画key:refId' → 用户选定的颜色
 const mandelbrickTintedUri = new Map<string, { original: string; hex: string; uri: string }>();
+/* 「不叠色」的约定色 = 纯白。取色器没调过色时显示的就是它(见 renderImageList 的 mandHex):
+ * 选白色 = 「给我原图标,一个像素都别动」,走恢复原图那条路(见 restoreMandelBrickIcon),
+ * 不写任何着色记录 —— 而不是把黑色剪影整片刷成白色(那会把立绘变成白色剪影,看起来像丢了原图)。 */
+const MANDEL_ICON_NO_TINT_HEX = '#ffffff';
 /* 立绘着色的键:与黑潮爆破同一套键规范('动画key:refId'),一键重置按前缀清空 */
 function imageAssetTintKey(refId: string): string {
   return currentAnimKey + ':' + refId;
@@ -1402,6 +1406,13 @@ const themeCount = $<HTMLElement>('themeCount');
 const themeFill = $<HTMLInputElement>('themeFill');
 const themeStroke = $<HTMLInputElement>('themeStroke');
 const btnThemeReset = $<HTMLButtonElement>('themeReset');
+/* 动画主题色(仅 #009):把「首领入侵/曼德尔砖标题」那套 HUD 的设计红 #FF3D3B 整族换掉 */
+const mandelThemeSection = $<HTMLDivElement>('mandelThemeSection');
+const mandelThemeCount = $<HTMLElement>('mandelThemeCount');
+const mandelThemeColor = $<HTMLInputElement>('mandelThemeColor');
+const btnMandelThemeReset = $<HTMLButtonElement>('mandelThemeReset');
+/* 「图片图层」底部的调色约定说明:只有 #009 的立绘需要它(纯白 = 原图标,不叠色) */
+const imageTintNote = $<HTMLElement>('imageTintNote');
 
 const iconSection = $<HTMLDivElement>('iconSection');
 const iconList = $<HTMLUListElement>('iconList');
@@ -3184,6 +3195,9 @@ function updateInfo(data: any) {
         : fonts.join('、') + (embeddedFontCount > 0 ? ' · JSON 内嵌字体' : ' · 站点字体文件');
 
   const items: [string, string][] = [
+    /* 编号放第一行:它是这套动画的「身份」,比尺寸 / 帧率更常被用来对号
+     * (画廊卡片、顶栏触发器上写的是同一串,见「动画编号」段)。 */
+    ['编号', animNoText(animDef()?.no)],
     ['尺寸', data.w + ' × ' + data.h],
     ['帧率', fr + ' fps'],
     ['入点 / 出点', ip + ' / ' + op],
@@ -3614,48 +3628,53 @@ function normHex(hex: string | null | undefined): string {
   return String(hex || '').trim().toLowerCase();
 }
 
-/* 把一处颜色属性里与 from 相同的静态色/关键帧色换成 to,返回替换次数。 */
-function replaceShapeColorValue(c: any, from: string, to: string): number {
+/* 把一处颜色属性里与 from 相同的静态色/关键帧色换成 to,返回替换次数。
+ * onReplace(c, before):真的换过时回调一次,交出这个颜色项与它**换之前**的 k(深拷贝)。
+ * 「动画主题色」靠它记录"改过哪些项、原来是什么",这样「重置为默认色」只还原被它碰过的那些项 ——
+ * 而不是按颜色值反查一遍(主题色若恰好等于素材里的另一种颜色,例如纯白描边,按值还原会误伤)。 */
+function replaceShapeColorValue(c: any, from: string, to: string, onReplace?: (c: any, before: any) => void): number {
   if (!c) return 0;
   let n = 0;
+  let before: any = null;
   if (c.a === 0) {
     if (Array.isArray(c.k) && c.k.length >= 3 && normHex(fcToHex(c.k)) === from) {
+      if (onReplace) before = JSON.parse(JSON.stringify(c.k));
       c.k = hexToFc(to, c.k);
       n++;
     }
-    return n;
-  }
-  if (Array.isArray(c.k)) {
+  } else if (Array.isArray(c.k)) {
     for (const kf of c.k) {
       const v = Array.isArray(kf?.s) ? kf.s : Array.isArray(kf?.e) ? kf.e : null;
       if (v && v.length >= 3 && normHex(fcToHex(v)) === from) {
+        if (onReplace && !before) before = JSON.parse(JSON.stringify(c.k));
         const next = hexToFc(to, v);
         for (let i = 0; i < 3; i++) v[i] = next[i];
         n++;
       }
     }
   }
+  if (n && onReplace) onReplace(c, before);
   return n;
 }
 
-/* 统计当前动画里两族颜色各有多少处(用于显示计数与决定区块是否出现)。
- * 按「颜色值」统计,不区分它落在填充还是描边上 —— 与替换的口径保持一致。 */
-function countThemeColors(data: any): { fill: number; stroke: number } {
-  let fill = 0;
-  let stroke = 0;
+/* 统计当前动画里「等于 hex(小写 #rrggbb)的形状颜色」有多少处(用于显示计数与决定区块是否出现)。
+ * 填充与描边一起算、静态色与关键帧色都算 —— 与替换的口径保持一致。
+ * 蒙版源图层(td=1)不参与:它们不渲染,填充色往往是绿色占位色,扫进来只会在"主题色恰好是绿色"时误伤。 */
+function countShapeColorHex(data: any, hex: string): number {
+  let n = 0;
   walkEditableLayers(data, (l) => {
-    // 蒙版源图层(td=1)不参与:它们不渲染,填充色往往是绿色占位色,扫进来只会在"主题色恰好是绿色"时误伤
     if (l.ty !== 4 || l.td === 1) return;
     const walkItems = (items: any[]) => {
       for (const it of items ?? []) {
         if (it.ty === 'fl' || it.ty === 'st') {
           const c = it.c;
-          const vals: string[] = [];
-          if (c?.a === 0 && Array.isArray(c.k)) vals.push(normHex(fcToHex(c.k)));
-          else if (c?.a === 1 && Array.isArray(c.k)) for (const kf of c.k) { const v = Array.isArray(kf?.s) ? kf.s : null; if (v) vals.push(normHex(fcToHex(v))); }
-          for (const v of vals) {
-            if (v === themeFillCurrent) fill++;
-            else if (v === themeStrokeCurrent) stroke++;
+          if (c?.a === 0 && Array.isArray(c.k)) {
+            if (normHex(fcToHex(c.k)) === hex) n++;
+          } else if (c?.a === 1 && Array.isArray(c.k)) {
+            for (const kf of c.k) {
+              const v = Array.isArray(kf?.s) ? kf.s : null;
+              if (v && normHex(fcToHex(v)) === hex) n++;
+            }
           }
         }
         if (Array.isArray(it.it)) walkItems(it.it);
@@ -3663,27 +3682,40 @@ function countThemeColors(data: any): { fill: number; stroke: number } {
     };
     walkItems(l.shapes);
   });
-  return { fill, stroke };
+  return n;
 }
 
-/* 把某一族颜色值整族换掉(kind: 'fill' | 'stroke' 只是标识哪一族),返回替换处数。
- * 注意:替换按**颜色值**匹配,填充与描边都换 —— 同一族颜色在这套素材里两种位置都出现过。 */
-function applyThemeColor(kind: 'fill' | 'stroke', hex: string): number {
-  if (!currentData) return 0;
-  const from = kind === 'fill' ? themeFillCurrent : themeStrokeCurrent;
-  const to = normHex(hex);
-  if (!/^#[0-9a-f]{6}$/.test(to) || to === from) return 0;
+/* 把当前动画里**所有等于 from 的形状颜色**换成 to,返回替换处数。填充与描边都换 ——
+ * 同一族颜色在这几套素材里两种位置都出现过;蒙版源图层不渲染,跳过(理由见 countShapeColorHex)。
+ * 「主题颜色」与「动画主题色」两个区块共用这两个函数,判据只有「颜色值」一个。 */
+function replaceShapeColorHex(data: any, from: string, to: string, onReplace?: (c: any, before: any) => void): number {
   let n = 0;
-  walkEditableLayers(currentData, (l) => {
-    if (l.ty !== 4 || l.td === 1) return; // 蒙版源图层不渲染,跳过(理由见 countThemeColors)
+  walkEditableLayers(data, (l) => {
+    if (l.ty !== 4 || l.td === 1) return;
     const walkItems = (items: any[]) => {
       for (const it of items ?? []) {
-        if (it.ty === 'fl' || it.ty === 'st') n += replaceShapeColorValue(it.c, from, to);
+        if (it.ty === 'fl' || it.ty === 'st') n += replaceShapeColorValue(it.c, from, to, onReplace);
         if (Array.isArray(it.it)) walkItems(it.it);
       }
     };
     walkItems(l.shapes);
   });
+  return n;
+}
+
+/* 统计当前动画里两族颜色各有多少处(用于显示计数与决定区块是否出现)。
+ * 按「颜色值」统计,不区分它落在填充还是描边上 —— 与替换的口径保持一致。 */
+function countThemeColors(data: any): { fill: number; stroke: number } {
+  return { fill: countShapeColorHex(data, themeFillCurrent), stroke: countShapeColorHex(data, themeStrokeCurrent) };
+}
+
+/* 把某一族颜色值整族换掉(kind: 'fill' | 'stroke' 只是标识哪一族),返回替换处数。 */
+function applyThemeColor(kind: 'fill' | 'stroke', hex: string): number {
+  if (!currentData) return 0;
+  const from = kind === 'fill' ? themeFillCurrent : themeStrokeCurrent;
+  const to = normHex(hex);
+  if (!/^#[0-9a-f]{6}$/.test(to) || to === from) return 0;
+  const n = replaceShapeColorHex(currentData, from, to);
   if (kind === 'fill') themeFillCurrent = to;
   else themeStrokeCurrent = to;
   return n;
@@ -3704,6 +3736,7 @@ function onThemeColorChanged(kind: 'fill' | 'stroke', hex: string) {
   const n = applyThemeColor(kind, hex);
   if (!n) { syncThemeSection(); return; }
   syncThemeSection();
+  syncShapeColorInputs(); // 形状图层列表里的取色器跟着换(改的是正在显示的颜色,控件不能停在旧值)
   setStatus((kind === 'fill' ? '默认填充颜色' : '描边默认颜色') + '已改为 ' + normHex(hex).toUpperCase() + '(共替换 ' + n + ' 处)');
   scheduleHotRebuild();
 }
@@ -3714,9 +3747,111 @@ btnThemeReset.addEventListener('click', () => {
   n += applyThemeColor('fill', THEME_FILL_DEFAULT);
   n += applyThemeColor('stroke', THEME_STROKE_DEFAULT);
   syncThemeSection();
+  syncShapeColorInputs();
   setStatus(n ? '主题颜色已恢复为 #77B0F0 / #78C5F3' : '主题颜色已经是默认值');
   if (n) reRenderPreservingState();
 });
+
+/* ---------- 动画主题色(仅 #009 首领入侵/曼德尔砖标题动画) ----------
+ * 这套素材的红白 HUD 只用一个设计红:出厂 #ff3d3b。实测 19 处(15 处描边 + 4 处填充),
+ * 全是静态色;另一族 #ff0000 是 AE 的「不可见底」占位色(见 hideShapeFill 的规则①)不参与配色,
+ * 改它看不出效果,所以主题色只管 #ff3d3b 这一族。
+ * 用法与「主题颜色」完全相同:侧栏一个色块,改一次就把当前动画里**所有等于该颜色值**的填充与描边
+ * (含预合成内部)一起换掉。
+ * 判据同样记「该族当前的颜色值」(mandelThemeCurrent)而不是写死的出厂值 —— 改过一次之后数据里的
+ * 颜色已经变了,下一次替换要从新颜色继续;否则第二次拖取色器会一处都替换不到。
+ * 交互上的一处取舍:单个形状图层点「重置」还原的是**载入时的原始色**(originalShapeState),
+ * 不是当前主题色 —— 与「主题颜色」区的口径一致,免得"重置"变成"再套一次主题色"。 */
+const MANDEL_THEME_DEFAULT = '#ff3d3b';
+let mandelThemeCurrent = MANDEL_THEME_DEFAULT;
+
+/* 这一族颜色在当前数据里还有多少处(决定区块是否出现、显示计数) */
+function countMandelThemeColors(data: any): number {
+  return data ? countShapeColorHex(data, mandelThemeCurrent) : 0;
+}
+
+/* 主题色「改过哪些颜色项、原来是什么」—— 只给「重置为默认色」用,让还原是**精确**的:
+ * 记下每个被改过的颜色项(填充/描边条目对象 c 的身份)与它改动前的 k(深拷贝),以及最近一次改动后的快照。
+ * 为什么不能按颜色值反查着还原:主题色完全可能恰好等于素材里已有的另一种颜色(例如纯白描边 #ffffff),
+ * 按值反查会把"本来就是这个颜色、主题色从没碰过"的地方一起改掉 —— 那是真的毁素材。
+ * 一键重置(数据整个换掉)时必须清空,见 resetAnimEditState。 */
+const mandelThemeTouched = new Map<any, { before: any; after: string }>();
+
+/* 整族替换:返回替换处数(0 = 没得换,调用方据此决定要不要提示)
+ * 只有 #009 用得上,所以额外守一道 currentAnimKey,免得别处误调把别的动画配色改掉。 */
+function applyMandelThemeColor(hex: string): number {
+  if (!currentData || currentAnimKey !== 'mandelbrick') return 0;
+  const to = normHex(hex);
+  if (!/^#[0-9a-f]{6}$/.test(to) || to === mandelThemeCurrent) return 0;
+  const n = replaceShapeColorHex(currentData, mandelThemeCurrent, to, (c, before) => {
+    const rec = mandelThemeTouched.get(c);
+    /* 第一次碰到它:before 是它出厂的颜色(之后连续改色都以这次为基准);之后只更新 after 快照 */
+    if (rec) rec.after = JSON.stringify(c.k);
+    else mandelThemeTouched.set(c, { before, after: JSON.stringify(c.k) });
+  });
+  mandelThemeCurrent = to;
+  return n;
+}
+
+/* 「重置为默认色」:只把主题色**真的改过**的颜色项还原成改动前的值,返回还原处数。
+ * 每一项还要比一次快照:期间被用户用「形状图层」逐个手改过的项不还原(那是用户的选择,不能被主题色覆盖)。
+ * 最后把族值复位成出厂红、清空记录。 */
+function resetMandelThemeColor(): number {
+  let n = 0;
+  for (const [c, rec] of mandelThemeTouched) {
+    if (!c || JSON.stringify(c.k) !== rec.after) continue; // 手改过:跳过
+    c.k = JSON.parse(JSON.stringify(rec.before));
+    n++;
+  }
+  mandelThemeTouched.clear();
+  mandelThemeCurrent = MANDEL_THEME_DEFAULT;
+  return n;
+}
+
+/* 同步色块显示值与计数(切换动画、改色之后都要刷新) */
+function syncMandelThemeSection(data: any = currentData) {
+  const on = currentAnimKey === 'mandelbrick';
+  const n = on ? countMandelThemeColors(data) : 0;
+  setColorPickerValue(mandelThemeColor, mandelThemeCurrent);
+  mandelThemeCount.textContent = '· ' + n + ' 处';
+  /* 计数为 0 就不出现:要么不是这套动画,要么这一族颜色已经被改成别的值(例如被单个图层逐个改掉),
+   * 这时留一个"改了也看不到效果"的色块同样是误导。 */
+  mandelThemeSection.hidden = !(on && n > 0);
+}
+
+function onMandelThemeColorChanged(hex: string) {
+  const n = applyMandelThemeColor(hex);
+  syncMandelThemeSection();
+  if (!n) return;
+  syncShapeColorInputs();
+  setStatus('动画主题色已改为 ' + normHex(hex).toUpperCase() + '(共替换 ' + n + ' 处)');
+  scheduleHotRebuild();
+}
+bindColorPicker(mandelThemeColor, (hex) => onMandelThemeColorChanged(hex));
+btnMandelThemeReset.addEventListener('click', () => {
+  const n = resetMandelThemeColor();
+  syncMandelThemeSection();
+  syncShapeColorInputs();
+  if (!n) { setStatus('动画主题色已经是 #FF3D3B'); return; }
+  setStatus('动画主题色已恢复为 #FF3D3B(共还原 ' + n + ' 处)');
+  reRenderPreservingState();
+});
+
+/* 形状图层列表里各取色器的值按当前数据回刷。
+ * 主题色/主题颜色是「整族替换」,一次会改掉十几个图层 —— 但**只改控件值,不重建列表**:
+ * 列表 HTML 整段重写会把正在拖动的那个取色器换掉,拖动直接断掉(见 renderShapeList)。
+ * 只回刷列表里确实存在的控件(占位色被 hideShapeFill / hideShapeStroke 隐藏的项没有控件)。 */
+function syncShapeColorInputs(data: any = currentData) {
+  if (!data) return;
+  for (const s of shapeLayerColorInfo(data)) {
+    const fillHex = s.fill ? fcToHex(s.fill) : null;
+    const strokeHex = s.stroke ? fcToHex(s.stroke) : null;
+    const fi = shapeList.querySelector<HTMLInputElement>('.s-fill[data-ind="' + s.ind + '"]');
+    if (fi && fillHex) setColorPickerValue(fi, fillHex);
+    const si = shapeList.querySelector<HTMLInputElement>('.s-stroke[data-ind="' + s.ind + '"]');
+    if (si && strokeHex) setColorPickerValue(si, strokeHex);
+  }
+}
 
 /* ---------- 形状图层颜色 ---------- */
 /* 深度收集形状图层内的填充项(ty 'fl')与描边项(ty 'st'),含组内嵌套(it.it)。
@@ -4305,7 +4440,37 @@ function findFillTarget(data: any, layer: any): { layer: any; colorParam: any } 
  * 只有最后一次的结果会落地 —— 解码慢的时候旧颜色不会"追上来"覆盖新颜色。 */
 let mandelbrickTintTimer: number | undefined;
 let mandelbrickTintSeq = 0;
+
+/* 把立绘资源换回「未着色」的原始地址,并把这条着色记录清干净(相当于"从没调过色")。
+ * 两个入口共用:① 取色器选纯白 —— 纯白 = 用原图标、不做任何颜色叠加(见 onImageColorChanged);
+ * ②「重置」按钮(见 onImageColorReset)。
+ * 为什么要单独一条路:黑色剪影整片上色(colorizeImageData)会把立绘刷成目标色,**纯白就是一片白**,
+ * 看起来像原图丢了 / 图标变白了 —— 而白色在取色器里本来就是"未调色"的占位值(renderImageList 的 mandHex),
+ * 语义上它就是"给我原图标"。所以白色走这里,一个像素都不改。
+ * 返回是否真的换回了原图(false = 本来就没着色过,没什么可还原)。 */
+function restoreMandelBrickIcon(refId: string, statusText?: string): boolean {
+  const key = imageAssetTintKey(refId);
+  const asset = findAssetByRef(currentData, refId);
+  const prev = mandelbrickTintedUri.get(key);
+  const original = mandelbrickOriginalUri.get(key) ?? prev?.original ?? '';
+  if (!asset || !original) return false;
+  window.clearTimeout(mandelbrickTintTimer);
+  mandelbrickTintSeq++; // 让还没落地的着色结果作废(解码慢的时候旧颜色不会"追上来")
+  asset.p = original;
+  mandelbrickOriginalUri.delete(key);
+  mandelbrickTintHex.delete(key);
+  mandelbrickTintedUri.delete(key);
+  invalidateBitmapCaches(asset, original);
+  const ci = imageList.querySelector<HTMLInputElement>('.i-color[data-ref="' + refId + '"]');
+  if (ci) setColorPickerValue(ci, MANDEL_ICON_NO_TINT_HEX);
+  reRenderPreservingState();
+  setStatus(statusText ?? '图标颜色已恢复原始素材色');
+  return true;
+}
+
 function applyMandelBrickTint(refId: string, hex: string): void {
+  /* 纯白不叠色(与 onImageColorChanged 的拦截同一口径):防御性兜一道,避免以后新增调用点绕过约定 */
+  if (normHex(hex) === MANDEL_ICON_NO_TINT_HEX) { restoreMandelBrickIcon(refId); return; }
   const key = imageAssetTintKey(refId);
   const asset = findAssetByRef(mandelBrickData, refId);
   if (!asset) return;
@@ -4343,6 +4508,20 @@ function onImageColorChanged(refId: string, hex: string) {
   /* 首领入侵标题动画的立绘:同一条"把资源换成着色后的 data URI"的路子。
    * 取色器拖动时连续触发,180ms 防抖且只认最后一次颜色(解码 + 逐像素着色是重活)。 */
   if (currentAnimKey === 'mandelbrick') {
+    /* 纯白 = 「不叠色」:白色是取色器未调色时的占位值(见 renderImageList 的 mandHex),
+     * 选它就等于"用原图标",一个像素都不动 —— 直接走恢复原图那条路(与「重置」同一份实现),
+     * 不写任何着色记录。其它任何颜色才真的给立绘整片上色。 */
+    if (normHex(hex) === MANDEL_ICON_NO_TINT_HEX) {
+      const noTintMsg = '纯白 = 使用原图标,不做任何颜色叠加';
+      /* 本来就没着色(没有记录)时 restore 返回 false:没有画面要改,只把取色器与状态栏回填一下,
+       * 免得"选了白色什么都没发生"看起来像按钮坏了。 */
+      if (!restoreMandelBrickIcon(refId, noTintMsg)) {
+        const ci = imageList.querySelector<HTMLInputElement>('.i-color[data-ref="' + refId + '"]');
+        if (ci) setColorPickerValue(ci, MANDEL_ICON_NO_TINT_HEX);
+        setStatus(noTintMsg);
+      }
+      return;
+    }
     window.clearTimeout(mandelbrickTintTimer);
     mandelbrickTintTimer = window.setTimeout(() => applyMandelBrickTint(refId, hex), 180);
     return;
@@ -4474,24 +4653,10 @@ function onImageColorChanged(refId: string, hex: string) {
  *    图层的不透明度,立即生效不重建;
  *  - 纹理图把资源 data URI 换回缓存的原始图,取色器与滑块同步回默认色,并重建预览。 */
 function onImageColorReset(refId: string) {
-  /* 首领入侵标题动画的立绘:资源换回未着色的原始地址,取色器回到白色、记录清空 —— 相当于"从没调过色" */
+  /* 首领入侵标题动画的立绘:资源换回未着色的原始地址,取色器回到白色、记录清空 —— 相当于"从没调过色"
+   * (与「取色器选纯白」共用 restoreMandelBrickIcon:纯白本来就等于"原图标") */
   if (currentAnimKey === 'mandelbrick') {
-    const key = imageAssetTintKey(refId);
-    const asset = findAssetByRef(currentData, refId);
-    const prev = mandelbrickTintedUri.get(key);
-    const original = mandelbrickOriginalUri.get(key) ?? prev?.original ?? '';
-    if (!asset || !original) return;
-    window.clearTimeout(mandelbrickTintTimer);
-    mandelbrickTintSeq++; // 让还没落地的着色结果作废
-    asset.p = original;
-    mandelbrickOriginalUri.delete(key);
-    mandelbrickTintHex.delete(key);
-    mandelbrickTintedUri.delete(key);
-    invalidateBitmapCaches(asset, original);
-    const ci = imageList.querySelector<HTMLInputElement>('.i-color[data-ref="' + refId + '"]');
-    if (ci) setColorPickerValue(ci, '#ffffff');
-    reRenderPreservingState();
-    setStatus('图标颜色已恢复原始素材色');
+    restoreMandelBrickIcon(refId);
     return;
   }
   /* 黑潮爆破的位图:把资源换回原始地址、清缓存、清掉记录 —— 相当于"从没调过色" */
@@ -7508,7 +7673,8 @@ function pulseStage(): void {
  * 全部由这一项的字段驱动,不需要再去 switchAnimation 里补分支。
  *
  * 字段分四组:
- *  1) 身份:key(唯一标识,也是隐藏 select 的 value)、label(中文全名);
+ *  1) 身份:key(唯一标识,也是隐藏 select 的 value)、label(中文全名)、
+ *     no(唯一编号,界面显示成 #001;新加动画可以不写,启动时自动补号,见下方「动画编号」段);
  *  2) 元信息 meta:画廊卡片在「不下载数据」的前提下要显示的全部内容(规格 + 特性标签 + 搜索词)——
  *     一旦按需加载改成首屏就拉全部数据,这些信息都要等下载完才能显示,所以必须是静态声明;
  *     真实数据载入后会用实测值覆盖(见 animMetaOf),因此尺寸/帧率只要求「大致准确」;
@@ -7537,6 +7703,9 @@ type AnimMeta = {
 type AnimDef = {
   key: string;
   label: string;
+  /** 唯一编号(界面显示成 #001)。写死是为了让「身份」不随数组顺序 / 增删变化;
+   *  新加一套动画时**可以不写**,启动时 assignAnimNos() 会自动分配「当前最大编号 + 1」。 */
+  no?: number;
   meta: AnimMeta;
   /** 预览图 URL(打包资源);空串时卡片用 accent 渐变兜底 */
   poster: string;
@@ -7570,6 +7739,7 @@ const ANIMATIONS: AnimDef[] = [
   {
     key: 'extraction',
     label: '撤离动画',
+    no: 1,
     meta: {
       tags: ['撤离', '结算', '撤离成功', '弹窗', 'extraction'],
       accent: '#3b82f6',
@@ -7587,6 +7757,7 @@ const ANIMATIONS: AnimDef[] = [
   {
     key: 'exposed',
     label: '位置暴露动画',
+    no: 2,
     meta: {
       tags: ['位置暴露', '扫描', '二次扫描', '技能', '图标', 'exposed'],
       accent: '#22c55e',
@@ -7604,6 +7775,7 @@ const ANIMATIONS: AnimDef[] = [
   {
     key: 'blinds',
     label: '核电站功率动画',
+    no: 3,
     meta: {
       tags: ['核电站', '功率', '反应堆', '百叶窗', '序列', 'blinds'],
       accent: '#f59e0b',
@@ -7621,6 +7793,7 @@ const ANIMATIONS: AnimDef[] = [
   {
     key: 'mission',
     label: '任务弹窗动画',
+    no: 4,
     meta: {
       tags: ['任务', '弹窗', '报酬', '哈夫币', 'mission'],
       accent: '#a855f7',
@@ -7638,6 +7811,7 @@ const ANIMATIONS: AnimDef[] = [
   {
     key: 'maptitle',
     label: '地图标题动画',
+    no: 5,
     meta: {
       tags: ['地图', '地点', '地名', '标题', '位置', '坐标', 'maptitle'],
       accent: '#14b8a6',
@@ -7655,6 +7829,7 @@ const ANIMATIONS: AnimDef[] = [
   {
     key: 'blast',
     label: '黑潮爆破默认弹窗动画',
+    no: 6,
     meta: {
       tags: ['黑潮', '爆破', '黑潮爆破', '弹窗', '默认弹窗', '提示', '爆破提示', 'blasting', 'blast'],
       accent: '#1bb8c4',
@@ -7679,6 +7854,7 @@ const ANIMATIONS: AnimDef[] = [
   {
     key: 'battlefield',
     label: '大战场弹窗动画',
+    no: 7,
     meta: {
       tags: ['大战场', '战场', '弹窗', '状态提示', '图标', '图标可换', '文字', '模板', 'battlefield', 'popup'],
       accent: '#ef4444',
@@ -7702,6 +7878,7 @@ const ANIMATIONS: AnimDef[] = [
   {
     key: 'evacpoint',
     label: '撤离点开启动画',
+    no: 8,
     meta: {
       tags: ['撤离点', '撤离', '开启', '打开', '紧急停堆', '状态提示', '弹窗', '图标', '图标可换', 'evacpoint', 'evac'],
       accent: '#f97316',
@@ -7724,6 +7901,7 @@ const ANIMATIONS: AnimDef[] = [
   {
     key: 'mandelbrick',
     label: '首领入侵/曼德尔砖标题',
+    no: 9,
     meta: {
       tags: ['首领入侵', '曼德尔砖', '曼德尔', '首领', '入侵', '标题', '德穆兰', '安全总监莅临', '弹窗', 'mandelbrick', 'mandel', 'boss'],
       accent: '#e11d48',
@@ -7744,6 +7922,59 @@ const ANIMATIONS: AnimDef[] = [
     caps: {},
   },
 ];
+
+/* ---------- 动画编号(快速管理用的唯一编号) ----------
+ * 每套动画有一个唯一编号,界面上显示成 #001:画廊卡片的名称行、顶栏触发器的规格行、
+ * 侧栏「动画信息」第一行都是它。编号的作用是「对号」—— 不用读一长串名字,
+ * 说「3 号那套」或搜「003」就能直接定位,导出记录 / 笔记里也能当一个稳定的引用。
+ *
+ * 规则(全部在启动时由 assignAnimNos() 保证):
+ *  · 注册项里的 no 是**声明值**:写死的编号不随数组顺序、增删、排序(最近使用的重排)变化;
+ *  · **新增动画不用手写 no**:没写 / 写了非法值的项会自动拿到「当前最大编号 + 1」,
+ *    所以加一项就一定有编号,界面上不会出现没号的动画;
+ *  · 唯一性由这一次分配强制:两套写了同一个号时后来者自动改号,并在控制台告警;
+ *  · 递增分配而不是「补最小空位」:这样写过的 #005 永远指同一套动画(编号是身份,不是行号);
+ *    真要退役某个号(旧导出 / 笔记还要引用),把号写进 ANIM_NO_RETIRED,后来者不会顶上。
+ * 显示文本统一走 animNoText(),不要在别处自己拼 # / 补零。 */
+const ANIM_NO_PAD = 3;
+/* 已退役、不再发放的编号(正常是空数组)。
+ * 删掉某套动画后,它的号默认会被下一套新动画顶替;若那个号还要长期表示"原来那一套"
+ * (旧导出记录、文档里的引用),把号加到这里即可 —— 分配从它们之上继续。 */
+const ANIM_NO_RETIRED: number[] = [];
+/** 编号的显示文本:#001(零填充 3 位);没有编号时给一个占位符,界面不会出现 undefined */
+function animNoText(no: number | undefined): string {
+  return typeof no === 'number' && Number.isFinite(no) && no > 0
+    ? '#' + String(no).padStart(ANIM_NO_PAD, '0')
+    : '—';
+}
+/** 给注册表补齐编号(见上方规则)。幂等:重复调用结果不变,所以不用担心调用点。 */
+function assignAnimNos() {
+  const taken = new Set<number>();
+  /* 第一遍:显式编号优先(数组靠前的优先,重复的后来者让位)。
+   * no 必须是正整数 —— NaN / 0 / 负数 / 小数一律当作"没写",交给第二遍补号。 */
+  for (const def of ANIMATIONS) {
+    const n = def.no;
+    const valid = typeof n === 'number' && Number.isInteger(n) && n > 0;
+    if (!valid || taken.has(n as number)) {
+      if (n !== undefined) {
+        console.warn('[动画编号] ' + def.key + ' 声明的编号 ' + String(n) + ' 无效或与其他动画重复,已自动改号');
+      }
+      def.no = undefined;
+      continue;
+    }
+    taken.add(n as number);
+  }
+  /* 第二遍:没编号的从「当前最大编号 + 1」往后接着发(退役号也算进下限,不会被重新发放)。 */
+  let next = Math.max(0, ...taken, ...ANIM_NO_RETIRED) + 1;
+  for (const def of ANIMATIONS) {
+    if (def.no !== undefined) continue;
+    while (taken.has(next)) next++;
+    def.no = next;
+    taken.add(next);
+    next++;
+  }
+}
+assignAnimNos();
 let currentAnimKey = 'extraction';
 /* 当前动画的注册项。所有「按 key 走特殊逻辑」的地方都改成查这张表,
  * 新增动画时漏配字段的后果只是某个区块不显示,而不是抛错。 */
@@ -8665,9 +8896,13 @@ async function switchAnimation(key: string) {
   }
   // 主题颜色区块:当前动画里存在这两族颜色(填充族/描边族)时显示,并回填当前色与计数
   syncThemeSection(data);
+  // 动画主题色区块(仅 #009):当前动画里还存在那一族设计红 #FF3D3B 时显示,并回填当前色与计数
+  syncMandelThemeSection(data);
   // 图片图层区块:含可调色纹理(百叶窗.png 等)、叠加序列,或黑潮爆破的位图/序列时显示
   const hasTintable = imageListLayers(data).length > 0;
   imageSection.hidden = !hasTintable;
+  // 立绘调色的约定说明(纯白 = 原图标):只有 #009 的立绘需要这条,其它动画的调色是常规上色
+  imageTintNote.hidden = !(hasTintable && key === 'mandelbrick');
   if (hasTintable) renderImageList(data);
   else imageList.innerHTML = '';
   // 图标选择区块:位置暴露动画(两段图标)与任务弹窗动画(单张图标)显示。载入前先按用户选择
@@ -8830,6 +9065,10 @@ function resetAnimEditState(key: string): void {
    * 用户会以为"颜色没重置"(实际是色块值没刷新,计数是 0 处)。 */
   themeFillCurrent = THEME_FILL_DEFAULT;
   themeStrokeCurrent = THEME_STROKE_DEFAULT;
+  /* 动画主题色(仅 #009)同理:不归位的话重置后色块仍显示改过的颜色,而那一族在出厂数据里
+     已经不存在了 —— 用户会以为"颜色没重置"(实际是色块值没刷新,计数是 0 处)。 */
+  mandelThemeCurrent = MANDEL_THEME_DEFAULT;
+  mandelThemeTouched.clear(); // 记录的是旧数据里的颜色项对象,数据要被整个换掉,引用不能留
   /* 报酬信息(仅任务弹窗动画)默认显示 */
   missionRewardShown = true;
   if (chkMissionReward) chkMissionReward.checked = true;
@@ -11227,7 +11466,8 @@ btnExport.addEventListener('click', exportVideo);
 /* ==================== 动画选择器(顶栏触发器 + 画廊浮层) ====================
  *
  * 要改选择动画的界面,只有三个地方需要看:
- *   1) 动画有哪些、各自叫什么/什么规格  —— 文件上方的 ANIMATIONS 注册表(新增动画只加一项);
+ *   1) 动画有哪些、各自叫什么/什么编号/什么规格  —— 文件上方的 ANIMATIONS 注册表
+ *      (新增动画只加一项,编号自动分配;编号规则见注册表后面的「动画编号」段);
  *   2) 动态部分(卡片怎么生成、搜索/键盘怎么响应) —— 就是本区块,函数顺序如下;
  *   3) 外观(尺寸、配色、动效) —— style.css 里「动画画廊」那一段(以 .anim-picker / .ap- 开头)。
  * 骨架(搜索框、网格容器、底部提示)在 index.html 的 #animPicker 里,id 与本区块的 DOM 引用一一对应。
@@ -11246,6 +11486,7 @@ btnExport.addEventListener('click', exportVideo);
  * 常见改动从哪儿下手:
  *   • 卡片大小 / 一屏放几张        → style.css 的 .ap-grid(grid-template-columns 里的最小列宽)
  *   • 卡片上显示哪些信息           → renderAnimGallery 里拼卡片 HTML 的那段 + 注册项的 meta
+ *   • 卡片上的编号 / 编号规则      → 注册表后面的「动画编号」段(animNoText 负责显示,assignAnimNos 负责分配)
  *   • 排序规则                     → animVisibleList 末尾的 sort
  *   • 新增/修改快捷键              → 下面「画廊内的键盘」那个 document keydown
  *   • 面板标题文案                 → renderAnimGallery 末尾写 animPickerSub 的那两行
@@ -11344,7 +11585,12 @@ function animVisibleList(): AnimDef[] {
   const hit = ANIMATIONS.filter((def) => {
     if (!q) return true;
     const m = animMetaOf(def);
-    return [def.label, def.key, ...m.tags, ...m.features].join(' ').toLowerCase().includes(q);
+    /* 编号也进搜索词:输入 3 / 003 / #003 都能过滤到那一套。
+     * 三种写法都给,是因为有人按序号记、有人按"编号"记(带 # 的那串是界面上的写法)。 */
+    const noValue = typeof def.no === 'number' ? String(def.no) : '';
+    const noText = animNoText(def.no);
+    return [def.label, def.key, noValue, noText, noText.replace('#', ''), ...m.tags, ...m.features]
+      .join(' ').toLowerCase().includes(q);
   });
   return hit.slice().sort((a, b) => {
     const ra = animRecent.indexOf(a.key);
@@ -11374,15 +11620,18 @@ function renderAnimGallery() {
     /* 序号角标就是「数字键直选」的提示:只给前 9 张编号(键盘就只认 1–9),
      * 搜索态下整体隐藏(见 CSS 的 .is-searching),因为那时数字键是搜索输入而不是快捷键。 */
     const num = (!searching && i < 9) ? '<span class="ap-card-num">' + (i + 1) + '</span>' : '';
-    // 悬停提示 = 动作 + 快捷键,无需去底部找说明
+    /* 唯一编号是另一件事:它不随排序 / 搜索 / 增删变化(见「动画编号」段),
+     * 所以放在名称行右侧,搜索态下也照常显示(按编号搜完还要能对号)。 */
+    const noText = animNoText(def.no);
+    // 悬停提示 = 动作 + 编号 + 快捷键,无需去底部找说明
     const tip = isCurrent
-      ? '「' + def.label + '」正在编辑中'
-      : '切换到「' + def.label + '」' + (num ? '(数字键 ' + (i + 1) + ')' : '');
+      ? '「' + def.label + '」正在编辑中 · 编号 ' + noText
+      : '切换到「' + def.label + '」· 编号 ' + noText + (num ? '(数字键 ' + (i + 1) + ')' : '');
     /* 卡片不再按动画注入各自的强调色(--ap-accent/--ap-glow 已移除):
      * 界面只有一族中性灰 + 一个交互色,八张卡片各染一色属于装饰性用色,
      * 也会让"当前选中"这一状态失去唯一的视觉表达。没有预览图时用 .ap-card-cover 的底纹兜底。 */
     return '<article class="ap-card' + (isCurrent ? ' is-current' : '') +
-      '" data-key="' + esc(def.key) + '">' +
+      '" data-key="' + esc(def.key) + '" data-no="' + esc(noText) + '">' +
       /* data-df-native:整张卡片是点击面,不是一个"按钮"控件,不升级成 Fluent 按钮
        * (Fluent 按钮的最小宽度与内边距会撑破卡片网格)。悬停/焦点态由 .ap-card-* 样式负责。 */
       '<button type="button" data-df-native class="ap-card-pick" data-pick="' + esc(def.key) + '" title="' + esc(tip) + '">' +
@@ -11392,7 +11641,11 @@ function renderAnimGallery() {
       (isCurrent ? '<span class="ap-card-badge">当前</span>' : '') +
       '</span>' +
       '<span class="ap-card-info">' +
+      '<span class="ap-card-title">' +
       '<span class="ap-card-name">' + esc(def.label) + '</span>' +
+      /* aria-label 用「编号 3」而不是裸的 #003:读屏念出来是"编号 3",不是"井号零零三" */
+      '<span class="ap-card-no" title="编号 ' + esc(noText) + '" aria-label="编号 ' + esc(String(def.no ?? '')) + '">' + esc(noText) + '</span>' +
+      '</span>' +
       '<span class="ap-card-specs">' + specs + '</span>' +
       '<span class="ap-card-feats">' + feats + '</span>' +
       '</span>' +
@@ -11453,14 +11706,17 @@ function pulseAnimTriggerOnce() {
   animTriggerSwapTimer = window.setTimeout(() => animTrigger.classList.remove('is-switching'), 260);
 }
 
-/* 顶栏触发器与兼容 select 的同步:名称 / 规格 / 总数都来自当前注册项。
+/* 顶栏触发器与兼容 select 的同步:名称 / 编号 / 规格 / 总数都来自当前注册项。
  * 只写值、不带动效 —— 动效由下面的 syncAnimTrigger() 负责,这样"首屏不播动效"是一句显式的话。 */
 function writeAnimTrigger() {
   const def = animDef();
   if (!def) return;
   const m = animMetaOf(def);
   animTriggerName.textContent = def.label;
-  animTriggerMeta.textContent = m.w + '×' + m.h + ' · ' + m.fps + 'fps';
+  /* 编号放在第二行(规格)最前:它是"正在编辑哪一套"的唯一标识,
+   * 一行读完「#003 · 1920×1080 · 60fps」,与画廊卡片上的写法一致。
+   * 不塞进名称元素:名称必须保持纯动画名(历史校验脚本按 textContent 精确比对)。 */
+  animTriggerMeta.textContent = animNoText(def.no) + ' · ' + m.w + '×' + m.h + ' · ' + m.fps + 'fps';
   animTriggerCount.textContent = ANIMATIONS.length + ' 套';
   selAnim.value = def.key;
   /* 一键重置的标题跟着当前动画名走:控件自己要说清"重置的是哪一套",

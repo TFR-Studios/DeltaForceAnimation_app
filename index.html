@@ -383,10 +383,29 @@
         <button id="themeReset" type="button" title="把这一族颜色恢复为出厂的 #77B0F0 / #78C5F3">重置为默认色</button>
         <p class="theme-note">改动立刻套用到当前动画里**所有等于该颜色值的填充与描边**(含预合成内部);之后再用其它颜色改,是在新颜色上继续替换。</p>
         </div>
+        <!-- 动画主题色(默认 hidden,#009 首领入侵/曼德尔砖标题动画专用):
+             那套素材的红白 HUD 只用一个设计红 #FF3D3B(15 处描边 + 4 处填充,全是静态色;另一族
+             #FF0000 是「不可见底」占位色,不参与配色)。改一次就把**当前动画里所有等于主题色值的
+             填充与描边**一起换掉(含预合成内部) —— 与上面「主题颜色」同一套判据(按颜色值替换),
+             所以连续改色能正确接续;「重置为默认色」把它换回出厂的 #FF3D3B。 -->
+        <div id="mandelThemeSection" hidden>
+        <h3>动画主题色 <span id="mandelThemeCount"></span></h3>
+        <div class="theme-colors">
+          <label class="t-color-label" title="动画里所有该色(出厂 #FF3D3B)的填充与描边会一起换成这个颜色">
+            主题色(原 #FF3D3B)
+            <input type="color" id="mandelThemeColor" value="#ff3d3b" />
+            <input type="text" class="hex-input" id="mandelThemeColorHex" value="#FF3D3B" spellcheck="false" placeholder="#rrggbb" />
+          </label>
+        </div>
+        <button id="mandelThemeReset" type="button" title="把主题色恢复为出厂的 #FF3D3B">重置为默认色</button>
+        <p class="theme-note">改一次就把当前动画里**所有等于主题色值的填充与描边**(含预合成内部)一起换掉;之后再用其它颜色改,是在新颜色上继续替换。单个形状层点「重置」还原的是它**载入时的原始色**,不是当前主题色。</p>
+        </div>
         <!-- 图片图层(默认 hidden):仅当动画里存在可调色的图片图层时由 main.ts 打开,例如位置暴露的图标位图 -->
         <div id="imageSection" hidden>
         <h3>图片图层 <span id="imageCount"></span></h3>
         <ul id="imageList"></ul>
+        <!-- 立绘调色的约定(仅 #009 显示):纯白 = 原图标、不叠任何颜色;其它颜色才整体上色 -->
+        <p class="popup-note" id="imageTintNote" hidden>调色约定:选 <b>纯白 #FFFFFF</b> = 使用原图标(不做任何颜色叠加);选其它颜色才会给图标整体上色。</p>
         </div>
         <!-- 图标选择(默认 hidden,位置暴露 / 任务弹窗动画显示):位置暴露用分段选项卡分别给「位置暴露」与「二次扫描」指定图标,任务弹窗动画只有一个图标位 -->
         <!-- 勾选「跟随位置暴露」时第二段复用第一段的图标,取消勾选后可为第二段单独选择或上传 -->
@@ -694,7 +713,7 @@
             <svg class="bi ap-search-ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
               <path d="M11.74 10.34a6.5 6.5 0 1 0-1.397 1.398l.098.115 3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
             </svg>
-            <input type="search" id="animSearch" placeholder="搜索动画名称 / 关键词…" autocomplete="off" spellcheck="false" aria-label="搜索动画" />
+            <input type="search" id="animSearch" placeholder="搜索动画名称 / 关键词 / 编号…" autocomplete="off" spellcheck="false" aria-label="搜索动画(可按名称、关键词或编号搜索)" />
             <button type="button" class="ap-search-clear" id="animSearchClear" title="清空搜索" aria-label="清空搜索" hidden>
               <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                 <path d="M4.65 4.65a.8.8 0 0 1 1.13 0L8 6.87l2.22-2.22a.8.8 0 1 1 1.13 1.13L9.13 8l2.22 2.22a.8.8 0 0 1-1.13 1.13L8 9.13l-2.22 2.22a.8.8 0 0 1-1.13-1.13L6.87 8 4.65 5.78a.8.8 0 0 1 0-1.13z"/>

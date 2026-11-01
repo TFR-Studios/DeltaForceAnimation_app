@@ -1352,6 +1352,7 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
 .popup-toggle,
 .preset-toggle,
 #themeReset,
+#mandelThemeReset,
 #btnResetView,
 .ap-close,
 .ap-search-clear,
@@ -1365,6 +1366,7 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
 .popup-toggle:active,
 .preset-toggle:active,
 #themeReset:active,
+#mandelThemeReset:active,
 #btnResetView:active,
 .ap-close:active,
 .ap-search-clear:active,
@@ -1849,7 +1851,9 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
 
 .shape-colors, .theme-colors { display: flex; flex-direction: column; gap: 8px; }
 .theme-colors .t-color-label { justify-content: space-between; }
-#themeReset {
+/* 「重置为默认色」:主题颜色与动画主题色两个区块共用同一套外观(见 index.html 的 #themeReset / #mandelThemeReset) */
+#themeReset,
+#mandelThemeReset {
   align-self: flex-start;
   margin-top: var(--sp-3);
   height: var(--h-ctl);
@@ -1862,7 +1866,8 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   cursor: pointer;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-#themeReset:hover { background: var(--surface-hover); border-color: var(--line-accent); color: var(--text); }
+#themeReset:hover,
+#mandelThemeReset:hover { background: var(--surface-hover); border-color: var(--line-accent); color: var(--text); }
 
 /* 图层不透明度行 */
 .t-opacity {
@@ -2530,7 +2535,19 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   font-weight: 600;
 }
 .ap-card-info { display: flex; flex-direction: column; gap: 4px; padding: 9px 11px 11px; }
+/* 名称 + 唯一编号同一行:名称可换行(长名字在 180px 窄卡上两行),
+ * 编号靠右、定宽不参与换行 —— 它是一串用来"对号"的元信息,不是标题的一部分,
+ * 所以字小一档、颜色低一档,也不加徽标底色(封面上已经有「当前」与数字键序号两枚角标)。 */
+.ap-card-title { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.ap-card-title .ap-card-name { min-width: 0; }
 .ap-card-name { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.ap-card-no {
+  flex: none;
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
 .ap-card-specs {
   display: flex;
   align-items: center;

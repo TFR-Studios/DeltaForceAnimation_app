@@ -1,6 +1,7 @@
 /* 首领入侵/曼德尔砖标题动画(animations/animation_9)的交互校验:
  * 侧栏区块显隐 / 编辑区隐藏的图层 / 图标在最上层 / 文字可编辑 / 文字颜色 / 形状颜色 /
- * 图标选择与上传 / 立绘调色 / 资源 404 / 画廊卡片与封面。
+ * 动画主题色(设计红 #FF3D3B 整族替换与重置)/ 图标选择与上传 / 立绘调色(含「纯白 = 原图标」)/
+ * 资源 404 / 画廊卡片与封面。
  * 用法(dev server 已在 5173 运行时):node tools/verify-mandelbrick-ui.mjs
  * 也可用 DEV_ORIGIN=http://127.0.0.1:4173 指向 npm run preview 的构建产物。 */
 import puppeteer from 'puppeteer-core';
@@ -64,9 +65,15 @@ try {
     const first = d.layers[0] || {};
     return {
       sections: {
-        timing: vis('timingSection'), theme: vis('themeSection'), image: vis('imageSection'),
-        icon: vis('iconSection'), popup: vis('popupSection'), reward: vis('missionRewardSection'),
+        timing: vis('timingSection'), theme: vis('themeSection'), mandelTheme: vis('mandelThemeSection'),
+        image: vis('imageSection'), icon: vis('iconSection'), popup: vis('popupSection'), reward: vis('missionRewardSection'),
       },
+      mandelTheme: {
+        picker: document.getElementById('mandelThemeColor')?.value ?? null,
+        hex: document.getElementById('mandelThemeColorHex')?.value ?? null,
+        count: document.getElementById('mandelThemeCount')?.textContent ?? null,
+      },
+      imageTintNote: vis('imageTintNote'),
       totalFrames: window.__anim.totalFrames,
       fr: window.__anim.frameRate,
       size: [d.w, d.h],
@@ -112,6 +119,16 @@ try {
   check(info.sections.reward === 'hidden', '「报酬信息」区块隐藏(不是任务弹窗动画)', info.sections.reward);
   check(info.sections.image === 'visible', '「图片图层」区块显示(立绘可调色 / 调不透明度)', info.sections.image);
   check(info.sections.icon === 'visible', '「图标选择」区块显示(立绘可换图)', info.sections.icon);
+  /* 主题色统一换色(两族 HUD 色)不适用于本套红白配色 → 区块隐藏;
+     换成本套自己的「动画主题色」区块(出厂 #FF3D3B)。 */
+  check(info.sections.theme === 'hidden', '「主题颜色」(#77B0F0 / #78C5F3 两族)区块隐藏', info.sections.theme);
+  check(info.sections.mandelTheme === 'visible', '「动画主题色」区块显示(本套的设计红 #FF3D3B)', info.sections.mandelTheme);
+  /* 取色器与 HEX 框由 syncMandelThemeSection 回填,与「主题颜色」区同一条路子 → 小写 #ff3d3b */
+  check(info.mandelTheme.picker === '#ff3d3b' && info.mandelTheme.hex === '#ff3d3b',
+    '主题色色块初始是出厂 #FF3D3B', info.mandelTheme);
+  check((info.mandelTheme.count || '').replace(/\s+/g, ' ').includes('19'),
+    '主题色计数 = 19 处(15 描边 + 4 填充)', info.mandelTheme);
+  check(info.imageTintNote === 'visible', '「图片图层」下有纯白 = 原图标的调色约定说明', info.imageTintNote);
   check(info.imageCount.includes('1'), '「图片图层」只列 1 项(那张立绘)', info.imageCount);
   check(info.imageItems.length === 1 && info.imageItems[0] === ICON, '图片图层就是「德穆兰.png」', info.imageItems);
   check(info.imageColor === '#ffffff', '立绘取色器初始为白色(未调色)', info.imageColor);
@@ -247,6 +264,146 @@ try {
   check(afterShape.shapeFills.includes('0,255,136'), '形状层填充变成 #00ff88', afterShape.shapeFills);
   check(!!afterShape.svgFills['rgb(0,255,136)'], '画面里出现 #00ff88 填充', afterShape.svgFills);
 
+  // 动画主题色(仅本套):改一次就把所有等于 #FF3D3B 的填充与描边整族换掉,「重置为默认色」换回出厂红
+  await page.evaluate(() => {
+    /* 数一遍当前数据里某个颜色值还剩多少处(填充与描边都算,含预合成内部) */
+    window.__countColorHex = (hex) => {
+      const hexOf = (v) => '#' + v.slice(0, 3).map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, '0')).join('');
+      let n = 0;
+      const walkShapes = (items) => {
+        for (const it of items || []) {
+          if (it.ty === 'fl' || it.ty === 'st') {
+            const c = it.c;
+            if (c && c.a === 0 && Array.isArray(c.k) && hexOf(c.k) === hex) n++;
+          }
+          if (it.it) walkShapes(it.it);
+        }
+      };
+      const walkLayers = (ls) => {
+        for (const l of ls || []) { if (l.ty === 4) walkShapes(l.shapes); if (Array.isArray(l.layers)) walkLayers(l.layers); }
+      };
+      const d = window.__anim.animationData;
+      walkLayers(d.layers);
+      for (const a of d.assets || []) if (Array.isArray(a.layers)) walkLayers(a.layers);
+      return n;
+    };
+    /* 画面里实际画出来的颜色(填充与描边两条属性一起数):#ff3d3b 在 SVG 里是 rgb(255,61,59) */
+    window.__paintCounts = () => {
+      const counts = {};
+      for (const e of document.querySelectorAll('#previewInner svg [fill],#previewInner svg [stroke]')) {
+        const v = e.getAttribute('fill') || e.getAttribute('stroke');
+        if (v) counts[v] = (counts[v] || 0) + 1;
+      }
+      return counts;
+    };
+  });
+  const themeBefore = await page.evaluate(() => {
+    window.__anim.pause();
+    window.__anim.goToAndStop(90, true);
+    return {
+      red: window.__countColorHex('#ff3d3b'),
+      picker: document.getElementById('mandelThemeColor').value,
+      paints: window.__paintCounts(),
+    };
+  });
+  await page.evaluate(() => {
+    const ci = document.getElementById('mandelThemeColor');
+    ci.value = '#00ff88';
+    ci.dispatchEvent(new Event('input', { bubbles: true }));
+    ci.nextElementSibling.value = '#00ff88';
+    ci.nextElementSibling.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.getElementById('statusbar').textContent.includes('动画主题色已改为'), { timeout: 30_000, polling: 100 });
+  await sleep(1200);
+  const themeApplied = await page.evaluate(() => {
+    window.__anim.pause();
+    window.__anim.goToAndStop(90, true);
+    return {
+      red: window.__countColorHex('#ff3d3b'),
+      green: window.__countColorHex('#00ff88'),
+      picker: document.getElementById('mandelThemeColor').value,
+      hexInput: document.querySelector('#mandelThemeSection .hex-input').value,
+      count: document.getElementById('mandelThemeCount').textContent,
+      section: document.getElementById('mandelThemeSection').hidden ? 'hidden' : 'visible',
+      paints: window.__paintCounts(),
+    };
+  });
+  await sleep(400);
+  await stage.screenshot({ path: path.join(OUT, 'after-theme-color.png') });
+  console.log('[6b] 动画主题色:' + JSON.stringify({ themeBefore, themeApplied }));
+  check(themeBefore.red >= 15, '出厂数据里有 10 处以上的 #FF3D3B', themeBefore.red);
+  check(!!themeBefore.paints['rgb(255,61,59)'], '画面里本来就有 #FF3D3B 的描边/填充', themeBefore.paints);
+  /* 注意:上一步手改的某个形状层填充也是 #00ff88,所以这里只能断言"旧红一处不剩、新色覆盖到画面" */
+  check(themeApplied.red === 0, '#FF3D3B 整族被换掉(数据里旧红一处不剩)', themeApplied.red);
+  check(themeApplied.green >= themeBefore.red,
+    '替换处数覆盖到整族(新色处数 >= 旧红原处数)', [themeBefore.red, themeApplied.green]);
+  check(themeApplied.picker === '#00ff88' && themeApplied.hexInput === '#00ff88',
+    '主题色色块与 HEX 输入框同步', [themeApplied.picker, themeApplied.hexInput]);
+  check(/\d+/.test(themeApplied.count || '') && themeApplied.count.includes(String(themeApplied.green)),
+    '计数跟着变成新颜色族的处数', [themeApplied.count, themeApplied.green]);
+  check(themeApplied.section === 'visible', '改色后「动画主题色」区块仍显示', themeApplied.section);
+  check(!themeApplied.paints['rgb(255,61,59)'] && !!themeApplied.paints['rgb(0,255,136)'],
+    '画面里旧红消失、出现新主题色', themeApplied.paints);
+
+  // 重置为默认色:整族换回出厂 #FF3D3B
+  await page.evaluate(() => document.getElementById('mandelThemeReset').click());
+  await page.waitForFunction(() => document.getElementById('statusbar').textContent.includes('动画主题色已恢复'), { timeout: 30_000, polling: 100 });
+  await sleep(1200);
+  const themeReset = await page.evaluate(() => {
+    window.__anim.pause();
+    window.__anim.goToAndStop(90, true);
+    return {
+      red: window.__countColorHex('#ff3d3b'),
+      green: window.__countColorHex('#00ff88'),
+      picker: document.getElementById('mandelThemeColor').value,
+      count: document.getElementById('mandelThemeCount').textContent,
+      paints: window.__paintCounts(),
+    };
+  });
+  await stage.screenshot({ path: path.join(OUT, 'after-theme-reset.png') });
+  console.log('[6c] 主题色重置:' + JSON.stringify(themeReset));
+  /* 重置是**精确还原**:只把主题色真的改过的项换回原值,上一步手改的那一层(#00ff88)保持不动 */
+  check(themeReset.red === themeBefore.red, '重置后主题色改过的项全部回到出厂 #FF3D3B', [themeBefore.red, themeReset.red]);
+  check(themeReset.green === 1, '手改的那一层仍是 #00ff88(主题色只还原自己碰过的项)', themeReset.green);
+  check(themeReset.picker === '#ff3d3b', '色块回到 #ff3d3b', themeReset.picker);
+  check(!!themeReset.paints['rgb(255,61,59)'], '画面里重新出现 #FF3D3B', themeReset.paints);
+
+  /* 主题色恰好等于素材里已有的另一种颜色(这里是纯白描边 #ffffff)时必须**不误伤**:
+   * 那种情况按颜色值反查着还原,会把"本来就是这个颜色的地方"一起改掉,这里守住"只还原自己碰过的项"。 */
+  const whiteTheme = await page.evaluate(() => {
+    const whitesBefore = window.__countColorHex('#ffffff');
+    const ci = document.getElementById('mandelThemeColor');
+    ci.value = '#ffffff';
+    ci.dispatchEvent(new Event('input', { bubbles: true }));
+    ci.nextElementSibling.value = '#ffffff';
+    ci.nextElementSibling.dispatchEvent(new Event('input', { bubbles: true }));
+    return { whitesBefore, statusBefore: document.getElementById('statusbar').textContent };
+  });
+  await page.waitForFunction(() => document.getElementById('statusbar').textContent.includes('#FFFFFF'), { timeout: 30_000, polling: 100 });
+  await sleep(1000);
+  const whiteApplied = await page.evaluate(() => ({
+    red: window.__countColorHex('#ff3d3b'),
+    white: window.__countColorHex('#ffffff'),
+  }));
+  const statusBeforeReset = await page.evaluate(() => document.getElementById('statusbar').textContent);
+  await page.evaluate(() => document.getElementById('mandelThemeReset').click());
+  await page.waitForFunction((b) => document.getElementById('statusbar').textContent !== b, { timeout: 30_000, polling: 100 }, statusBeforeReset);
+  await sleep(1000);
+  const whiteReset = await page.evaluate(() => ({
+    red: window.__countColorHex('#ff3d3b'),
+    white: window.__countColorHex('#ffffff'),
+    green: window.__countColorHex('#00ff88'),
+    picker: document.getElementById('mandelThemeColor').value,
+  }));
+  console.log('[6d] 主题色撞已有颜色(纯白):' + JSON.stringify({ whiteTheme, whiteApplied, whiteReset }));
+  check(whiteTheme.whitesBefore >= 5, '素材里本来就有若干处 #FFFFFF(白描边)', whiteTheme.whitesBefore);
+  check(whiteApplied.red === 0 && whiteApplied.white === whiteTheme.whitesBefore + themeBefore.red,
+    '把主题色改成纯白:整族红都变白(原有白描边不受影响)', [whiteApplied.red, whiteApplied.white, whiteTheme.whitesBefore]);
+  check(whiteReset.white === whiteTheme.whitesBefore,
+    '重置后原有白描边的处数一点没变(不按颜色值反查,只还原自己碰过的项)', [whiteReset.white, whiteTheme.whitesBefore]);
+  check(whiteReset.red === themeBefore.red && whiteReset.green === 1,
+    '重置后红色原样回到 ' + themeBefore.red + ' 处、手改那层仍是绿', whiteReset);
+
   // 图标选择:内置 1 张(animations/animation_9/images/德穆兰.png),默认选中数据里引用的那张;
   // 单图标位形态 —— 没有分段选项卡 /「显示图标」/「居中微调」/「图标不透明度」
   const iconUi = await page.evaluate(() => {
@@ -325,6 +482,11 @@ try {
   await page.evaluate(() => { window.__prevAnim = window.__anim; });
   await page.select('#selAnim', 'extraction');
   await sleep(700);
+  const otherAnim = await page.evaluate(() => ({
+    mandelTheme: document.getElementById('mandelThemeSection').hidden ? 'hidden' : 'visible',
+    theme: document.getElementById('themeSection').hidden ? 'hidden' : 'visible',
+  }));
+  check(otherAnim.mandelTheme === 'hidden', '切到别的动画时「动画主题色」区块隐藏(仅 #009)', otherAnim);
   await page.evaluate(() => { window.__prevAnim = window.__anim; });
   await page.select('#selAnim', KEY);
   await page.waitForFunction((k) => document.getElementById('selAnim').value === k
@@ -359,6 +521,50 @@ try {
   console.log('[10] 重置颜色:' + JSON.stringify(afterReset));
   check(!afterReset.pIsData && /^\//.test(afterReset.p), '资源换回打包地址', afterReset.p);
   check(afterReset.picker === '#ffffff', '取色器回到白色', afterReset.picker);
+
+  /* 纯白 = 原图标(不做任何颜色叠加):先调成红色,再把取色器拖回纯白 —— 资源必须换回素材原地址。
+   * 旧实现会把黑色剪影整片刷成白色(一片白,看起来像原图丢了),这条断言守住"白色不叠色"。 */
+  await page.evaluate(() => {
+    const ci = document.querySelector('#imageList .i-color');
+    ci.value = '#ff0000';
+    ci.dispatchEvent(new Event('input', { bubbles: true }));
+    ci.nextElementSibling.value = '#ff0000';
+    ci.nextElementSibling.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.getElementById('statusbar').textContent.includes('图标颜色已改为'), { timeout: 30_000, polling: 100 });
+  await sleep(900);
+  const beforeWhite = await page.evaluate(() => {
+    const a = window.__anim.animationData.assets.find((x) => x.id === 'image_0');
+    return { p: String(a.p).slice(0, 24), pIsData: String(a.p).startsWith('data:image/') };
+  });
+  await page.evaluate(() => {
+    const ci = document.querySelector('#imageList .i-color');
+    ci.value = '#ffffff';
+    ci.dispatchEvent(new Event('input', { bubbles: true }));
+    ci.nextElementSibling.value = '#ffffff';
+    ci.nextElementSibling.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.getElementById('statusbar').textContent.includes('纯白'), { timeout: 30_000, polling: 100 });
+  await sleep(900);
+  const afterWhite = await page.evaluate(() => {
+    const a = window.__anim.animationData.assets.find((x) => x.id === 'image_0');
+    const im = [...document.querySelectorAll('#previewInner svg image')].find((i) => !i.closest('defs') && i.getAttribute('width'));
+    const href = im && (im.getAttribute('href') || im.getAttribute('xlink:href') || '');
+    return {
+      pIsData: String(a.p).startsWith('data:image/'),
+      p: String(a.p).slice(0, 40),
+      hrefIsData: String(href || '').startsWith('data:image/'),
+      picker: document.querySelector('#imageList .i-color')?.value,
+      status: document.getElementById('statusbar').textContent,
+    };
+  });
+  await stage.screenshot({ path: path.join(OUT, 'after-icon-white.png') });
+  console.log('[10b] 纯白 = 原图标:' + JSON.stringify({ beforeWhite, afterWhite }));
+  check(beforeWhite.pIsData, '先调成红色:资源是着色后的 data URI', beforeWhite.p);
+  check(!afterWhite.pIsData && /^\//.test(afterWhite.p), '选纯白后资源换回打包原图(不做任何颜色叠加)', afterWhite.p);
+  check(!afterWhite.hrefIsData, '画面里的 <image> 也跟着回到原图', afterWhite.hrefIsData);
+  check(afterWhite.picker === '#ffffff', '取色器停在纯白', afterWhite.picker);
+  check(afterWhite.status.includes('纯白'), '状态栏说明「纯白 = 使用原图标」', afterWhite.status);
 
   // 再调一次色,然后上传自定义图标:换图时旧着色作废,取色器回白
   await page.evaluate(() => {

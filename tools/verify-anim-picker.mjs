@@ -44,6 +44,16 @@ await page.setViewport({ width: 1600, height: 950 });
 await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded', timeout: 180_000 });
 await page.waitForFunction(() => !document.getElementById('app-loading'), { timeout: 300_000, polling: 200 });
 await page.waitForFunction(() => window.__anim && window.__anim.isLoaded, { timeout: 300_000, polling: 150 });
+/* 应用外壳默认落在主页(#viewHome),动画选择器在编辑器页 —— 不先切过去的话
+ * #animTrigger 的排版尺寸是 0×0,下面的 page.click 会直接以
+ * "Node is either not clickable or not an Element" 崩掉(整份回归失效)。
+ * 切页走导航轨上的编辑器项,与用户手动进入编辑器的路径一致。 */
+await page.evaluate(() => {
+  const item = document.querySelector('.rail-item[data-page="editor"]');
+  if (item instanceof HTMLElement) item.click();
+});
+await page.waitForFunction(() => document.documentElement.dataset.page === 'editor', { timeout: 30_000, polling: 100 });
+await sleep(500);
 
 const shots = [];
 /* 关闭画廊是先播 140ms 退场动画、再由定时器设 hidden(见 main.ts closeAnimPicker),
@@ -57,6 +67,10 @@ const galleryState = () => page.evaluate(() => ({
   expanded: document.getElementById('animTrigger').getAttribute('aria-expanded'),
   cards: [...document.querySelectorAll('.ap-card')].map((c) => c.dataset.key),
   nums: [...document.querySelectorAll('.ap-card-num')].map((n) => n.textContent),
+  /* 唯一编号:卡片名称行右侧那串 #001(dataset.no 与文本同源,这里两个都读,
+   * 顺带验证"属性和显示文本一致") */
+  nos: [...document.querySelectorAll('.ap-card')].map((c) => c.dataset.no ?? ''),
+  noTexts: [...document.querySelectorAll('.ap-card-no')].map((n) => n.textContent),
   searching: document.getElementById('animGrid').classList.contains('is-searching'),
   current: document.querySelector('.ap-card.is-current')?.dataset.key ?? '',
   focused: document.activeElement?.id || document.activeElement?.tagName || '',
@@ -78,6 +92,8 @@ const trig = await page.evaluate(() => ({
 }));
 check('触发器显示当前动画名', trig.name === '撤离动画', JSON.stringify(trig));
 check('触发器显示分辨率/帧率', /1920×1080.*60fps/.test(trig.meta), trig.meta);
+/* 编号排在规格最前(#001 · 1920×1080 · 60fps),与画廊卡片上写的是同一串 */
+check('触发器显示当前动画编号', /^#\d{3,} · /.test(trig.meta), trig.meta);
 check('触发器显示动画总数', trig.count === total + ' 套', trig.count);
 /* 触发器上的 30×22 缩略图是更早一版移除的(顶栏改成"名称 + 规格 + 总数"三件事一行读完)。
  * 这条断言原来读 #animTriggerThumb,元素没了之后脚本直接在 getAttribute 上空指针崩掉,
@@ -105,6 +121,20 @@ check('当前动画带「当前」角标且唯一',
 check('封面图全部加载成功', extras.covers === total, extras.covers + '/' + total);
 check('搜索框自动获得焦点', st.focused === 'animSearch', String(st.focused));
 check('卡片带数字键序号角标', st.nums.length === Math.min(9, total), st.nums.join(','));
+/* 唯一编号:每张卡片都有,格式 #001,且互不重复、与 dataset.no 一致。
+ * 这是「快速管理」的底座 —— 编号一旦重复或缺失,对号就失去意义。 */
+const nosUnique = st.nos.length === total && new Set(st.nos).size === total;
+check('每张卡片都带唯一编号',
+  nosUnique && st.nos.every((n) => /^#\d{3,}$/.test(n)) && st.nos.every((n, i) => n === st.noTexts[i]),
+  st.nos.join(','));
+/* 首次打开没有「最近使用」干扰(puppeteer 每次都是干净的临时 profile),顺序 = 注册表顺序,
+ * 所以编号必须单调递增。这里刻意不写死 1..N —— 增删一套动画时这条不该红。 */
+const noValues = st.nos.map((n) => Number(n.slice(1)));
+check('编号按注册表顺序递增(未使用前)',
+  noValues.every((v, i) => i === 0 || v > noValues[i - 1]),
+  st.nos.join(','));
+const cardTip = await page.evaluate(() => document.querySelector('.ap-card-pick').title);
+check('卡片悬停提示带编号', /编号 #\d{3,}/.test(cardTip), cardTip);
 check('分组筛选 / 收藏 / 简介均已移除', extras.removed === 0 && extras.starHint === 0, String(extras.removed));
 shots.push({ name: 'anim-picker-gallery', data: await page.screenshot({ encoding: 'base64' }) });
 
@@ -130,6 +160,36 @@ await sleep(200);
 check('清空搜索后恢复全部卡片',
   (await page.evaluate(() => document.querySelectorAll('.ap-card').length)) === total);
 
+/* 按编号搜索:界面上写的是 #003,但三种写法都得认(3 / 003 / #003)——
+ * 有人按号记、有人按显示文本抄。搜索态下位置序号角标会隐藏,编号必须还在,
+ * 否则"搜出来对不上号"。 */
+const searchNo = async (text) => {
+  await page.evaluate((v) => {
+    const i = document.getElementById('animSearch');
+    i.value = v;
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  }, text);
+  await sleep(200);
+  return page.evaluate(() => ({
+    cards: [...document.querySelectorAll('.ap-card')].map((c) => c.dataset.key),
+    nos: [...document.querySelectorAll('.ap-card-no')].map((n) => n.textContent),
+    nums: document.querySelectorAll('.ap-card-num').length,
+    searching: document.getElementById('animGrid').classList.contains('is-searching'),
+  }));
+};
+for (const q of ['3', '003', '#003']) {
+  const hit = await searchNo(q);
+  check('按编号搜索「' + q + '」只留 3 号动画',
+    hit.cards.length === 1 && hit.cards[0] === 'blinds' && hit.nos.join('') === '#003',
+    JSON.stringify(hit.cards) + ' / ' + hit.nos.join(','));
+}
+const searchingHit = await searchNo('003');
+check('搜索态下编号仍然显示(只是位置序号隐藏)',
+  searchingHit.searching && searchingHit.nos.length === 1 && searchingHit.nums === 0,
+  JSON.stringify(searchingHit));
+await page.click('#animSearchClear');
+await sleep(200);
+
 /* ---------- 4. 数字键直选 ---------- */
 const beforeKey = await page.evaluate(() => document.getElementById('selAnim').value);
 /* 卡片上的数字角标与卡片位置一一对应(位置 1 = 角标 1),所以按 '2' 应当切到**第二张**卡片。
@@ -138,7 +198,11 @@ const beforeKey = await page.evaluate(() => document.getElementById('selAnim').v
  *  waitLoaded('') 会一直等到超时;那段是从"序号不跟位置走"的旧实现留下来的。) */
 const numTarget = await page.evaluate(() => {
   const card = document.querySelectorAll('.ap-card')[1];
-  return card ? { key: card.dataset.key, num: (card.querySelector('.ap-card-num') || {}).textContent } : null;
+  return card ? {
+    key: card.dataset.key,
+    num: (card.querySelector('.ap-card-num') || {}).textContent,
+    no: (card.querySelector('.ap-card-no') || {}).textContent,
+  } : null;
 });
 check('第二张卡片的角标是 2', !!numTarget && numTarget.num === '2', JSON.stringify(numTarget));
 const numKey = numTarget ? numTarget.key : '';
@@ -146,14 +210,25 @@ await page.keyboard.press('2');
 await waitLoaded(numKey);
 await waitPickerHidden();
 await sleep(500);
-st = await page.evaluate(() => ({
-  key: document.getElementById('selAnim').value,
-  open: !document.getElementById('animPicker').hidden,
-  name: document.getElementById('animTriggerName').textContent,
-}));
+st = await page.evaluate(() => {
+  const dt = [...document.querySelectorAll('#infoList dt')].find((d) => d.textContent === '编号');
+  return {
+    key: document.getElementById('selAnim').value,
+    open: !document.getElementById('animPicker').hidden,
+    name: document.getElementById('animTriggerName').textContent,
+    meta: document.getElementById('animTriggerMeta').textContent,
+    infoNo: dt && dt.nextElementSibling ? dt.nextElementSibling.textContent : '',
+  };
+});
 check('数字键 2 直接切换到第二张卡片', st.key === numKey && st.key !== beforeKey,
   st.key + ' (第一张是 ' + beforeKey + ')');
 check('数字键切换后画廊关闭且触发器同步', !st.open && st.name.length > 0, JSON.stringify(st));
+/* 切过去之后,编号在三处必须同时跟着换:顶栏规格行、侧栏「动画信息」第一行。
+ * 只在一处对不上,用户就会以为自己切错了套。 */
+check('切换后顶栏规格行换成目标卡片编号',
+  st.meta.startsWith((numTarget?.no ?? '?') + ' · '), st.meta + ' vs ' + (numTarget?.no ?? '?'));
+check('侧栏「动画信息」显示同一串编号', st.infoNo === (numTarget?.no ?? '?'),
+  st.infoNo + ' vs ' + (numTarget?.no ?? '?'));
 
 /* 搜索框有内容时,数字还给搜索框 */
 /* 触发器的点击是「开/关」切换,所以先确认画廊确实关着再点,免得把刚打开的面板又关掉;
@@ -283,6 +358,10 @@ await page.click('#animTrigger');
 await sleep(350);
 st = await galleryState();
 check('「最近使用」让刚用过的动画排在最前', st.cards[0] === 'extraction', st.cards.join(' > '));
+/* 重排只动位置、不动身份:撤离动画被提到第一张之后,编号仍然是 #001。
+ * 这正是「编号」与「数字键序号」的区别 —— 后者是位置(1–9 会变),前者是身份。 */
+check('「最近使用」重排不改变编号', st.nos[0] === '#001' && st.nums[0] === '1',
+  'no=' + st.nos[0] + ' pos=' + st.nums[0] + ' cards=' + st.cards.join('>'));
 await page.keyboard.press('Escape');
 await waitPickerHidden();
 
