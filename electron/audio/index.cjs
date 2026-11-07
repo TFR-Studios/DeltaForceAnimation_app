@@ -16,7 +16,7 @@ const oodle = require('./oodle.cjs');
 const { bestMediaName, pathsOf, riffInfo } = require('./extract.cjs');
 const { classify, summarize } = require('./categories.cjs');
 
-const INDEX_VERSION = 4;  // 4: 音频分类（按文件名规则）
+const INDEX_VERSION = 5;  // 5: 音乐分类补强（bpm/mx/pv/lottery 等）
 
 function pakDirs(gameRoot) {
   const out = [];
@@ -122,7 +122,10 @@ function buildIndex(gameRoot, opts, onProgress) {
         list.push({
           id: p.id,
           name: displayName,
-          category: classify(displayName, vpath),
+          category: classify(displayName, vpath, {
+            size: info ? info.serializedSize : 0,
+            duration: info ? info.duration : 0,
+          }),
           vpath,
           pak: pakName,
           size: info ? info.serializedSize : (rec ? rec.usize : 0),

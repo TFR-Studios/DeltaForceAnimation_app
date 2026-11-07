@@ -39,7 +39,25 @@ const CATEGORIES = [
   },
   {
     key: 'music', label: '音乐配乐',
-    test: (n) => has(n, /(music|bgm|theme|song|instrument|harmonica|piano|guitar|drum|violin|cello|trumpet)/i),
+    /* 音乐的名字比其它类更"不守规矩"：有拼写错的 Muic、有靠 BPM/调号标注的配乐、
+     * 有 _MX（music mix）/Stems/Trailer/PV 这类制作术语，也有像 "Unreal Thoughts"
+     * 这种纯标题。所以这里除了乐器/曲风词，还吃元信息（体积、时长）。 */
+    test: (n, v, m) => {
+      if (has(n, /(music|bgm|theme|song|soundtrack|instrument|harmonica|piano|guitar|drum|violin|cello|trumpet|choir)/i)) return true;
+      // 注意:Stems 里既有 _MX(音乐分层) 也有 _FX(音效分层)，不能整体算音乐，只认 _MX/mix
+      if (has(n, /(bpm|trailer|muic)/i)) return true;
+      if (has(n, /(^|[_\- ])mx([_\- ]|$)/i)) return true;
+      if (has(n, /(^|[_\- ])mix([_\- ]|$)/i)) return true;
+      // 抽奖/开箱：只有循环曲或体积够大才算音乐，动画短音效不算
+      if (has(n, /(lottery|luckydraw)/i) && (/loop/i.test(n) || (m && m.size > 1024 * 1024))) return true;
+      // 宣传片（PV）的配乐
+      if (has(n, /(^|[_\- ])pv([_\- ]|$)/i)) return true;
+      // 超过 60 秒的，基本都是配乐（语音台词在更前面就被分走了）
+      if (m && m.duration > 60) return true;
+      // 纯标题式名字（每个词首字母大写、没有下划线），如 "Unreal Thoughts"
+      if (/^[A-Z][A-Za-z0-9]*(?: [A-Z][A-Za-z0-9]*)+$/.test(n)) return true;
+      return false;
+    },
   },
   {
     key: 'ui', label: '界面交互',
@@ -67,12 +85,13 @@ const OTHER = { key: 'other', label: '其他' };
 const ALL = [{ key: 'all', label: '全部' }].concat(CATEGORIES.map((c) => ({ key: c.key, label: c.label })), [OTHER]);
 
 /** 给一条音频算分类 key。 */
-function classify(name, vpath) {
+function classify(name, vpath, meta) {
   const n = String(name || '').trim();
   const v = String(vpath || '');
+  const m = meta && typeof meta === 'object' ? meta : {};
   if (!n) return 'other';
   for (const c of CATEGORIES) {
-    try { if (c.test(n, v)) return c.key; } catch (e) { /* 规则写错不该让索引挂掉 */ }
+    try { if (c.test(n, v, m)) return c.key; } catch (e) { /* 规则写错不该让索引挂掉 */ }
   }
   return 'other';
 }
