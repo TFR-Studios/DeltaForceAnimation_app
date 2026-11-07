@@ -759,6 +759,9 @@ html[data-ui='mobile'] .rail-item {
   user-select: none;
   transition: color var(--dur) var(--ease), background-color var(--dur-fast) var(--ease);
 }
+/* 图标在上、文字在下:宿主上的 flex-direction 进不了 Fluent 按钮的 .content,
+ * 必须用 ::part(content) 接管(否则是图标与文字并排)。 */
+html[data-ui='mobile'] .rail-item::part(content) { flex-direction: column; gap: 3px; }
 html[data-ui='mobile'] .rail-item .bi {
   width: 19px;
   height: 19px;

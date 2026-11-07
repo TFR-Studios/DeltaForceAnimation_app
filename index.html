@@ -143,40 +143,45 @@
       <!-- 侧边导航轨(桌面):主页 / 编辑器 / 下载列表 / 关于。
            手机端在 mobile.css 里变成底部标签栏(同一份 DOM,不另写一套)。
            下载列表在手机端不出现:落点是系统相册,那套"定位/打开/重命名"对 content:// 没有对应能力。 -->
+      <!-- 图标系统(2026-11):导航轨统一使用 Lucide 1.70.0 线性图标(ISC 许可,https://lucide.dev)——
+           24×24 网格、2 单位描边、圆头圆角,同一份 SVG 在手机底部标签栏复用(tools/verify-rail-icons.mjs 守着)。
+           轨内只允许这一种笔画:不要再混入填充式 Bootstrap / 手绘图标,那正是上一版"房子、播放键、喇叭是实心,
+           日志与关于却是细线"的来源。功能图标(顶栏、按钮)仍走填充式 .bi,导航轨与动作图标是两个层次,不要互相覆盖。
+           图标版权与许可全文见 DESIGN.md「Iconography」。 -->
       <nav class="rail" id="appRail" aria-label="主导航">
         <!-- 收起 / 展开:桌面独占。手机端导航轨是底部标签栏,不需要收起 -->
         <div class="rail-head">
           <button type="button" class="rail-toggle" id="railToggle" aria-expanded="true" title="收起侧边栏(Ctrl+B)" aria-label="收起侧边栏">
-            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/></svg>
+            <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m15 18-6-6 6-6"/></svg>
           </button>
         </div>
         <div class="rail-items">
           <button type="button" class="rail-item is-active" data-page="home" title="主页">
-            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8.7 1.2a1.1 1.1 0 0 0-1.4 0L1.1 6.2A1.1 1.1 0 0 0 .7 7v7.2a1.1 1.1 0 0 0 1.1 1.1h3.4V10a.9.9 0 0 1 .9-.9h3.8a.9.9 0 0 1 .9.9v5.3h3.4a1.1 1.1 0 0 0 1.1-1.1V7a1.1 1.1 0 0 0-.4-.8z"/></svg>
+            <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
             <span>主页</span>
           </button>
           <button type="button" class="rail-item" data-page="editor" title="编辑器">
-            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.2 1.72v12.56c0 .66.72 1.07 1.29.74l10.3-6.28a.86.86 0 0 0 0-1.48L4.49.98a.86.86 0 0 0-1.29.74z"/></svg>
+            <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997A1 1 0 0 1 9 14.996z"/></svg>
             <span>编辑器</span>
           </button>
           <!-- 音频提取:直接从游戏 pak 里抽 Wwise 音频(.wem)。只在桌面端可用:
                主进程要读 pak、调 Oodle 解压、再用 vgmstream 解码试听。见 electron/audio/。 -->
           <button type="button" class="rail-item" data-page="audio" id="navAudio" title="音频提取">
-            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M9 2.2a.9.9 0 0 1 .9.9v9.8a.9.9 0 0 1-1.45.7L5.6 11.4H2.9a1.4 1.4 0 0 1-1.4-1.4V6a1.4 1.4 0 0 1 1.4-1.4h2.7l2.85-2.2A.9.9 0 0 1 9 2.2z"/><path d="M11.6 5.1a.8.8 0 0 1 1.13 0 4.1 4.1 0 0 1 0 5.8.8.8 0 1 1-1.13-1.13 2.5 2.5 0 0 0 0-3.54.8.8 0 0 1 0-1.13z"/></svg>
+            <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>
             <span>音频提取</span>
           </button>
           <!-- 日志:应用运行 / 导出 / 更新 / 错误的关键事件。桌面版写入本地日志文件,
                网页版与手机端只保留本次会话的记录(见 src/logs.ts)。 -->
           <button type="button" class="rail-item" data-page="logs" id="navLogs" title="日志">
-            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M5 10.5a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5m0-2a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5m0-2a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5"/><path d="M3 0h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-1h1v1a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v1H1V2a2 2 0 0 1 2-2"/><path d="M1 5a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1A.5.5 0 0 1 1 5m0 2.5a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1a.5.5 0 0 1-.5-.5m0 2.5a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1a.5.5 0 0 1-.5-.5"/></svg>
+            <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
             <span>日志</span>
           </button>
           <button type="button" class="rail-item" data-page="downloads" id="navDownloads" title="下载列表">
-            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 1.2a.9.9 0 0 1 .9.9v6.03l1.53-1.53a.9.9 0 1 1 1.27 1.27l-3.06 3.06a.9.9 0 0 1-1.27 0L4.3 7.87a.9.9 0 0 1 1.27-1.27L7.1 8.13V2.1a.9.9 0 0 1 .9-.9z"/><path d="M2.4 11.2a.9.9 0 0 1 .9.9v1.1h9.4v-1.1a.9.9 0 1 1 1.8 0v1.5a1.4 1.4 0 0 1-1.4 1.4H2.9a1.4 1.4 0 0 1-1.4-1.4v-1.5a.9.9 0 0 1 .9-.9z"/></svg>
+            <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
             <span>下载列表</span>
           </button>
           <button type="button" class="rail-item" data-page="about" title="关于">
-            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path d="m8.93 6.59-2.29.28-.08.38.45.09c.29.07.35.17.29.46l-.74 3.47c-.19.9.11 1.32.81 1.32.54 0 1.18-.25 1.46-.6l.09-.41c-.2.17-.49.24-.69.24-.27 0-.37-.19-.3-.53zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>
+            <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
             <span>关于</span>
           </button>
         </div>

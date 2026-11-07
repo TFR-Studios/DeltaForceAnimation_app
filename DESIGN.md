@@ -386,6 +386,84 @@ prefers-reduced-motion: reduce 下全部过渡与动画降为 0.001ms,功能不�
 聚焦期间被压成 6px,是个看得见但很难归因的跳动。原生控件(滑杆 / 下拉 / 取色器)的自绘
 同样属于这一层:它们的外观也是"产品的一部分",不能留给系统默认。
 
+## Iconography
+
+侧边栏图标在 2026-11 换成一套线性图标。之前的问题不是"哪个图标不好看",而是**三种笔画同时挤在一列里**:
+主页 / 编辑器 / 音频提取 / 下载列表是实心自绘图标(接近 Bootstrap 填充风),日志与关于却是 Bootstrap 的细线图标。
+同一个 16px 盒子里,实心块的视觉重量是细线的两三倍,于是"关于"看起来比"主页"轻一档,
+一列读下来像是从两个产品里各拿了一半。
+
+- **导航图标:Lucide 1.70.0(ISC)** —— 24×24 网格、`fill: none`、`stroke: currentColor`、
+  `stroke-width: 2`、圆头圆角。桌面 16px / 手机底栏 19px / 收起按钮 13px;颜色仍走
+  `--text-3 → --text-2 → --text` 这条既有状态色阶,不新增强调色。
+  语义按"这一页到底是什么"选,不按"最像哪个常见符号"选:
+
+  | 页面 | 图标 | 选择理由 |
+  |---|---|---|
+  | 主页 | `house` | 入口符号,没有歧义 |
+  | 编辑器 | `square-play` | 这一页的主任务就是预览并就地编辑;方形外框把它和播放条那枚三角播放键分开 |
+  | 音频提取 | `audio-lines` | 波形就是声音本身;喇叭 / 音符会读成"播放音乐",而这页是从 pak 里抽 Wwise 音频 |
+  | 日志 | `file-text` | 日志是文本文件;卷轴 / 列表在 16px 下会糊成表格 |
+  | 下载列表 | `download` | 系统通用的"落到本地"符号 |
+  | 关于 | `info` | 标准信息符号 |
+  | 收起 | `chevron-left` | 收起时旋转 180° 变成展开,与 220ms 的容器变形同时发生 |
+
+- **轨内只允许一种笔画**:`.rail .bi` 强制 `fill: none; stroke: currentColor; stroke-width: 2`、
+  `stroke-linecap/linejoin: round`。混进一枚填充图标或 16 网格图标,`tools/verify-rail-icons.mjs`
+  会直接 FAIL。功能图标(顶栏、按钮、播放条)继续用填充式 `.bi` —— **导航是线,动作是面**,
+  两层分工不同,不是"还没统一完"。这条边界也写进了 index.html 的导航注释。
+- **图标与文字的间距归 Fluent 按钮的 `::part(content)` 管**:rail-item 在运行时被升级成
+  `<fluent-button>`,它的 shadow DOM 把 slot 内容包进 `.content`,宿主上的 `gap` / `flex-direction`
+  进不去。上一版实测图标与文字间距是 0(设计写的是 10px),手机底栏的"图标在上"也变成了横排。
+  现在桌面 10px / 收起 0 / 手机竖排 3px 都由 `::part(content)` 接管。
+- **收起态中线**:56 − 6 − 6 − 1(右边框)= 43 内容宽;`padding-left: 12px` 抵掉行自身 1px 边框
+  与 Fluent 内容盒 1px 内缩后,16px 图标中心落在 28px 中线上(实测 28.5,是亚像素差)。
+- **回归**:`tools/verify-rail-icons.mjs`(13 项)判的不是截图,而是逐枚图标"24 网格 / 2px 描边 /
+  round cap / round join / stroke=currentColor",外加桌面 10px、收起 0、手机竖排与 19px。
+  改图标先跑它,再看 `tools/verify-app-shell.mjs` 的外壳几何。
+- **许可(随源码分发)**:图标来自 Lucide 1.70.0 / lucide-static。整体为 ISC,其中沿用 Feather 的图标
+  (`download` / `info` / `chevron-left` 等)为 MIT:
+
+```text
+ISC License — Lucide
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+```text
+MIT License — Feather(部分 Lucide 图标沿用)
+Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## App icons
 
 应用图标是同一张品牌标志的三套落地,源图永远是 public/logo.svg,由 npm run icons:app
@@ -429,7 +507,7 @@ pulseStage 挂 420ms 的 `is-registering` 触发):它是 6.1 那个作者时刻�
   缩放仍由 main.ts 的适配算法写进 transform —— 只改定位,不改适配链路(覆盖宽高会把画布缩成十分之一)。
 - 圆角:控件 6 / 面板与卡片 10 / 浮层 14 / 胶囊 999。间距尺 4 / 8 / 12 / 16 / 20 / 28。
 - 外壳是**顶栏 + 左侧导航轨 176px + 内容区 + 状态栏**:顶栏 52px 通栏(品牌 / 制作声明 /
-  主题开关),导航轨在它下面贴着左边(主页 / 编辑器 / 下载列表 / 关于),内容区按页切换。
+  主题开关),导航轨在它下面贴着左边(主页 / 编辑器 / 音频提取 / 日志 / 下载列表 / 关于),内容区按页切换。
   1480×940 实测:导航轨 176×858,编辑器舞台 968×718 —— 画布没被导航吃掉(右侧还有 336px 检查器);
   右侧检查器顶部那 71px 是吸顶的「一键重置」行(见 5.8)。
   手机端导航轨变**底部标签栏 56px**(状态栏在它上面一行,标签栏贴到屏幕最底)。
@@ -456,7 +534,8 @@ pulseStage 挂 420ms 的 `is-registering` 触发):它是 6.1 那个作者时刻�
   `<html data-rail="collapsed">` —— 默认值也写在 index.html 的标记上,首帧就是折叠态,
   不会先展开再'啪'地缩回去;用户展开过则记进 localStorage `dfae.ui.rail.v1` 并恢复。
 - **收起/展开是一次容器变形(220ms)**:宽度、内边距、行的左内边距与 gap 一起过渡,
-  图标因此是'滑'到中线上(14px = (44 内容宽 − 16 图标)/2);文字用 `max-width: 120px → 0` 收放
+  图标因此是'滑'到中线上(12px:56 − 左右各 6 − 右边框 1 = 43 内容宽,再抵掉行边框与
+  Fluent 内容盒的 2px 内缩,16px 图标中心 = 28px);文字用 `max-width: 120px → 0` 收放
   (不用 display:none,否则收起瞬间那行字会突然消失),opacity 140ms 比宽度先退场。
   220ms 是一次性值,不往 tokens 里加第四档。舞台宽度 968↔1088 由 ResizeObserver 每帧重算,实测无跳变。
 - **手机端页面栈**:接系统返回键 —— 每次切页 pushState,`popstate` 逐级回退,退到主页再按才退出应用。

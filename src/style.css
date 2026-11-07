@@ -3215,8 +3215,9 @@ html:not([data-page='editor']) .statusbar:not(.error) .statusbar-text { opacity:
 html[data-rail='collapsed'] .rail { width: 56px; padding-left: 6px; padding-right: 6px; }
 html[data-rail='collapsed'] .rail-head { justify-content: center; }
 html[data-rail='collapsed'] .rail-toggle .bi { transform: rotate(180deg); }
-/* 14px = (44 内容宽 - 16 图标)/2,图标正好落在中线上 */
-html[data-rail='collapsed'] .rail-item { gap: 0; padding-left: 14px; }
+/* 收起态:56 - 左右各 6 - 右边框 1 = 43 内容宽;16px 图标要落在 28px 中线上。
+ * 实测 12px 正好抵消行自身 1px 边框 + Fluent 按钮 1px 内缩,图标中心 28.5(14px 时偏右 2px)。 */
+html[data-rail='collapsed'] .rail-item { gap: 0; padding-left: 12px; }
 html[data-rail='collapsed'] .rail-item span { max-width: 0; opacity: 0; }
 html[data-rail='collapsed'] .rail-foot { justify-content: center; padding-left: 0; padding-right: 0; }
 html[data-rail='collapsed'] .rail-version { opacity: 0; }
@@ -3248,6 +3249,22 @@ html[data-rail='collapsed'] .rail-version { opacity: 0; }
     transform var(--dur-fast) var(--ease);
 }
 .rail-item .bi { width: 16px; height: 16px; flex: none; color: var(--text-3); transition: color var(--dur) var(--ease); }
+/* Fluent 按钮把 slot 内容包进自己的 .content 里,宿主上的 gap / flex-direction 传不进去
+ * (实测图标与文字之间的间距是 0,而这里写的是 10px)。导航行改用 ::part(content) 接管:
+ * 展开 10px、收起 0。手机端的竖排同理,见 mobile.css 的底部标签栏。 */
+.rail-item::part(content) { gap: 10px; }
+html[data-rail='collapsed'] .rail-item::part(content) { gap: 0; }
+/* 导航轨图标:Lucide 线性图标(24 网格 / 2 单位描边 / 圆头圆角)。
+ * SVG 上已经写了同名属性,这里再兜一层:即使将来有人只搬 <path> 进来,
+ * 轨内也仍然是同一种笔画。填充式的 .bi(顶栏 / 按钮)不参与这一层 ——
+ * 导航与动作是两套图标层次,混用就是上一版风格不统一的原因。 */
+.rail .bi {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 /* 文字靠 max-width 收放(可过渡),opacity 稍快一点先淡掉,读起来是"字先走、边再收" */
 .rail-item span {
   min-width: 0;
