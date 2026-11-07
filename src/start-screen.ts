@@ -26,7 +26,7 @@ import { logs } from './logs';
 /* 开发者日志:更新检查的请求源 / 版本 / 失败原因也进原始流 */
 import { devEvent } from './devlog';
 
-export type PageId = 'home' | 'editor' | 'about' | 'logs';
+export type PageId = 'home' | 'editor' | 'about' | 'logs' | 'audio';
 
 export type AppShellHooks = {
   /** 手机 / 平板(与 mobile.ts 同一套判定,由 main.ts 的 IS_MOBILE 传进来) */
@@ -94,6 +94,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   const viewHome = document.getElementById('viewHome');
   const viewAbout = document.getElementById('viewAbout');
   const viewLogs = document.getElementById('viewLogs');
+  const viewAudio = document.getElementById('viewAudio');
   const viewEditor = document.querySelector<HTMLElement>('.layout');
   const rail = document.getElementById('appRail');
   const navButtons = Array.from(document.querySelectorAll<HTMLElement>('.rail-item'));
@@ -156,7 +157,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   const btnOpenDir = document.getElementById('btnOpenDir') as HTMLButtonElement | null;
   const aboutPath = document.getElementById('aboutPath');
 
-  const pages: Record<PageId, HTMLElement | null> = { home: viewHome, editor: viewEditor, about: viewAbout, logs: viewLogs };
+  const pages: Record<PageId, HTMLElement | null> = { home: viewHome, editor: viewEditor, about: viewAbout, logs: viewLogs, audio: viewAudio };
   /* 「跑在桌面客户端里」与「用的是手机 UI」是两件事,判定必须**移动端优先**。
    * 安卓 APK 里挂着同一个 window.dfaeDesktop 桥接层(它本来就叫这个名字,提供的是"能落盘 /
    * 能开系统浏览器"这一层能力),所以 isDesktopApp 在手机上同样成立 —— 只看它,关于页就会
@@ -260,7 +261,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   window.addEventListener('popstate', (e) => {
     if (!wantHistory) return;
     const raw = e.state && e.state.dfaePage;
-    const page: PageId = raw === 'editor' || raw === 'about' ? raw : 'home';
+    const page: PageId = raw === 'editor' || raw === 'about' || raw === 'logs' || raw === 'audio' ? raw : 'home';
     suppressHistory = true;
     showPage(page, { history: 'none' });
     suppressHistory = false;
@@ -274,7 +275,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     const changed = current !== page;
     current = page;
     root.dataset.page = page;
-    for (const id of ['home', 'editor', 'about', 'logs'] as PageId[]) {
+    for (const id of ['home', 'editor', 'about', 'logs', 'audio'] as PageId[]) {
       const el = pages[id];
       if (!el) continue;
       const on = id === page;
@@ -862,7 +863,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
       hooks.openDownloads();
       return;
     }
-    if (page !== 'home' && page !== 'editor' && page !== 'about' && page !== 'logs') return;
+    if (page !== 'home' && page !== 'editor' && page !== 'about' && page !== 'logs' && page !== 'audio') return;
     /* 同一页再点一次:手机上按惯例是"回到顶部"(而不是什么都不发生) */
     if (page === current) {
       if (hooks.isMobile) pages[page]?.scrollTo({ top: 0, behavior: 'smooth' });

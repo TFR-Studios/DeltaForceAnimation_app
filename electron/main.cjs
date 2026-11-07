@@ -43,6 +43,9 @@ const { createDownloads } = require('./downloads.cjs');
  * 与 downloads 一样延迟到 bootstrap 里创建 —— 目录在 userData 下,ready 之前拿到的
  * 可能还不是最终位置(受 --user-data-dir 等开关影响)。 */
 const { createLogs, logDebug, logInfo, logWarn, logError } = require('./logs.cjs');
+/* 音频提取:读游戏 pak -> 抽 Wwise 音频 -> vgmstream 解码试听。见 electron/audio/。
+ * 与本文件其余部分一样,只暴露具名 IPC,不给渲染进程任何文件系统能力。 */
+const { createAudioService } = require('./audio/service.cjs');
 
 /* ---------------------------------------------------------------------------
  * 0. 运行期常量与命令行开关
@@ -77,6 +80,8 @@ let downloads = null;
 /* 日志持久化控制器(bootstrap 里创建);模块级 logInfo/logWarn/logError 会把事件写进它。
  * 在 createLogs 之前调用这些函数也是安全的 —— logs.cjs 会先把记录排进内存队列。 */
 let logs = null;
+/* 音频提取服务(见 electron/audio/service.cjs);ready 之后在 bootstrap 里创建。 */
+let audioService = null;
 
 /**
  * 主进程事件日志的便捷写法,形如 mlog('warn', '消息', '多行细节')。
@@ -547,6 +552,15 @@ async function bootstrap() {
   } catch (e) {
     logs = null;
     console.error('[logs] 初始化失败:', e);
+  }
+
+  /* 音频提取服务:同样等 ready 之后创建(索引与设置都存在 userData 下)。
+   * 失败不阻塞启动 —— 没有它,音频提取页只是显示为不可用。 */
+  try {
+    audioService = createAudioService({ userData: app.getPath('userData'), getWindow: () => mainWindow });
+  } catch (e) {
+    audioService = null;
+    console.error('[audio] 初始化失败:', e);
   }
 
   /* 进程级异常:以前这些只在开发者工具的终端里一闪而过,打包版连终端都没有。
@@ -1196,3 +1210,39 @@ function safeLogName(name) {
   if (!/\.(log|txt)$/i.test(base)) base += '.log';
   return base.length > 120 ? base.slice(-120) : base;
 }
+
+/* ---------------------------------------------------------------------------
+ * 6c. 音频提取(渲染进程的 window.dfaeAudio)
+ *
+ * 能力全部在 electron/audio/ 里:gamedir 定位游戏目录、index 扫 pak 建清单、
+ * extract 抽 .wem、vgmstream 解码试听。这里只做三件事:
+ *   1) 把 IPC 接到服务对象;
+ *   2) 索引构建的进度转发给窗口(整个过程在 worker 线程里,不阻塞界面);
+ *   3) 服务未就绪时统一返回 ok:false,让页面显示"不可用"而不是抛异常。
+ *
+ * 红线:渲染进程只能传 id / 查询条件,不能传路径去读文件 ——
+ * 所有路径都由主进程从索引或对话框里取。
+ * ------------------------------------------------------------------------- */
+
+const audioSvc = () => audioService;
+const audioNotReady = { ok: false, error: '音频服务尚未就绪' };
+
+ipcMain.handle('dfae:audio-detect-dir', () => (audioSvc() ? audioSvc().detectGameDir() : audioNotReady));
+ipcMain.handle('dfae:audio-get-dir', () => (audioSvc() ? audioSvc().getGameDir() : { dir: null, valid: false }));
+ipcMain.handle('dfae:audio-pick-dir', () => (audioSvc() ? audioSvc().pickGameDir() : audioNotReady));
+ipcMain.handle('dfae:audio-set-dir', (_e, dir) => (audioSvc() ? audioSvc().setGameDir(String(dir || '')) : audioNotReady));
+ipcMain.handle('dfae:audio-index-state', () => (audioSvc() ? audioSvc().getIndexState() : { ready: false, count: 0, building: false }));
+ipcMain.handle('dfae:audio-search', (_e, opts) => (audioSvc() ? audioSvc().search(opts || {}) : { total: 0, items: [] }));
+ipcMain.handle('dfae:audio-export', (_e, opts) => (audioSvc() ? audioSvc().exportAudio(opts || {}) : audioNotReady));
+ipcMain.handle('dfae:audio-preview', (_e, id) => (audioSvc() ? audioSvc().previewAudio(String(id || '')) : audioNotReady));
+ipcMain.handle('dfae:audio-export-dir', () => (audioSvc() ? audioSvc().getExportDir() : { dir: '' }));
+ipcMain.handle('dfae:audio-pick-export-dir', () => (audioSvc() ? audioSvc().pickExportDir() : audioNotReady));
+
+ipcMain.handle('dfae:audio-build-index', async () => {
+  if (!audioSvc()) return audioNotReady;
+  return audioSvc().buildIndex((p) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try { mainWindow.webContents.send('dfae:audio-progress', p); } catch (e) {}
+    }
+  });
+});

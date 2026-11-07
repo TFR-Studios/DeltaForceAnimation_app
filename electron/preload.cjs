@@ -136,3 +136,46 @@ contextBridge.exposeInMainWorld('dfaeLogs', {
   /** 日志目录 / 文件 / 体积等信息,日志页顶栏用来显示「日志存哪儿了」。 */
   info: () => ipcRenderer.invoke('dfae:logs-info'),
 });
+
+/* ---------------------------------------------------------------------------
+ * 音频提取(window.dfaeAudio)
+ *
+ * 从游戏 pak 里导出 Wwise 音频。磁盘动作全在主进程(见 electron/audio/),
+ * 这里只暴露具名方法:
+ *   · 页面传的是音频 id 和查询条件,不是路径 —— 拿不到"读任意文件"的能力;
+ *   · 导出目录由主进程的对话框决定,页面只能读回结果。
+ * ------------------------------------------------------------------------- */
+contextBridge.exposeInMainWorld('dfaeAudio', {
+  /** 固定为 true:页面据此判断音频提取页是否运行在桌面端。 */
+  isDesktop: true,
+  /** 自动定位游戏目录。返回 { ok, dir, source } 或 { ok:false, error }。 */
+  detectGameDir: () => ipcRenderer.invoke('dfae:audio-detect-dir'),
+  /** 当前设置的游戏目录。返回 { dir, valid }。 */
+  getGameDir: () => ipcRenderer.invoke('dfae:audio-get-dir'),
+  /** 弹目录选择框并校验。返回 { ok, valid, dir, pakCount } 或 { ok:false, error, canceled? }。 */
+  pickGameDir: () => ipcRenderer.invoke('dfae:audio-pick-dir'),
+  /** 直接设置一个目录(会校验是不是游戏根目录)。 */
+  setGameDir: (dir) => ipcRenderer.invoke('dfae:audio-set-dir', String(dir == null ? '' : dir)),
+  /** 索引状态。返回 { ready, count, builtAt, stale, building, gameDir }。 */
+  getIndexState: () => ipcRenderer.invoke('dfae:audio-index-state'),
+  /** 重建索引(后台线程,进度走 onIndexProgress)。返回 { ok, count, stats } 或 { ok:false, error }。 */
+  buildIndex: () => ipcRenderer.invoke('dfae:audio-build-index'),
+  /** 索引进度订阅;返回取消订阅函数。 */
+  onIndexProgress: (handler) => {
+    const listener = (_e, payload) => {
+      try { handler(payload); } catch { /* 页面自己的异常不该影响主进程 */ }
+    };
+    ipcRenderer.on('dfae:audio-progress', listener);
+    return () => ipcRenderer.removeListener('dfae:audio-progress', listener);
+  },
+  /** 分页查询。opts = { query?, offset?, limit? }，返回 { total, items }。 */
+  searchAudio: (opts) => ipcRenderer.invoke('dfae:audio-search', opts || {}),
+  /** 导出。opts = { ids: string[], decode?: boolean }。 */
+  exportAudio: (opts) => ipcRenderer.invoke('dfae:audio-export', opts || {}),
+  /** 试听:主进程解码成 WAV 字节返回 { ok, data: Uint8Array }。 */
+  previewAudio: (id) => ipcRenderer.invoke('dfae:audio-preview', String(id == null ? '' : id)),
+  /** 当前导出目录。返回 { dir }。 */
+  getExportDir: () => ipcRenderer.invoke('dfae:audio-export-dir'),
+  /** 选择导出目录。返回 { ok, dir } 或 { ok:false, canceled? }。 */
+  pickExportDir: () => ipcRenderer.invoke('dfae:audio-pick-export-dir'),
+});

@@ -70,6 +70,11 @@ import { initLogs, logs } from './logs';
  * 与用户日志的写盘通道完全分开(见 src/devlog.ts)。 */
 import { devEvent } from './devlog';
 
+/* 音频提取页:从本地游戏 pak 里直接抽 Wwise 音频。页面内容由模块自渲染,
+ * 数据能力来自 preload 暴露的 window.dfaeAudio(见 electron/audio/)。 */
+import { initAudioPage } from './audio-page';
+import './audio-page.css';
+
 /* 音效资源:独立小文件(?url 打包为静态资源),不进入大体积动画数据 chunk */
 import bundledAudioUrl from '../animations/animation_1/gunmuchenggong.mp3?url';
 import exposedAudioUrl from '../animations/animation_2/UI_C201_Energy_Scout_Bow_Scout_02.wav?url';
@@ -100,6 +105,13 @@ const FONT_CURVE_WOFF2_URL = new URL('../animations/animation_1/fonts/ProjectDTy
  * 必须尽早初始化:启动过程中的 console 输出、字体注册、数据加载失败都发生在下面这些代码之前,
  * 晚了就只记录到"后半程"。日志页本身的 DOM 在 index.html 末尾已解析完成,这里可以安全绑定。 */
 initLogs();
+
+/* 音频提取页只渲染一次(内部自己管状态)。宿主是 index.html 里的 #audioMount;
+ * 网页 / 手机端没有 window.dfaeAudio,模块会显示"仅桌面客户端可用"的空状态。 */
+{
+  const audioHost = document.getElementById('audioMount');
+  if (audioHost) initAudioPage(audioHost);
+}
 
 /* ---------- 启动加载界面 ----------
  * #app-loading 的样式是内联在 index.html 中的(不依赖本文件 import 的 style.css),

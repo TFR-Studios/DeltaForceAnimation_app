@@ -1238,3 +1238,6 @@ html[data-ui='mobile'] .render-log-body { height: clamp(140px, 26vh, 220px); }
   html[data-ui='mobile'] .theme-btn:active .bi { transform: none; }
   html[data-ui='mobile'] .rail-items[data-nav-ready]::before { transition: none; }
 }
+
+/* 音频提取依赖主进程读 pak / Oodle 解压,手机端没有这套能力,导航项直接不出现。 */
+html[data-ui='mobile'] .rail-item[data-page='audio'] { display: none; }

@@ -1,0 +1,871 @@
+/* ============================================================================
+ * 音频提取页样式(src/audio-page.css)
+ * ---------------------------------------------------------------------------
+ * 只服务 src/audio-page.ts 渲染出来的 .audio-page 子树,不写任何全局标签选择器。
+ *
+ * 四条约定:
+ *  1) 所有选择器都以 .audio-page 开头(或作为它的后代);运行期状态类
+ *     (.is-previewing / .is-indeterminate / .is-in / [data-state] / [data-kind])
+ *     只在这一个页面内使用;
+ *  2) 颜色 / 圆角 / 间距 / 控件高度全部取 style.css 的语义令牌(--surface / --text /
+ *     --line / --brand / --danger ...),不写裸 hex 与 rgba,深浅主题自动跟随;
+ *  3) 桌面是三列行(信息 / 元信息 / 操作),<=720px 折成纵向;触屏再抬一档命中高度,
+ *     按钮不横向溢出;
+ *  4) 交互控件补齐 default / hover / active / focus-visible / disabled / loading,
+ *     减少动效由文件末尾统一降级。
+ * ========================================================================== */
+
+.audio-page {
+  min-height: 100%;
+  color: var(--text);
+  font-size: 13px;
+}
+.audio-page *,
+.audio-page *::before,
+.audio-page *::after { box-sizing: border-box; }
+/* 这一页自己把 hidden 当状态用:UA 的 [hidden] 会被下文的 display:flex 顶掉 */
+.audio-page [hidden] { display: none !important; }
+
+/* ---------------------------------------------------------------------------
+ * 1. 页面骨架
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: clamp(20px, 4vh, 44px) var(--sp-6) var(--sp-6);
+}
+.audio-page .audio-head { margin-bottom: 0; }
+.audio-page .audio-head-main { min-width: 0; }
+.audio-page .audio-head .page-sub { max-width: 72ch; }
+
+/* ---------------------------------------------------------------------------
+ * 2. 按钮与链接
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  flex: none;
+  height: var(--h-ctl);
+  min-width: 0;
+  padding: 0 var(--sp-3);
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.audio-page .audio-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+  border-color: var(--line-accent);
+}
+.audio-page .audio-btn:active:not(:disabled) {
+  background: var(--surface-3);
+  transform: scale(0.985);
+}
+.audio-page .audio-btn:disabled {
+  color: var(--text-disabled);
+  background: var(--surface-3);
+  border-color: var(--line);
+  cursor: not-allowed;
+  transform: none;
+}
+.audio-page .audio-btn .bi { width: 14px; height: 14px; }
+
+/* 主操作:与全站 .home-primary / 导出按钮同一套 --brand / --on-brand */
+.audio-page .audio-btn-primary {
+  color: var(--on-brand);
+  background: var(--brand);
+  border-color: transparent;
+  font-weight: 600;
+}
+.audio-page .audio-btn-primary:hover:not(:disabled) {
+  color: var(--on-brand);
+  background: var(--brand-hover);
+  border-color: transparent;
+}
+.audio-page .audio-btn-primary:active:not(:disabled) {
+  color: var(--on-brand);
+  background: var(--brand-pressed);
+  transform: scale(0.985);
+}
+.audio-page .audio-btn-primary:disabled {
+  color: var(--text-disabled);
+  background: var(--surface-3);
+  border-color: var(--line);
+}
+
+.audio-page .audio-btn-ghost {
+  background: transparent;
+  border-color: var(--line);
+}
+.audio-page .audio-btn-ghost:hover:not(:disabled) { background: var(--surface-hover); }
+
+.audio-page .audio-btn-sm {
+  height: var(--h-sm);
+  padding: 0 var(--sp-2);
+  font-size: 11.5px;
+}
+
+.audio-page .audio-link {
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  color: var(--text-2);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--text-3) 45%, transparent);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.audio-page .audio-link:hover:not(:disabled) { color: var(--text); }
+.audio-page .audio-link:active:not(:disabled) { color: var(--text-3); }
+.audio-page .audio-link:disabled { color: var(--text-disabled); cursor: not-allowed; }
+
+/* ---------------------------------------------------------------------------
+ * 3. 游戏目录状态条
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-dirbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.audio-page .audio-dirbar-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-3) 14%, transparent);
+}
+.audio-page .audio-dirbar[data-state='ready'] .audio-dirbar-dot {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent);
+}
+.audio-page .audio-dirbar[data-state='loading'] .audio-dirbar-dot { animation: df-audio-pulse 1.2s var(--ease) infinite; }
+.audio-page .audio-dirbar-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.audio-page .audio-dirbar-label { color: var(--text-3); font-size: 11px; }
+.audio-page .audio-dirbar-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-page .audio-dirbar-path.is-empty {
+  color: var(--text-2);
+  font-family: var(--font-ui);
+}
+.audio-page .audio-dirbar-note {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-page .audio-dirbar-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+/* ---------------------------------------------------------------------------
+ * 4. 索引卡片 + 进度条
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-index {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.audio-page .audio-index-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+.audio-page .audio-index-copy { flex: 1; min-width: 0; }
+.audio-page .audio-index-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.audio-page .audio-index-desc {
+  margin: var(--sp-1) 0 0;
+  max-width: 72ch;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.audio-page .audio-index-note {
+  margin: var(--sp-1) 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.audio-page .audio-index-note[data-kind='warn'] { color: var(--warn); }
+.audio-page .audio-index-note[data-kind='error'] { color: var(--danger); }
+.audio-page .audio-index-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+
+.audio-page .audio-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.audio-page .audio-progress-track {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  background: var(--surface-3);
+  border-radius: var(--r-pill);
+}
+.audio-page .audio-progress-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--brand);
+  border-radius: inherit;
+  transition: width var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+/* 总量未知时不做假进度:整条淡入淡出,只表达"还在动" */
+.audio-page .audio-progress-track.is-indeterminate .audio-progress-fill {
+  width: 100%;
+  animation: df-audio-pulse 1.4s var(--ease) infinite;
+}
+.audio-page .audio-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+.audio-page .audio-progress-meta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audio-page .audio-progress-meta > span:last-child { flex: none; }
+
+/* ---------------------------------------------------------------------------
+ * 5. 搜索工具条
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.audio-page .audio-search {
+  display: flex;
+  flex: 1 1 320px;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: min(240px, 100%);
+}
+.audio-page .audio-search-label { color: var(--text-3); font-size: 11px; line-height: 1.4; }
+.audio-page .audio-search-box {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: var(--h-ctl);
+  padding: 0 var(--sp-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  transition: border-color var(--dur) var(--ease);
+}
+.audio-page .audio-search-box:focus-within {
+  border-color: var(--line-accent);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.audio-page .audio-search-ico { flex: none; color: var(--text-3); transition: color var(--dur) var(--ease); }
+.audio-page .audio-search-box:focus-within .audio-search-ico { color: var(--text-2); }
+.audio-page .audio-search-box input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.audio-page .audio-search-box input:disabled {
+  color: var(--text-disabled);
+  background: transparent;
+  border: 0;
+  cursor: not-allowed;
+}
+.audio-page .audio-search-box input::placeholder { color: var(--text-3); opacity: 1; }
+.audio-page .audio-search-box input::-webkit-search-cancel-button { display: none; }
+.audio-page .audio-search-clear {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  color: var(--text-3);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.audio-page .audio-search-clear:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
+.audio-page .audio-search-clear:active:not(:disabled) { color: var(--text-2); }
+.audio-page .audio-search-clear:disabled { color: var(--text-disabled); background: transparent; cursor: not-allowed; }
+.audio-page .audio-search-clear .bi { width: 12px; height: 12px; }
+
+.audio-page .audio-bar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+.audio-page .audio-total {
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------------------
+ * 6. 批量导出面板
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-bulk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--brand);
+  border-radius: var(--r-sm);
+}
+.audio-page .audio-bulk[data-kind='ok'] { border-left-color: var(--ok); }
+.audio-page .audio-bulk[data-kind='error'] { border-left-color: var(--danger); }
+.audio-page .audio-bulk-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.audio-page .audio-bulk-title { color: var(--text); font-size: 12.5px; font-weight: 600; }
+.audio-page .audio-bulk-stats {
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.audio-page .audio-bulk-note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+/* ---------------------------------------------------------------------------
+ * 7. 试听播放器(吸顶:滚动列表时停止键始终在)
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-player {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+}
+.audio-page .audio-player-main {
+  display: flex;
+  flex: 1 1 180px;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.audio-page .audio-player-kicker { color: var(--text-3); font-size: 10.5px; line-height: 1.4; }
+.audio-page .audio-player-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-page .audio-player audio {
+  flex: 1 1 320px;
+  min-width: 180px;
+  height: 32px;
+}
+.audio-page .audio-player-stop { flex: none; }
+
+/* ---------------------------------------------------------------------------
+ * 8. 错误条
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-alert {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: color-mix(in srgb, var(--danger-subtle) 45%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line));
+  border-left: 2px solid var(--danger);
+  border-radius: var(--r-sm);
+}
+.audio-page .audio-alert-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------------------------------
+ * 9. 音频列表
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-stage { display: block; }
+
+.audio-page .audio-list {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.audio-page .audio-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--sp-3);
+  align-items: center;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid transparent;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.audio-page .audio-row:last-child { border-bottom: 0; }
+.audio-page .audio-row:hover { background: var(--surface-2); }
+/* 当前载入的一条:与全站"当前选中"同一套 --brand-subtle,左侧补一道实心条 */
+.audio-page .audio-row.is-previewing {
+  background: var(--brand-subtle);
+  border-left-color: var(--brand);
+}
+.audio-page .audio-row.is-previewing:hover { background: var(--brand-subtle); }
+.audio-page .audio-row.is-preview-loading { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+
+.audio-page .audio-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.audio-page .audio-row-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.audio-page .audio-row-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-page .audio-codec {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 1px var(--sp-1);
+  color: var(--text-2);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.audio-page .audio-row-duration {
+  flex: none;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.audio-page .audio-row-sub { min-width: 0; }
+.audio-page .audio-row-vpath {
+  display: block;
+  overflow: hidden;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-page .audio-row-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+}
+.audio-page .audio-pak {
+  display: block;
+  max-width: 180px;
+  overflow: hidden;
+  padding: 1px var(--sp-1);
+  color: var(--text-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-page .audio-size {
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.audio-page .audio-row-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* 加载骨架:六条等宽占位,只做透明度呼吸,不做扫光渐变 */
+.audio-page .audio-skeleton {
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.audio-page .audio-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.audio-page .audio-skeleton-row:last-child { border-bottom: 0; }
+.audio-page .audio-skeleton-row::before,
+.audio-page .audio-skeleton-row::after {
+  content: '';
+  display: block;
+  height: 10px;
+  background: var(--surface-3);
+  border-radius: var(--r-pill);
+  animation: df-audio-pulse 1.4s var(--ease) infinite;
+}
+.audio-page .audio-skeleton-row::before { flex: 0 0 42%; }
+.audio-page .audio-skeleton-row::after { flex: 0 0 16%; margin-left: auto; }
+
+/* ---------------------------------------------------------------------------
+ * 10. 空状态 / 不可用状态
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: clamp(40px, 8vh, 72px) var(--sp-4);
+  background: var(--surface);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  text-align: center;
+}
+.audio-page .audio-empty-ico { color: var(--text-3); }
+.audio-page .audio-empty-title { margin: 0; color: var(--text); font-size: 13px; font-weight: 600; line-height: 1.5; }
+.audio-page .audio-empty-desc {
+  margin: 0;
+  max-width: 46em;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.audio-page .audio-empty .audio-btn { margin-top: var(--sp-2); }
+
+.audio-page .audio-unavailable {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: clamp(40px, 10vh, 96px) var(--sp-5);
+  background: var(--surface);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+  text-align: center;
+}
+.audio-page .audio-unavailable-ico {
+  width: 34px;
+  height: 34px;
+  color: var(--text-3);
+  opacity: 0.5;
+}
+.audio-page .audio-unavailable-title {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.audio-page .audio-unavailable-desc {
+  margin: 0;
+  max-width: 46em;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+/* ---------------------------------------------------------------------------
+ * 11. 分页 / 底注
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-more {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) 0 var(--sp-3);
+}
+.audio-page .audio-more-note {
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+.audio-page .audio-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.audio-page .audio-foot-note { min-width: 0; }
+.audio-page .audio-foot-dir {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.audio-page .audio-foot-dir code {
+  max-width: 46ch;
+  overflow: hidden;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+ * 12. 结果提示条(浮在右下角,不占布局)
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-toast {
+  position: fixed;
+  right: var(--sp-5);
+  bottom: 48px;
+  z-index: 60;
+  max-width: min(420px, calc(100vw - 32px));
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--ok);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-2);
+  font-size: 11.5px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+.audio-page .audio-toast.is-in { animation: df-audio-toast-in var(--dur) var(--ease) both; }
+.audio-page .audio-toast[data-kind='error'] { color: var(--danger); border-left-color: var(--danger); }
+.audio-page .audio-toast[data-kind='info'] { border-left-color: var(--line-accent); }
+
+/* ---------------------------------------------------------------------------
+ * 13. 动效
+ * ------------------------------------------------------------------------- */
+@keyframes df-audio-pulse {
+  0%, 100% { opacity: 0.42; }
+  50% { opacity: 1; }
+}
+@keyframes df-audio-toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * 14. 触屏:命中区抬到 34-40px,肉眼尺寸不变
+ * ------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+  .audio-page .audio-btn { min-height: 36px; height: auto; padding-top: var(--sp-2); padding-bottom: var(--sp-2); }
+  .audio-page .audio-btn-sm { min-height: 34px; }
+  .audio-page .audio-search-box { height: 38px; }
+  .audio-page .audio-search-clear { width: 34px; height: 34px; }
+  .audio-page .audio-row-actions .audio-btn { min-width: 64px; }
+  .audio-page .audio-link { min-height: 34px; padding: 0 var(--sp-1); }
+}
+
+/* ---------------------------------------------------------------------------
+ * 15. 手机 / 窄屏:行纵向排布,按钮通栏但不溢出
+ * ------------------------------------------------------------------------- */
+@media (max-width: 720px) {
+  .audio-page .audio-wrap { padding: var(--sp-4) var(--sp-3) var(--sp-5); gap: var(--sp-2); }
+  .audio-page .audio-btn { min-height: 38px; height: auto; }
+  .audio-page .audio-search-box { height: 38px; }
+
+  .audio-page .audio-dirbar {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .audio-page .audio-dirbar-main { flex: 1 1 100%; }
+  .audio-page .audio-dirbar-actions { flex: 1 1 100%; justify-content: stretch; margin-left: 0; }
+  .audio-page .audio-dirbar-actions .audio-btn { flex: 1 1 0; }
+
+  .audio-page .audio-index-head { flex-direction: column; }
+  .audio-page .audio-index-actions { width: 100%; justify-content: stretch; margin-left: 0; }
+  .audio-page .audio-index-actions .audio-btn { flex: 1 1 0; }
+
+  .audio-page .audio-bar { align-items: stretch; }
+  .audio-page .audio-search { flex-basis: 100%; }
+  .audio-page .audio-bar-actions { width: 100%; justify-content: space-between; margin-left: 0; }
+  .audio-page .audio-bar-actions .audio-btn { flex: 1 1 auto; }
+  .audio-page .audio-total { flex: 1 1 100%; }
+
+  .audio-page .audio-bulk-head { align-items: flex-start; }
+  .audio-page .audio-bulk-stats { flex: 1 1 100%; }
+
+  .audio-page .audio-player { align-items: stretch; }
+  .audio-page .audio-player-main { flex-basis: 100%; }
+  .audio-page .audio-player audio { flex: 1 1 100%; width: 100%; min-width: 0; }
+  .audio-page .audio-player-stop { align-self: flex-end; }
+
+  .audio-page .audio-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  .audio-page .audio-row-meta {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+  }
+  .audio-page .audio-pak { max-width: 100%; }
+  .audio-page .audio-row-actions { width: 100%; }
+  .audio-page .audio-row-actions .audio-btn { flex: 1 1 0; }
+  .audio-page .audio-row-title { flex-wrap: wrap; }
+  .audio-page .audio-row-name { flex-basis: 100%; white-space: normal; word-break: break-word; }
+
+  .audio-page .audio-alert { align-items: flex-start; flex-direction: column; }
+  .audio-page .audio-alert .audio-btn { align-self: flex-end; }
+
+  .audio-page .audio-foot { flex-direction: column; align-items: flex-start; }
+  .audio-page .audio-foot-dir { flex-wrap: wrap; width: 100%; }
+  .audio-page .audio-foot-dir code { max-width: 100%; }
+
+  .audio-page .audio-toast {
+    right: var(--sp-3);
+    left: var(--sp-3);
+    bottom: 76px;
+    max-width: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 16. 减少动效:只保留状态最终值
+ * ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .audio-page *,
+  .audio-page *::before,
+  .audio-page *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
