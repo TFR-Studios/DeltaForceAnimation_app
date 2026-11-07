@@ -48,7 +48,12 @@ type GameDirDetect = { ok: boolean; dir?: string; source?: string; error?: strin
 type GameDirState = { dir: string | null; valid?: boolean };
 type GameDirPick = { ok: boolean; dir?: string; error?: string };
 type GameDirSet = { ok: boolean; valid: boolean; pakCount?: number; error?: string };
-type IndexState = { ready: boolean; count: number; building?: boolean; builtAt?: number; stale?: boolean };
+/** WwiseAudio 的全量覆盖统计(用于和 FModel 对账)。 */
+type IndexCoverage = {
+  wwiseFiles: number; wwiseAssets: number; audioAssets: number;
+  otherAssets: number; withPayload: number; emptyPayload: number;
+};
+type IndexState = { ready: boolean; count: number; building?: boolean; builtAt?: number; stale?: boolean; coverage?: IndexCoverage };
 type IndexProgress = { phase: string; done: number; total: number; detail?: string };
 type SearchResult = { total: number; items: AudioItem[] };
 type ExportResult = { ok: boolean; saved: number; failed: number; outDir?: string; error?: string };
@@ -241,6 +246,16 @@ function normalizeAudioItem(raw: unknown): AudioItem | null {
   };
 }
 
+function normalizeCoverage(raw: unknown): IndexCoverage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const num = (v: unknown): number => Math.max(0, Math.floor(finiteNumber(v) ?? 0));
+  return {
+    wwiseFiles: num(r.wwiseFiles), wwiseAssets: num(r.wwiseAssets), audioAssets: num(r.audioAssets),
+    otherAssets: num(r.otherAssets), withPayload: num(r.withPayload), emptyPayload: num(r.emptyPayload),
+  };
+}
+
 function normalizeIndex(raw: unknown): IndexState {
   const record = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   return {
@@ -249,6 +264,7 @@ function normalizeIndex(raw: unknown): IndexState {
     building: record.building === true,
     builtAt: finiteNumber(record.builtAt),
     stale: record.stale === true,
+    coverage: normalizeCoverage(record.coverage),
   };
 }
 
@@ -731,6 +747,15 @@ function createAudioPage(host: HTMLElement, bridge: AudioBridge): PageController
         : '索引已建立,但没有找到音频资源。';
       const built = state.index?.builtAt ? formatBuiltAt(state.index.builtAt) : '';
       if (built) note = '构建于 ' + built;
+      /* 和 FModel 对账:玩家在 FModel 里看到的是「文件数」,这里是「可导出音频数」,
+       * 两者差着一倍多的 .uexp/.ubulk 与事件定义,不写清楚就会被当成漏扫。 */
+      const cov = state.index?.coverage;
+      if (cov && cov.wwiseFiles > 0) {
+        const fmt = (n: number) => n.toLocaleString('zh-CN');
+        const covLine = 'WwiseAudio 全量 ' + fmt(cov.wwiseFiles) + ' 个文件 / ' + fmt(cov.wwiseAssets) +
+          ' 个资产,其中可导出音频 ' + fmt(count) + ' 条,其余 ' + fmt(cov.otherAssets) + ' 个是事件定义与参数(不含音频)。';
+        note = (note ? note + ' · ' : '') + covLine;
+      }
       if (state.index?.stale) {
         note = (note ? note + ' · ' : '') + '游戏包可能有更新,建议重新扫描。';
         noteKind = 'warn';

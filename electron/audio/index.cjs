@@ -15,7 +15,7 @@ const { PakFile } = require('./pak.cjs');
 const oodle = require('./oodle.cjs');
 const { bestMediaName, pathsOf, riffInfo } = require('./extract.cjs');
 
-const INDEX_VERSION = 2;  // 2: 修正 mount 在前缀判断上的漏包问题
+const INDEX_VERSION = 3;  // 3: 标准密钥文件 + WwiseAudio 全量覆盖统计
 
 function pakDirs(gameRoot) {
   const out = [];
@@ -43,7 +43,9 @@ function listPakFiles(dirs) {
 function keepDir(dir) {
   // dir 是完整虚拟目录（含 mount 前缀）。不同 pak 的 mount 深度不同，所以按目录段判断，
   // 不能只看开头 —— 否则 mount 直接到 WwiseAudio/ 的包会被整包跳过。
-  return dir.includes('/WwiseAudio/Media/') || dir.includes('/WwiseAudio/Localized/');
+  // 这里放宽到整个 WwiseAudio：索引需要顺带统计「事件/参数」等非音频资产，
+  // 好让界面能对上 FModel 的总数，真正入库的只有带 .ubulk 的媒体。
+  return dir.includes('/WwiseAudio/');
 }
 
 /**
@@ -67,6 +69,10 @@ function buildIndex(gameRoot, opts, onProgress) {
   const skippedPaks = [];
   let skipped = 0, readErrors = 0, empty = 0;
   let handled = 0, totalAssets = 0;
+  /* 覆盖率统计：WwiseAudio 下每个 pak 条目都算一个文件，.uasset 算一个资产；
+   * 真正的音频 = 落在 Media/ 或 Localized/<语言>/Media/ 且带 .ubulk 的资产。 */
+  const cov = { wwiseFiles: 0, wwiseAssets: 0, audioAssets: 0, otherAssets: 0, withPayload: 0, emptyPayload: 0 };
+  const AUDIO_RE = /\/WwiseAudio\/(?:Media|Localized\/[^/]+\/Media)\//;
 
   files.forEach((file, i) => {
     const pakName = path.basename(file);
@@ -82,14 +88,20 @@ function buildIndex(gameRoot, opts, onProgress) {
     try {
       const list = [];
       for (const rel of pf.entries.keys()) {
-        if (!rel.endsWith('.uasset')) continue;
         const vpath = pf.mountPoint + rel;
+        if (!vpath.includes('/WwiseAudio/')) continue;
+        cov.wwiseFiles++;
+        if (!rel.endsWith('.uasset')) continue;
+        cov.wwiseAssets++;
+        if (!AUDIO_RE.test(vpath)) { cov.otherAssets++; continue; }
+        cov.audioAssets++;
         const p = pathsOf(vpath);
         // 空占位：pak 里没有 .ubulk，或者它是 0 字节。这类条目点了也导不出东西，
-        // 直接不进清单（实测约一成，都是「这个 chunk 没装」的占位）。
+        // 直接不进清单（实测都是「这个 chunk 没装」的占位）。
         const bulkRel = rel.replace(/\.uasset$/i, '.ubulk');
         const bulkRec = pf.record(bulkRel);
-        if (!bulkRec || !bulkRec.usize) { empty++; continue; }
+        if (!bulkRec || !bulkRec.usize) { empty++; cov.emptyPayload++; continue; }
+        cov.withPayload++;
         totalAssets++;
         let name = null;
         try {
@@ -124,7 +136,7 @@ function buildIndex(gameRoot, opts, onProgress) {
       pf.close();
     }
     if ((i & 15) === 0) {
-      onProgress({ phase: 'media', done: handled, total: totalAssets, detail: pakName });
+      onProgress({ phase: 'media', done: handled, total: cov.withPayload || totalAssets, detail: pakName });
     }
   });
 
@@ -137,11 +149,13 @@ function buildIndex(gameRoot, opts, onProgress) {
       gameRoot,
       builtAt: Date.now(),
       pakCount: files.length,
+      coverage: cov,
       items,
     },
     stats: {
       pakTotal: files.length, pakSkipped: skipped, skippedPaks,
-      count: items.length, emptyNames: empty, emptyPlaceholders: empty, readErrors,
+      count: items.length, emptyNames: empty, emptyPlaceholders: cov.emptyPayload, readErrors,
+      coverage: cov,
       ms: Date.now() - t0,
     },
   };

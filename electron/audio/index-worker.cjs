@@ -2,7 +2,8 @@
 /* 索引构建跑在 worker 线程里：2 万多条要读磁盘 + 解压，放主进程会把界面卡死。 */
 const { parentPort, workerData } = require('worker_threads');
 const { buildIndex } = require('./index.cjs');
-const vault = require('./pakkeys.json');
+const keys = require('./keys.cjs');
+const vault = keys.load(workerData.userData);
 
 try {
   const res = buildIndex(workerData.gameRoot, { vault, limit: workerData.limit }, (p) => {

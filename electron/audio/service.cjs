@@ -15,7 +15,7 @@ const path = require('path');
 const { Worker } = require('worker_threads');
 const { PakFile } = require('./pak.cjs');
 const oodle = require('./oodle.cjs');
-const vault = require('./pakkeys.json');
+const keysLoader = require('./keys.cjs');
 const gamedir = require('./gamedir.cjs');
 const settingsStore = require('./settings.cjs');
 const indexer = require('./index.cjs');
@@ -35,6 +35,8 @@ class AudioService {
     this.userData = opts.userData;
     this.getWindow = opts.getWindow || (() => null);
     this.settings = settingsStore.load(this.userData);
+    /* 密钥来源统一走 keys.cjs：<userData>/audio-keys/AESKey1.json 优先，其次内置。 */
+    this.vault = keysLoader.load(this.userData);
     this.index = null;
     this.indexLoaded = false;
     this.building = null;
@@ -109,6 +111,7 @@ class AudioService {
       stale: !!(idx && gameDir && idx.gameRoot !== gameDir),
       building: !!this.building,
       gameDir,
+      coverage: idx ? idx.coverage || null : null,
     };
   }
 
@@ -124,7 +127,7 @@ class AudioService {
     this.building = new Promise((resolve) => {
       let worker;
       try {
-        worker = new Worker(path.join(__dirname, 'index-worker.cjs'), { workerData: { gameRoot: gameDir } });
+        worker = new Worker(path.join(__dirname, 'index-worker.cjs'), { workerData: { gameRoot: gameDir, userData: this.userData } });
       } catch (e) {
         this.building = null;
         resolve({ ok: false, error: e.message });
@@ -182,7 +185,7 @@ class AudioService {
     if (hit) return hit;
     const file = this._pakPath(name);
     if (!file) return null;
-    const pf = new PakFile(file, { keyvault: vault });
+    const pf = new PakFile(file, { keyvault: this.vault });
     this.pakFiles.set(name, pf);
     this.pakOrder.push(name);
     while (this.pakOrder.length > MAX_PAK_HANDLES) {
