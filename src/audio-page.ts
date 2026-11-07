@@ -32,9 +32,13 @@ import './audio-page.css';
  * ------------------------------------------------------------------------- */
 
 /** 一条音频索引记录:id 是后端稳定主键,其余字段只用于展示。 */
+/** 分类条目（后端按文件名规则算好，含每类条数）。 */
+type CategoryCount = { key: string; label: string; count: number };
+
 type AudioItem = {
   id: string;
   name: string;
+  category?: string;
   vpath: string;
   pak: string;
   codec: string;
@@ -69,7 +73,8 @@ type AudioBridge = {
   getIndexState(): Promise<IndexState>;
   buildIndex(): Promise<{ ok: boolean; count?: number; error?: string }>;
   onIndexProgress(cb: (p: IndexProgress) => void): () => void;
-  searchAudio(opts: { query?: string; offset?: number; limit?: number }): Promise<SearchResult>;
+  searchAudio(opts: { query?: string; category?: string; offset?: number; limit?: number }): Promise<SearchResult>;
+  getCategories(): Promise<{ items: CategoryCount[] }>;
   exportAudio(opts: { ids: string[]; decode?: boolean }): Promise<ExportResult>;
   previewAudio(id: string): Promise<PreviewResult>;
   getExportDir(): Promise<{ dir: string }>;
@@ -323,6 +328,7 @@ type Ui = {
   indexProgressPct: HTMLElement;
   search: HTMLInputElement;
   searchClear: HTMLButtonElement;
+  cats: HTMLElement;
   total: HTMLElement;
   exportAll: HTMLButtonElement;
   bulk: HTMLElement;
@@ -422,6 +428,7 @@ function buildShell(host: HTMLElement): Ui {
     '      <button type="button" class="audio-btn audio-btn-primary" data-role="export-all" data-df-native disabled>导出当前筛选全部</button>',
     '    </div>',
     '  </div>',
+    '  <div class="audio-cats" data-role="cats" role="group" aria-label="按类别筛选音频" hidden></div>',
     '  <div class="audio-bulk" data-role="bulk" data-kind="info" hidden role="status" aria-live="polite">',
     '    <div class="audio-bulk-head">',
     '      <span class="audio-bulk-title" data-role="bulk-title"></span>',
@@ -500,6 +507,7 @@ function buildShell(host: HTMLElement): Ui {
     indexProgressPct: q<HTMLElement>('index-progress-pct'),
     search: q<HTMLInputElement>('search'),
     searchClear: q<HTMLButtonElement>('search-clear'),
+    cats: q<HTMLElement>('cats'),
     total: q<HTMLElement>('total'),
     exportAll: q<HTMLButtonElement>('export-all'),
     bulk: q<HTMLElement>('bulk'),
@@ -620,6 +628,8 @@ function createAudioPage(host: HTMLElement, bridge: AudioBridge): PageController
     building: false,
     progress: null as IndexProgress | null,
     query: '',
+    category: 'all',
+    categories: [] as CategoryCount[],
     searchPending: false,
     items: [] as AudioItem[],
     total: 0,
@@ -805,7 +815,49 @@ function createAudioPage(host: HTMLElement, bridge: AudioBridge): PageController
     }
   }
 
+  /** 分类胶囊：`全部` + 后端给的各类，显示条数，单选。 */
+  function paintCats(): void {
+    const ready = canSearch();
+    const items = state.categories;
+    if (!ready || !items.length) {
+      ui.cats.hidden = true;
+      ui.cats.replaceChildren();
+      return;
+    }
+    ui.cats.hidden = false;
+    const total = items.reduce((sum, c) => sum + (c.count || 0), 0);
+    const list = [{ key: 'all', label: '全部', count: total }].concat(items);
+    const frag = document.createDocumentFragment();
+    for (const c of list) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'audio-chip';
+      b.dataset.category = c.key;
+      const active = state.category === c.key;
+      b.classList.toggle('is-active', active);
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+      b.append(document.createTextNode(c.label));
+      const num = document.createElement('b');
+      num.textContent = c.count.toLocaleString('zh-CN');
+      b.append(num);
+      frag.append(b);
+    }
+    ui.cats.replaceChildren(frag);
+  }
+
+  async function loadCategories(): Promise<void> {
+    const fn = (bridge as unknown as Record<string, unknown>).getCategories;
+    if (typeof fn !== 'function') { state.categories = []; paintCats(); return; }
+    const result = await callBridge<{ items: CategoryCount[] }>('getCategories', '读取音频分类');
+    if (disposed) return;
+    const items = result.ok && result.value && Array.isArray(result.value.items) ? result.value.items : [];
+    state.categories = items.filter((c) => c && typeof c.key === 'string' && typeof c.label === 'string');
+    if (state.category !== 'all' && !state.categories.some((c) => c.key === state.category)) state.category = 'all';
+    paintCats();
+  }
+
   function paintToolbar(): void {
+    paintCats();
     const ready = canSearch();
     const bulkActive = !!state.bulk?.active;
     const searchEnabled = ready && !bulkActive;
@@ -851,6 +903,10 @@ function createAudioPage(host: HTMLElement, bridge: AudioBridge): PageController
     else if (!state.gameDir) pieces.push('尚未设置游戏目录');
     else if (canSearch()) {
       pieces.push('共 ' + state.total + ' 条');
+      if (state.category !== 'all') {
+        const hit = state.categories.find((c) => c.key === state.category);
+        if (hit) pieces.push('分类「' + hit.label + '」');
+      }
       if (state.query) pieces.push('关键词「' + state.query + '」');
       pieces.push('已加载 ' + state.items.length + ' 条');
     } else if (state.building || state.index?.building) {
@@ -1262,6 +1318,7 @@ function createAudioPage(host: HTMLElement, bridge: AudioBridge): PageController
     }
 
     state.index = normalizeIndex(result.value);
+    if (state.index.ready) void loadCategories();
     if (state.index.building) scheduleIndexRecheck();
     else cancelIndexRecheck();
     paintIndex();
@@ -1350,6 +1407,8 @@ function createAudioPage(host: HTMLElement, bridge: AudioBridge): PageController
     state.listLoading = false;
     state.listError = '';
     state.query = '';
+    state.category = 'all';
+    state.categories = [];
     state.searchPending = false;
     if (ui.search.value) ui.search.value = '';
     ui.list.replaceChildren();
@@ -1387,7 +1446,7 @@ function createAudioPage(host: HTMLElement, bridge: AudioBridge): PageController
     paintFooter();
 
     const result = await callBridge<SearchResult>('searchAudio', '检索音频', [
-      { query: query || undefined, offset, limit: PAGE_SIZE },
+      { query: query || undefined, category: state.category !== 'all' ? state.category : undefined, offset, limit: PAGE_SIZE },
     ]);
     if (disposed || seq !== state.searchSeq) return;
     state.listLoading = false;
@@ -1661,7 +1720,7 @@ function createAudioPage(host: HTMLElement, bridge: AudioBridge): PageController
       guard += 1;
       if (guard > 1000) break;
       const result = await callBridge<SearchResult>('searchAudio', '读取筛选结果', [
-        { query: query || undefined, offset, limit: PAGE_SIZE },
+        { query: query || undefined, category: state.category !== 'all' ? state.category : undefined, offset, limit: PAGE_SIZE },
       ]);
       if (!result.ok) throw new Error(result.error);
       const record = result.value && typeof result.value === 'object'
@@ -1806,6 +1865,17 @@ function createAudioPage(host: HTMLElement, bridge: AudioBridge): PageController
   ui.dirChange.addEventListener('click', () => { void chooseGameDir(); });
   ui.dirDetect.addEventListener('click', () => { void autoDetectDir(); });
   ui.indexScan.addEventListener('click', () => { void buildIndex(); });
+
+  /* 分类胶囊：单选，点已选中的那枚退回"全部"。 */
+  ui.cats.addEventListener('click', (event) => {
+    const btn = (event.target as HTMLElement | null)?.closest<HTMLElement>('.audio-chip');
+    if (!btn || !ui.cats.contains(btn)) return;
+    const next = btn.dataset.category || 'all';
+    if (state.category === next) return;
+    state.category = next;
+    paintCats();
+    if (canSearch()) void runSearch(true);
+  });
   ui.indexRefresh.addEventListener('click', () => {
     void loadIndexState({ search: state.items.length === 0 });
   });

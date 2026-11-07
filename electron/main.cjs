@@ -1233,6 +1233,7 @@ ipcMain.handle('dfae:audio-pick-dir', () => (audioSvc() ? audioSvc().pickGameDir
 ipcMain.handle('dfae:audio-set-dir', (_e, dir) => (audioSvc() ? audioSvc().setGameDir(String(dir || '')) : audioNotReady));
 ipcMain.handle('dfae:audio-index-state', () => (audioSvc() ? audioSvc().getIndexState() : { ready: false, count: 0, building: false }));
 ipcMain.handle('dfae:audio-search', (_e, opts) => (audioSvc() ? audioSvc().search(opts || {}) : { total: 0, items: [] }));
+ipcMain.handle('dfae:audio-categories', () => (audioSvc() ? audioSvc().getCategories() : { items: [] }));
 ipcMain.handle('dfae:audio-export', (_e, opts) => (audioSvc() ? audioSvc().exportAudio(opts || {}) : audioNotReady));
 ipcMain.handle('dfae:audio-preview', (_e, id) => (audioSvc() ? audioSvc().previewAudio(String(id || '')) : audioNotReady));
 ipcMain.handle('dfae:audio-export-dir', () => (audioSvc() ? audioSvc().getExportDir() : { dir: '' }));

@@ -160,6 +160,14 @@ class AudioService {
     return indexer.search(this.index.items, opts || {});
   }
 
+  /** 分类清单（含每类条数）。索引里存过就直接用，老缓存就临时统计。 */
+  getCategories() {
+    if (!this._ensureIndex()) return { items: [] };
+    if (Array.isArray(this.index.categories)) return { items: this.index.categories };
+    const { summarize } = require('./categories.cjs');
+    return { items: summarize(this.index.items) };
+  }
+
   /** 主进程这侧的 Oodle 必须自己初始化：worker 线程里那份是独立的。 */
   _ensureOodle() {
     if (oodle.isReady()) return true;

@@ -168,8 +168,10 @@ contextBridge.exposeInMainWorld('dfaeAudio', {
     ipcRenderer.on('dfae:audio-progress', listener);
     return () => ipcRenderer.removeListener('dfae:audio-progress', listener);
   },
-  /** 分页查询。opts = { query?, offset?, limit? }，返回 { total, items }。 */
+  /** 分页查询。opts = { query?, category?, offset?, limit? }，返回 { total, items }。 */
   searchAudio: (opts) => ipcRenderer.invoke('dfae:audio-search', opts || {}),
+  /** 分类清单（含每类条数），返回 { items: [{ key, label, count }] }。 */
+  getCategories: () => ipcRenderer.invoke('dfae:audio-categories'),
   /** 导出。opts = { ids: string[], decode?: boolean }。 */
   exportAudio: (opts) => ipcRenderer.invoke('dfae:audio-export', opts || {}),
   /** 试听:主进程解码成 WAV 字节返回 { ok, data: Uint8Array }。 */

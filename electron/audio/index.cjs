@@ -14,8 +14,9 @@ const path = require('path');
 const { PakFile } = require('./pak.cjs');
 const oodle = require('./oodle.cjs');
 const { bestMediaName, pathsOf, riffInfo } = require('./extract.cjs');
+const { classify, summarize } = require('./categories.cjs');
 
-const INDEX_VERSION = 3;  // 3: 标准密钥文件 + WwiseAudio 全量覆盖统计
+const INDEX_VERSION = 4;  // 4: 音频分类（按文件名规则）
 
 function pakDirs(gameRoot) {
   const out = [];
@@ -117,9 +118,11 @@ function buildIndex(gameRoot, opts, onProgress) {
           const bulk = pf.read(bulkRel, oodle);
           if (bulk) info = riffInfo(bulk);
         } catch (e) { readErrors++; }
+        const displayName = name || p.id;
         list.push({
           id: p.id,
-          name: name || p.id,
+          name: displayName,
+          category: classify(displayName, vpath),
           vpath,
           pak: pakName,
           size: info ? info.serializedSize : (rec ? rec.usize : 0),
@@ -150,6 +153,7 @@ function buildIndex(gameRoot, opts, onProgress) {
       builtAt: Date.now(),
       pakCount: files.length,
       coverage: cov,
+      categories: summarize(items),
       items,
     },
     stats: {
@@ -180,9 +184,11 @@ function loadIndex(userData) {
 function search(items, opts) {
   opts = opts || {};
   const q = (opts.query || '').trim().toLowerCase();
+  const cat = (opts.category || 'all').trim();
   let list = items;
+  if (cat && cat !== 'all') list = list.filter((it) => (it.category || 'other') === cat);
   if (q) {
-    list = items.filter((it) =>
+    list = list.filter((it) =>
       it.name.toLowerCase().includes(q) || it.id.includes(q) || it.pak.toLowerCase().includes(q));
   }
   const offset = Math.max(0, opts.offset || 0);

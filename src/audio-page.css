@@ -869,3 +869,54 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * 分类胶囊（音频提取）
+ * 与日志页的 .logs-chip 同一套语言：同样的高度/圆角/语义色，只是作用域在音频页里。
+ * 手机上横向滚动，不换行、不挤压。
+ * ------------------------------------------------------------------------- */
+.audio-page .audio-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0;
+}
+.audio-page .audio-cats[hidden] { display: none !important; }
+.audio-page .audio-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 160ms var(--ease-out), background 160ms var(--ease-out), border-color 160ms var(--ease-out);
+}
+.audio-page .audio-chip b {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.audio-page .audio-chip:hover { color: var(--text); background: var(--surface-hover); border-color: var(--line-accent); }
+.audio-page .audio-chip.is-active { color: var(--text); background: var(--brand-subtle); border-color: var(--line-strong); }
+.audio-page .audio-chip.is-active b { color: var(--text-2); }
+.audio-page .audio-chip:focus-visible { outline: 2px solid var(--line-accent); outline-offset: 2px; }
+
+@media (max-width: 720px) {
+  .audio-page .audio-cats {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+  .audio-page .audio-cats::-webkit-scrollbar { display: none; }
+  .audio-page .audio-chip { flex: 0 0 auto; }
+}
