@@ -15,7 +15,7 @@ const { PakFile } = require('./pak.cjs');
 const oodle = require('./oodle.cjs');
 const { bestMediaName, pathsOf, riffInfo } = require('./extract.cjs');
 
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;  // 2: 修正 mount 在前缀判断上的漏包问题
 
 function pakDirs(gameRoot) {
   const out = [];
@@ -41,7 +41,9 @@ function listPakFiles(dirs) {
 }
 
 function keepDir(dir) {
-  return dir.startsWith('WwiseAudio/Media/') || dir.startsWith('WwiseAudio/Localized/');
+  // dir 是完整虚拟目录（含 mount 前缀）。不同 pak 的 mount 深度不同，所以按目录段判断，
+  // 不能只看开头 —— 否则 mount 直接到 WwiseAudio/ 的包会被整包跳过。
+  return dir.includes('/WwiseAudio/Media/') || dir.includes('/WwiseAudio/Localized/');
 }
 
 /**

@@ -191,7 +191,10 @@ class PakFile {
       const dir = readFString(plain, p); p = dir.pos;
       const fileCount = plain.readUInt32LE(p); p += 4;
       const prefix = dir.value;
-      const keepDir = !keep || keep(prefix);
+      /* 传给调用方的是「完整虚拟目录」(mount + 相对目录):
+       * 不同 pak 的 mount 不一样(有的到 Content/,有的直接到 WwiseAudio/),
+       * 只按相对目录判断会把整包漏掉 —— 实测 pakchunk11 这类包 mount 就到 WwiseAudio/。 */
+      const keepDir = !keep || keep(this.mountPoint + prefix);
       for (let j = 0; j < fileCount; j++) {
         const nm = readFString(plain, p); p = nm.pos;
         const loc = plain.readUInt32LE(p); p += 4;

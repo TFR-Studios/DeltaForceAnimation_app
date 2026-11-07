@@ -36,18 +36,23 @@ class AudioService {
     this.getWindow = opts.getWindow || (() => null);
     this.settings = settingsStore.load(this.userData);
     this.index = null;
+    this.indexLoaded = false;
     this.building = null;
     this.pakFiles = new Map();
     this.pakOrder = [];
-    this._loadCache();
+    /* 索引可能到 8 万条 / 25 MB，不在启动时解析：第一次用到（打开音频页）再读，
+     * 否则每次开应用都要为一个可能不用的页面付出几百毫秒和几十 MB 内存。 */
   }
 
-  _loadCache() {
+  _ensureIndex() {
+    if (this.indexLoaded) return this.index;
+    this.indexLoaded = true;
     const data = indexer.loadIndex(this.userData);
     if (data && data.items) {
       this.index = data;
       if (!this.settings.gameDir) this.settings.gameDir = data.gameRoot;
     }
+    return this.index;
   }
 
   /* ---------------- 游戏目录 ---------------- */
@@ -68,8 +73,9 @@ class AudioService {
       return { ok: false, valid: false, error: '这个目录里没有 DeltaForce/Content/Paks，确认选的是 DeltaForce(2001918) 文件夹' };
     }
     this.settings = settingsStore.save(this.userData, { gameDir: dir });
-    if (this.index && this.index.gameRoot !== dir) {
+    if (this.indexLoaded && this.index && this.index.gameRoot !== dir) {
       this.index = null;
+      this.indexLoaded = false;
     }
     const dirs = indexer.pakDirs(dir);
     let pakCount = 0;
@@ -94,7 +100,7 @@ class AudioService {
   /* ---------------- 索引 ---------------- */
 
   getIndexState() {
-    const idx = this.index;
+    const idx = this._ensureIndex();
     const gameDir = this.settings.gameDir || null;
     return {
       ready: !!idx,
@@ -147,7 +153,7 @@ class AudioService {
   }
 
   search(opts) {
-    if (!this.index) return { total: 0, items: [] };
+    if (!this._ensureIndex()) return { total: 0, items: [] };
     return indexer.search(this.index.items, opts || {});
   }
 
@@ -188,7 +194,7 @@ class AudioService {
   }
 
   _findItem(id) {
-    if (!this.index) return null;
+    if (!this._ensureIndex()) return null;
     return this.index.items.find((it) => it.id === id) || null;
   }
 
@@ -217,7 +223,7 @@ class AudioService {
     opts = opts || {};
     const ids = Array.isArray(opts.ids) ? opts.ids : [];
     if (!ids.length) return { ok: false, saved: 0, failed: 0, error: '没有选中音频' };
-    if (!this.index) return { ok: false, saved: 0, failed: 0, error: '还没有建立音频索引' };
+    if (!this._ensureIndex()) return { ok: false, saved: 0, failed: 0, error: '还没有建立音频索引' };
     if (!this._ensureOodle()) return { ok: false, saved: 0, failed: 0, error: '没有找到 Oodle 解压库，无法读取游戏包' };
     const dir = this.getExportDir().dir;
     try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {
@@ -250,7 +256,7 @@ class AudioService {
   }
 
   async previewAudio(id) {
-    if (!this.index) return { ok: false, error: '还没有建立音频索引' };
+    if (!this._ensureIndex()) return { ok: false, error: '还没有建立音频索引' };
     if (!vgm || !vgm.isAvailable()) return { ok: false, error: '没有找到 vgmstream，无法试听（导出 .wem 不受影响）' };
     if (!this._ensureOodle()) return { ok: false, error: '没有找到 Oodle 解压库，无法读取游戏包' };
     const item = this._findItem(id);
