@@ -14,14 +14,19 @@
  *   · 编辑器 —— 原来的 .layout(#viewEditor),预览 + 检查器。
  *   · 下载列表 —— 复用既有面板(#downloadsPanel):它已经是完整的下载管理器。
  *   · 关于 —— 版本 / 检查更新 / 保存目录(仅桌面)/ 制作声明 / 许可。
+ *   · 日志 —— #viewLogs:运行记录 / 类型筛选 / 搜索 / 复制 / 下载(逻辑在 src/logs.ts)。
  *
  * 检查更新:GitCode 优先,失败退 GitHub,解析与版本比较在 src/update-check.ts。
  * 桌面端请求由主进程代发(见 electron/main.cjs、src-tauri 侧同理),网页端直接 fetch。
  * ========================================================================== */
 
 import { checkForUpdate, type Platform } from './update-check';
+/* 更新检查的结果写进日志页:远程排障时"到底查没查、查到什么"是第一个要回答的问题。 */
+import { logs } from './logs';
+/* 开发者日志:更新检查的请求源 / 版本 / 失败原因也进原始流 */
+import { devEvent } from './devlog';
 
-export type PageId = 'home' | 'editor' | 'about';
+export type PageId = 'home' | 'editor' | 'about' | 'logs';
 
 export type AppShellHooks = {
   /** 手机 / 平板(与 mobile.ts 同一套判定,由 main.ts 的 IS_MOBILE 传进来) */
@@ -42,6 +47,10 @@ export type AppShellHooks = {
   lastKey: () => string;
   /** 按 key 取动画中文名(主页"上次打开:…"用) */
   labelOf: (key: string) => string;
+  /** 某套动画的封面 URL(主页「继续上次」卡用);缺省时卡片退回中性底 */
+  posterOf?: (key: string) => string;
+  /** 某套动画的规格短串(编号 · 尺寸 · 帧率),与画廊卡片同一口径 */
+  specOf?: (key: string) => string;
   /** 打开某套动画(切换 + 载入数据) */
   open: (key: string) => Promise<void>;
   /** 打开下载列表面板(桌面端才有意义) */
@@ -84,15 +93,59 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   const root = document.documentElement;
   const viewHome = document.getElementById('viewHome');
   const viewAbout = document.getElementById('viewAbout');
+  const viewLogs = document.getElementById('viewLogs');
   const viewEditor = document.querySelector<HTMLElement>('.layout');
   const rail = document.getElementById('appRail');
   const navButtons = Array.from(document.querySelectorAll<HTMLElement>('.rail-item'));
   const navDownloads = document.getElementById('navDownloads');
 
+  /* ---------- 导航轨的滑动选中块(桌面)----------
+   * 选中态不再由每一行自己"啪"地换底色,而是一枚铺满行宽的浅色块从上一行滑到下一行。
+   * 元素由 JS 建在 .rail-items 里(手机端不需要,底栏有自己的一套指示条),
+   * CSS 里 .has-indicator 只是把行自身的选中底色让位给这枚滑块 —— JS 没跑时退回原样。 */
+  const railItemsEl = document.querySelector<HTMLElement>('.rail-items');
+  let railIndicator: HTMLElement | null = null;
+  let railIndicatorReady = false;
+  if (railItemsEl && !hooks.isMobile) {
+    railIndicator = document.createElement('span');
+    railIndicator.className = 'rail-indicator';
+    railIndicator.setAttribute('aria-hidden', 'true');
+    railItemsEl.prepend(railIndicator);
+    railItemsEl.classList.add('has-indicator');
+  }
+  function syncRailIndicator(animate = true): void {
+    if (!railIndicator || !railItemsEl) return;
+    const active = navButtons.find((b) => b.classList.contains('is-active') && !b.hidden);
+    if (!active) { railIndicator.style.opacity = '0'; return; }
+    if (!animate || !railIndicatorReady) {
+      railIndicator.style.transition = 'none';
+      railIndicator.style.transform = 'translateY(' + active.offsetTop + 'px)';
+      railIndicator.style.height = active.offsetHeight + 'px';
+      railIndicator.style.opacity = '1';
+      /* 强制读一次布局,让"先落位、后过渡"在同一次任务里成立,首屏不会看到滑块从顶上滑下来。 */
+      void railIndicator.offsetHeight;
+      railIndicator.style.transition = '';
+      railIndicatorReady = true;
+      return;
+    }
+    railIndicator.style.transform = 'translateY(' + active.offsetTop + 'px)';
+    railIndicator.style.height = active.offsetHeight + 'px';
+    railIndicator.style.opacity = '1';
+  }
+
   const btnOpenEditor = document.getElementById('btnOpenEditor') as HTMLButtonElement | null;
   const btnGoAbout = document.getElementById('btnGoAbout') as HTMLButtonElement | null;
   const homeChannel = document.getElementById('homeChannel');
   const homeLast = document.getElementById('homeLast');
+  const homeRecent = document.getElementById('homeRecent') as HTMLButtonElement | null;
+  const homeRecentCover = document.getElementById('homeRecentCover') as HTMLImageElement | null;
+  const homeRecentName = document.getElementById('homeRecentName');
+  const homeRecentMeta = document.getElementById('homeRecentMeta');
+  const homeSwitch = document.getElementById('homeSwitch') as HTMLButtonElement | null;
+  const homeEmpty = document.getElementById('homeEmpty');
+  const homeSideKicker = document.getElementById('homeSideKicker');
+  const btnBrowseAnims = document.getElementById('btnBrowseAnims') as HTMLButtonElement | null;
+  const btnOpenEditorText = document.getElementById('btnOpenEditorText');
   const railVersion = document.getElementById('railVersion');
 
   const aboutVersion = document.getElementById('aboutVersion');
@@ -103,7 +156,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   const btnOpenDir = document.getElementById('btnOpenDir') as HTMLButtonElement | null;
   const aboutPath = document.getElementById('aboutPath');
 
-  const pages: Record<PageId, HTMLElement | null> = { home: viewHome, editor: viewEditor, about: viewAbout };
+  const pages: Record<PageId, HTMLElement | null> = { home: viewHome, editor: viewEditor, about: viewAbout, logs: viewLogs };
   /* 「跑在桌面客户端里」与「用的是手机 UI」是两件事,判定必须**移动端优先**。
    * 安卓 APK 里挂着同一个 window.dfaeDesktop 桥接层(它本来就叫这个名字,提供的是"能落盘 /
    * 能开系统浏览器"这一层能力),所以 isDesktopApp 在手机上同样成立 —— 只看它,关于页就会
@@ -123,8 +176,10 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   let lastUpdate: { state: 'latest' | 'available' | 'error'; html: string; title: string } | null = null;
 
   /* 下载列表不是一页:它复用既有的 #downloadsPanel(已是完整的下载管理器)。
-   * 手机端没有这一项,所以按钮直接隐藏。 */
-  if (navDownloads) navDownloads.hidden = hooks.isMobile;
+   * 手机端没有这一项;网页版也没有主进程的落盘 / 历史能力 ——
+   * 以前只隐藏了顶栏那枚按钮,导航轨里这一项仍然可点但什么都不会发生(死入口)。
+   * 现在两项共用同一条判据:没有 reveal 能力就不出现(隐藏后也不在 Tab 顺序里)。 */
+  if (navDownloads) navDownloads.hidden = hooks.isMobile || !hooks.hasExportDir;
 
   /* ---------- 版本 / 渠道文案 ---------- */
   function paintVersion(): void {
@@ -135,16 +190,51 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     if (aboutChannel) aboutChannel.textContent = channel;
   }
 
-  /* ---------- 主页的"上次打开" ---------- */
+  /* ---------- 主页:上次打开的那一套 ----------
+   * 主页只放**一张**卡(不放动画列表,见 PRODUCT.md):点它直接进编辑器并载入这套动画,
+   * 省掉"进编辑器 -> 开画廊 -> 找上次那套"的三步。没有记录时换成一句能行动的空状态。
+   * 信息全部来自 hooks,start-screen 不反向 import main.ts。 */
   function paintHome(): void {
-    if (!homeLast) return;
-    const key = hooks.lastKey() || hooks.currentKey();
+    /* 只认「最近真正用过的」,不拿当前动画兜底:启动时默认载入的那一套用户从没选过,
+     * 把它写成"继续上次"会让空状态永远不出现(第一次打开就被误称"上次")。 */
+    const key = hooks.lastKey();
+    const label = key ? (hooks.labelOf(key) || key) : '';
+    if (homeLast) {
+      homeLast.hidden = !!key;
+      homeLast.textContent = key ? '上次打开:' + label : '';
+    }
+    /* 主按钮始终是"进入编辑器"这个总入口;右侧卡片才是"继续编辑这一套"。
+     * 两者都写「继续编辑」会变成同一句话在两个位置抢注意力(重复 CTA 意图)。 */
+    if (btnOpenEditorText) btnOpenEditorText.textContent = '打开编辑器';
     if (!key) {
-      homeLast.textContent = '';
+      if (homeRecent) homeRecent.hidden = true;
+      if (homeSwitch) homeSwitch.hidden = true;
+      if (homeEmpty) homeEmpty.hidden = false;
+      if (homeSideKicker) homeSideKicker.textContent = '从这里开始';
       return;
     }
-    const label = hooks.labelOf(key) || key;
-    homeLast.textContent = hooks.lastKey() ? '上次打开:' + label : '还没有打开过动画';
+    const poster = hooks.posterOf ? hooks.posterOf(key) : '';
+    if (homeRecent) {
+      homeRecent.hidden = false;
+      homeRecent.setAttribute('aria-label', '继续编辑「' + label + '」');
+      homeRecent.classList.toggle('is-no-cover', !poster);
+    }
+    if (homeSwitch) homeSwitch.hidden = false;
+    if (homeEmpty) homeEmpty.hidden = true;
+    if (homeSideKicker) homeSideKicker.textContent = '继续上次';
+    if (homeRecentName) homeRecentName.textContent = label;
+    if (homeRecentMeta) homeRecentMeta.textContent = hooks.specOf ? hooks.specOf(key) : '';
+    if (homeRecentCover) {
+      if (poster) {
+        homeRecentCover.src = poster;
+        homeRecentCover.alt = label + ' 的预览封面';
+        homeRecentCover.hidden = false;
+      } else {
+        homeRecentCover.removeAttribute('src');
+        homeRecentCover.alt = '';
+        homeRecentCover.hidden = true;
+      }
+    }
   }
 
   /* ---------- 切页 ----------
@@ -184,7 +274,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     const changed = current !== page;
     current = page;
     root.dataset.page = page;
-    for (const id of ['home', 'editor', 'about'] as PageId[]) {
+    for (const id of ['home', 'editor', 'about', 'logs'] as PageId[]) {
       const el = pages[id];
       if (!el) continue;
       const on = id === page;
@@ -197,14 +287,17 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
       if (on) b.setAttribute('aria-current', 'page');
       else b.removeAttribute('aria-current');
     }
-    /* 手机端:新页面淡入 + 轻微上移(6px),只在真的换页时播 —— 同一页重复点不重播动画。
-     * 桌面端不加:工具界面切页应当瞬时,过渡会拖慢"切过去马上框选"的操作节奏。 */
-    if (changed && hooks.isMobile) {
+    /* 手机端:新页面淡入 + 轻微上移;桌面端只给 .page 一档 180ms 的淡入(style.css 里
+     * 用 html:not([data-ui='mobile']) 作用域,编辑器 .layout 不参与 —— 那一块一动就会
+     * 让人以为画布跳了)。同一页重复点不重播。320ms 后摘类,给两级错峰留完整窗口。 */
+    if (changed) {
       target.classList.remove('is-entering');
       void target.offsetWidth; /* 强制回流,让同一个动画能连续播两次 */
       target.classList.add('is-entering');
-      window.setTimeout(() => target.classList.remove('is-entering'), 240);
+      window.setTimeout(() => target.classList.remove('is-entering'), 320);
     }
+    /* 导航滑块的落点跟着当前页走:放在 rAF 里,量的是这一帧布局完成后的位置。 */
+    requestAnimationFrame(() => syncRailIndicator(true));
     if (page === 'home') paintHome();
     if (page === 'editor') hooks.onEnterEditor();
     /* 旧事件名保留:mobile.ts 的首次手势提示等的是「进编辑器」这一刻。
@@ -619,6 +712,8 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     try {
       const res = await checkForUpdate({ current: currentVersion, platform });
       if (res.kind === 'available') {
+        logs.info('更新', '发现新版本 v' + res.release.version + '(来源 ' + res.origin.label + ')');
+        devEvent('update', 'available version=' + res.release.version + ' source=' + res.origin.label, undefined, 'info');
         updateAsset = res.asset ? { url: res.asset.url, name: res.asset.name } : null;
         markUpdateFound(true);
         applyUpdate({
@@ -639,6 +734,8 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
         };
         maybePromptUpdate(!silent);
       } else if (res.kind === 'latest') {
+        logs.info('更新', '已是最新版本 v' + res.release.version + '(来源 ' + res.origin.label + ')');
+        devEvent('update', 'latest version=' + res.release.version + ' source=' + res.origin.label, undefined, 'debug');
         updateAsset = null;
         pendingUpdate = null;
         closeUpdatePrompt();
@@ -651,6 +748,8 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
           title: '更新源:' + res.origin.label,
         });
       } else if (!silent) {
+        logs.warn('更新', '检查更新失败: ' + res.message, res.detail ? String(res.detail) : undefined);
+        devEvent('update', 'check failed: ' + res.message, res.detail ? String(res.detail) : undefined, 'warn');
         applyUpdate({ state: 'error', html: chip('is-error', 'alert', esc(res.message)), title: res.detail });
       }
     } finally {
@@ -728,11 +827,16 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   function toggleRail(): void {
     railCollapsed = !railCollapsed;
     applyRail(railCollapsed);
-    /* 侧边栏宽度变了 → 舞台宽度也变了。ResizeObserver 下一帧才跑,
-     * 这里主动补一次,切换那一帧就不会看到错位的缩放。 */
-    hooks.onEnterEditor();
+    /* 侧边栏宽度变了 → 编辑器舞台宽度也变了。ResizeObserver 下一帧才跑,
+     * 这里主动补一次,切换那一帧就不会看到错位的缩放。
+     * 只在**当前就在编辑器**时补:其它页(主页 / 关于 / 日志)里舞台是
+     * [hidden] 的,补一次不会重排布局,却会顺着 onEnterEditor 走"隐藏期间建的实例"
+     * 分支去重建动画(日志页会多出一组"字体加载/已载入"的假事件,画面也白重建一次)。
+     * 真正进编辑器时 showPage 已经会调 onEnterEditor,那一次才是需要的。 */
+    if (current === 'editor') hooks.onEnterEditor();
   }
   if (railToggle) railToggle.addEventListener('click', toggleRail);
+  window.addEventListener('resize', () => syncRailIndicator(false));
   /* Ctrl/Cmd+B:侧边栏开关的通用手势(输入框里不抢键;手机端没有侧边栏,不生效)。 */
   window.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'b') return;
@@ -758,7 +862,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
       hooks.openDownloads();
       return;
     }
-    if (page !== 'home' && page !== 'editor' && page !== 'about') return;
+    if (page !== 'home' && page !== 'editor' && page !== 'about' && page !== 'logs') return;
     /* 同一页再点一次:手机上按惯例是"回到顶部"(而不是什么都不发生) */
     if (page === current) {
       if (hooks.isMobile) pages[page]?.scrollTo({ top: 0, behavior: 'smooth' });
@@ -853,6 +957,33 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   }
   if (btnGoAbout) btnGoAbout.addEventListener('click', () => showPage('about'));
 
+  /* 主页右卡:点整张卡 = 进编辑器 + 载入这一套。先切页再载入 —— 切页是即时的,
+   * 载入可能要等数据包下载,用户至少先看到编辑器,而不是对着主页等。 */
+  if (homeRecent) {
+    homeRecent.addEventListener('click', () => {
+      const key = hooks.lastKey();
+      if (!key || busy) return;
+      busy = true;
+      homeRecent.disabled = true;
+      showPage('editor');
+      void Promise.resolve(hooks.open(key)).finally(() => {
+        busy = false;
+        homeRecent.disabled = false;
+      });
+    });
+  }
+  /* 「换一套动画 / 选择动画」:进编辑器后把画廊打开(与斜杠快捷键同一条路径)。
+   * 120ms 是有界的等待:切页那一帧舞台还在重新量,立刻开面板会让焦点落在旧布局上。 */
+  function openAnimGallery(): void {
+    showPage('editor');
+    window.setTimeout(() => {
+      const trigger = document.getElementById('animTrigger');
+      if (trigger instanceof HTMLElement) trigger.click();
+    }, 120);
+  }
+  if (homeSwitch) homeSwitch.addEventListener('click', openAnimGallery);
+  if (btnBrowseAnims) btnBrowseAnims.addEventListener('click', openAnimGallery);
+
   paintVersion();
   paintHome();
   paintDeviceInfo();
@@ -862,7 +993,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   let initial: PageId = 'home';
   try {
     const q = new URLSearchParams(location.search).get('view');
-    if (q === 'editor' || q === 'about' || q === 'home') initial = q;
+    if (q === 'editor' || q === 'about' || q === 'home' || q === 'logs') initial = q;
   } catch { /* 读不到参数就用默认页 */ }
   showPage(initial, { history: 'replace' });
 

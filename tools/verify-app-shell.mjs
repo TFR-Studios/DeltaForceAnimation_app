@@ -2,7 +2,10 @@
  *   node tools/verify-app-shell.mjs [--url http://127.0.0.1:5174/?view=home]
  *
  * 覆盖 2026-10 这一轮的结构改动:侧边导航轨(手机=底部标签栏)、
- * 主页 / 编辑器 / 关于 三页切换、主页不放动画列表、关于页承载检查更新。
+ * 主页 / 编辑器 / 日志 / 关于 页面切换、主页不放动画列表、关于页承载检查更新。
+ * 2026-11 起导航多一格「日志」:桌面顺序 home → editor → logs → downloads → about,
+ * 手机没有 downloads,顺序 home → editor → logs → about;点进去要能看到日志列表
+ * 与 5 个类型筛选按钮(日志页的逐项行为由 tools/verify-logs.mjs 负责)。
  * tools/ 下其它脚本走 puppeteer(navigator.webdriver)会直接进编辑器页,量的是编辑器;
  * 外壳这一层由本脚本负责。
  */
@@ -37,6 +40,22 @@ const FAKE_BRIDGE = () => {
     }),
   };
   window.dfaeDownloads = { isDesktop: true, list: async () => ({ entries: [], promptOnSave: false }), reveal: async () => true };
+  /* 日志持久化桥(真桥见 electron/preload.cjs):桌面外壳只关心"日志页能读到行"。
+   * 两条历史 + 渲染层自己的启动日志,足以让日志页不空。 */
+  const logsHistory = [
+    { id: 'h-1', t: Date.now() - 3600 * 1000, level: 'info', tag: '应用', msg: '历史记录:上次启动完成' },
+    { id: 'h-2', t: Date.now() - 3500 * 1000, level: 'warn', tag: '导出', msg: '历史记录:导出目录空间偏低' },
+  ];
+  window.dfaeLogs = {
+    isDesktop: true,
+    read: async () => ({ ok: true, records: logsHistory, dir: 'C:\\fake\\logs', file: 'C:\\fake\\logs\\dfae.log' }),
+    append: async () => ({ ok: true }),
+    exportText: async () => ({ ok: false, canceled: true }),
+    clear: async () => ({ ok: true }),
+    copyText: async () => true,
+    reveal: async () => true,
+    info: async () => ({ dir: 'C:\\fake\\logs', file: 'C:\\fake\\logs\\dfae.log', size: 0 }),
+  };
 };
 
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'shell', args: ['--no-sandbox', '--disable-gpu'] });
@@ -69,6 +88,9 @@ const probe = () => {
     home: vis(document.getElementById('viewHome')),
     about: vis(document.getElementById('viewAbout')),
     editor: vis(document.querySelector('.layout')),
+    logs: vis(document.getElementById('viewLogs')),
+    logsRows: document.querySelectorAll('#logsList .log-row').length,
+    logsChips: [...document.querySelectorAll('#logsFilters .logs-chip')].filter((b) => b.getClientRects().length > 0).map((b) => b.dataset.level),
     animSwitch: (() => { const el = document.querySelector('.anim-switch'); return el ? getComputedStyle(el).display !== 'none' : false; })(),
     homeTitle: (document.getElementById('homeTitle') || {}).textContent || '',
     homeChannel: (document.getElementById('homeChannel') || {}).textContent || '',
@@ -94,7 +116,7 @@ const probe = () => {
   /* 默认是收起态(56px),所以这里只断言"贴左 + 在顶栏之下 + 在 56~176 之间",
    * 具体宽度的行为由下面「侧边栏:默认收起 + 展开动画」那一组负责。 */
   check('桌面:左侧导航轨贴左、位于顶栏之下', s.rail && s.rail.x === 0 && s.rail.y <= 60 && s.rail.w >= 56 && s.rail.w <= 176, JSON.stringify(s.rail));
-  check('桌面:导航含 主页/编辑器/下载列表/关于', JSON.stringify(s.railItems) === JSON.stringify(['home', 'editor', 'downloads', 'about']), JSON.stringify(s.railItems));
+  check('桌面:导航含 主页/编辑器/日志/下载列表/关于', JSON.stringify(s.railItems) === JSON.stringify(['home', 'editor', 'logs', 'downloads', 'about']), JSON.stringify(s.railItems));
   check('桌面:主页**没有**动画卡片', s.animCards === 0, s.animCards);
   check('桌面:主页标题文案已换', /把游戏动画/.test(s.homeTitle), s.homeTitle);
   check('桌面:主页主按钮 36px 不换行', s.primaryH === 36 && s.primaryW > 100, JSON.stringify({ h: s.primaryH, w: s.primaryW }));
@@ -109,6 +131,22 @@ const probe = () => {
   check('桌面:编辑器舞台有尺寸(没被 display:none 压塌)', ed.stage && ed.stage.w > 400 && ed.stage.h > 300, JSON.stringify(ed.stage));
   check('桌面:编辑器页显示动画选择器', ed.animSwitch === true, ed.animSwitch);
   await page.screenshot({ path: path.join(OUT, 'verify-desktop-editor.png') });
+
+  /* 日志页:rail 上的「日志」入口 + 5 个类型筛选 + 列表有行。
+   * 这个页面在桌面外壳里注入了假桥(FAKE_BRIDGE),列表一定能读到两条历史。
+   * 逐项行为(筛选/搜索/复制/下载/徽标)见 tools/verify-logs.mjs。 */
+  const errsBeforeLogs = errs.length;
+  await page.evaluate(() => document.querySelector('.rail-item[data-page="logs"]').click());
+  const logsReady = await page.waitForFunction(() => {
+    const v = document.getElementById('viewLogs');
+    return !!v && !v.hidden && document.querySelectorAll('#logsList .log-row').length > 0;
+  }, { timeout: 10000, polling: 100 }).then(() => true).catch(() => false);
+  const lg = await page.evaluate(probe);
+  check('桌面:切到日志 → html[data-page=logs] 且日志页可见', lg.page === 'logs' && lg.logs, JSON.stringify({ page: lg.page, visible: lg.logs }));
+  check('桌面:日志列表有行(桌面端假桥历史)', logsReady && lg.logsRows >= 2, logsReady + ' / ' + lg.logsRows);
+  check('桌面:日志页 5 个类型筛选按钮', JSON.stringify(lg.logsChips) === JSON.stringify(['all', 'info', 'warn', 'error', 'debug']), JSON.stringify(lg.logsChips));
+  check('桌面:日志页无新增 JS 报错', errs.length === errsBeforeLogs, errs.slice(0, 3).join(' | '));
+  await page.screenshot({ path: path.join(OUT, 'verify-desktop-logs.png') });
 
   await page.evaluate(() => document.querySelector('.rail-item[data-page="about"]').click());
   await sleep(400);
@@ -182,7 +220,7 @@ for (const w of [1024, 900]) {
   const s = await page.evaluate(probe);
   check('手机:data-ui=mobile(原生信号生效)', s.ui === 'mobile', s.ui);
   check('手机:导航轨变底部标签栏', s.rail && s.rail.w >= 380 && Math.abs(s.rail.bottom - s.vh) <= 2, JSON.stringify(s.rail));
-  check('手机:导航只有 主页/编辑器/关于(无下载列表)', JSON.stringify(s.railItems) === JSON.stringify(['home', 'editor', 'about']), JSON.stringify(s.railItems));
+  check('手机:导航含 主页/编辑器/日志/关于(无下载列表)', JSON.stringify(s.railItems) === JSON.stringify(['home', 'editor', 'logs', 'about']), JSON.stringify(s.railItems));
   check('手机:主页主按钮通栏 48px', s.primaryH === 48 && s.primaryW > 300, JSON.stringify({ h: s.primaryH, w: s.primaryW }));
   check('手机:主页没有动画卡片', s.animCards === 0, s.animCards);
   check('手机:无横向滚动', s.overflowX <= 0, s.overflowX);
@@ -195,6 +233,22 @@ for (const w of [1024, 900]) {
   check('手机:能进关于页且带检查更新', ab.page === 'about' && ab.about && ab.hasCheck, JSON.stringify({ p: ab.page }));
   check('手机:关于页不出现保存目录(桌面端能力)', ab.dirRowHidden === true, ab.dirRowHidden);
   await page.screenshot({ path: path.join(OUT, 'verify-mobile-about.png') });
+
+  /* 日志页(手机):底栏多出的「日志」一格能进、能读。
+   * 手机这一段没注入持久化桥(网页/手机就是本次会话内日志),先造一条 console 日志兜底,
+   * 避免"实现启动时一条都不写"把外壳测试拖成假失败。 */
+  await page.evaluate(() => { console.info('[shell-test] 手机端日志入口'); });
+  const errsBeforeLogsM = errs.length;
+  await page.evaluate(() => document.querySelector('.rail-item[data-page="logs"]').click());
+  const logsReadyM = await page.waitForFunction(() => {
+    const v = document.getElementById('viewLogs');
+    return !!v && !v.hidden && document.querySelectorAll('#logsList .log-row').length > 0;
+  }, { timeout: 10000, polling: 100 }).then(() => true).catch(() => false);
+  const lgM = await page.evaluate(probe);
+  check('手机:能进日志页且列表有行', lgM.page === 'logs' && lgM.logs && logsReadyM && lgM.logsRows > 0, JSON.stringify({ page: lgM.page, rows: lgM.logsRows }));
+  check('手机:日志页 5 个类型筛选按钮可见', JSON.stringify(lgM.logsChips) === JSON.stringify(['all', 'info', 'warn', 'error', 'debug']), JSON.stringify(lgM.logsChips));
+  check('手机:日志页无新增 JS 报错', errs.length === errsBeforeLogsM, errs.slice(0, 3).join(' | '));
+  await page.screenshot({ path: path.join(OUT, 'verify-mobile-logs.png') });
 
   await page.evaluate(() => document.querySelector('.rail-item[data-page="editor"]').click());
   await sleep(600);

@@ -45,6 +45,10 @@ html[data-ui='mobile'] {
   --m-pad-r: calc(var(--m-pad) + var(--m-safe-r));
   --topbar-h: 46px;
   --m-craft-h: 24px;
+  /* 底栏选中指示条:位置由 mobile.ts 写入(格数 / 当前页序号)。
+   * 这里给首帧一个合法初值(主页、4 格),JS 没跑时也不会指向不存在的格子。 */
+  --m-nav-count: 4;
+  --m-nav-i: 0;
 }
 
 html[data-ui='mobile'],
@@ -141,6 +145,13 @@ html[data-ui='mobile'] .theme-btn::before {
   inset: -8px 0;
   border-radius: inherit;
 }
+
+/* 顶栏控件的触屏反馈:手机没有 hover,按下的一瞬就是唯一的"打中了"信号。
+ * 只动 transform(合成层),不动布局;与底栏图标、播放条按钮同一档。
+ * 动画触发器切换名称时的换片动画由 main.ts 的 is-switching 驱动(样式在 style.css),
+ * 这里只补按下这一下。 */
+html[data-ui='mobile'] .anim-trigger:active { transform: scale(0.97); }
+html[data-ui='mobile'] .theme-btn:active .bi { transform: scale(0.88); }
 
 /* 制作声明压到 10.5px:它要一直在,但不该跟主任务抢注意力 */
 html[data-ui='mobile'] .craft-note {
@@ -694,10 +705,40 @@ html[data-ui='mobile'] .rail {
   border-top: 1px solid var(--line);
 }
 html[data-ui='mobile'] .rail-items {
+  position: relative;
   flex: 1;
   flex-direction: row;
   gap: 0;
 }
+/* 选中指示条:一条共享的 2px 条在格子之间滑过去 —— 不是每格自己闪一下。
+ * 宽度 = 1/格数、位移 = 序号 × 自身宽度,都由 mobile.ts 写的 CSS 变量决定,
+ * 所以过渡只发生在 transform 上(合成层,不触发布局)。方向由序号差自然给出。
+ * 首帧不给过渡(等 data-nav-ready):带 ?view=editor 启动时不该看见它从主页滑过来。 */
+html[data-ui='mobile'] .rail-items::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  width: calc(100% / var(--m-nav-count, 4));
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  /* 25% 宽的槽里只画中间 40%:视觉上仍是一小截 2px 条,位移却按整格走 */
+  background: linear-gradient(90deg,
+    transparent 0 30%,
+    var(--brand) 30% 70%,
+    transparent 70% 100%);
+  transform: translateX(calc(var(--m-nav-i, 0) * 100%));
+  pointer-events: none;
+}
+html[data-ui='mobile'] .rail-items[data-nav-ready]::before {
+  transition: transform 220ms var(--ease-out);
+}
+/* 桌面那枚"整行滑块"由 start-screen.ts 只为桌面创建;?ui=mobile 强开桌面壳时它可能也在,
+ * 手机上必须让位给顶部指示条,不能留一块盖住底栏的浅色方块。 */
+html[data-ui='mobile'] .rail-indicator { display: none; }
+html[data-ui='mobile'] .rail-items.has-indicator .rail-item { z-index: auto; }
+html[data-ui='mobile'] .rail-items.has-indicator .rail-item.is-active { background: transparent; border-color: transparent; }
 html[data-ui='mobile'] .rail-item {
   position: relative;
   flex: 1 1 0;
@@ -721,39 +762,26 @@ html[data-ui='mobile'] .rail-item {
 html[data-ui='mobile'] .rail-item .bi {
   width: 19px;
   height: 19px;
-  transition: transform 220ms var(--ease-out), color var(--dur) var(--ease);
+  /* 按下缩到 0.9、选中抬 1px:都是 transform,同一档收束,不出现两种手感 */
+  transition: transform 160ms var(--ease), color var(--dur) var(--ease);
 }
 html[data-ui='mobile'] .rail-item:hover { background: transparent; border: none; }
 /* 按下:整格压深一档 + 图标轻微缩小,给"手指已经打中"一个即时反馈(iOS/Android 都这么做) */
 html[data-ui='mobile'] .rail-item:active { background: var(--surface-hover); transform: none; }
-html[data-ui='mobile'] .rail-item:active .bi { transform: scale(0.88); }
+html[data-ui='mobile'] .rail-item:active .bi { transform: scale(0.9); }
 /* 文字在手机上不参与折叠逻辑:直接恢复常显 */
 html[data-ui='mobile'] .rail-item span { max-width: none; opacity: 1; }
-/* 选中态:手机上不用"实心浅底"那块(会变成一条突兀的色块),只用图文提亮 + 顶部 2px 指示条 */
+/* 选中态:手机上不用"实心浅底"那块(会变成一条突兀的色块),只用图文提亮 + 顶部 2px 指示条。
+ * 颜色过渡 180ms、指示条 220ms:一个"亮起来"、一个"滑过去",同一组状态变化里两种速度。 */
 html[data-ui='mobile'] .rail-item.is-active {
   background: transparent;
   border: none;
   color: var(--text);
 }
 html[data-ui='mobile'] .rail-item.is-active .bi { color: var(--text); transform: translateY(-1px); }
-/* 指示条:从中间"长"出来(scaleX 0.2→1),不是凭空出现 */
-html[data-ui='mobile'] .rail-item.is-active::before {
-  animation: tab-bar-in 260ms var(--ease-out) both;
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 28%;
-  right: 28%;
-  height: 2px;
-  border-radius: 0 0 2px 2px;
-  background: var(--brand);
-}
-html[data-ui='mobile'] .rail-item { position: relative; }
+/* 选中的格子被按下:保留"抬 1px",同时缩到 0.9 —— 两个 transform 合并,不打架 */
+html[data-ui='mobile'] .rail-item.is-active:active .bi { transform: translateY(-1px) scale(0.9); }
 html[data-ui='mobile'] .rail-foot { display: none; }
-@keyframes tab-bar-in {
-  from { transform: scaleX(0.2); opacity: 0; }
-  to { transform: scaleX(1); opacity: 1; }
-}
 /* 底部标签栏没有"收起"这个概念;手机端整条 .rail-head 不出现 */
 html[data-ui='mobile'] .rail-head { display: none; }
 html[data-ui='mobile'][data-rail='collapsed'] .rail { width: 100%; }
@@ -762,15 +790,45 @@ html[data-ui='mobile'][data-rail='collapsed'] .rail-item span { display: inline;
 html[data-ui='mobile'] #navDownloads { display: none; }
 
 /* ---------- 页面入场 ----------
- * 换页时新页面淡入 + 上移 6px(见 start-screen.ts 的 showPage)。只在手机上播:
- * 手机没有窗口边框做参照,一次轻微位移就能说明"我到了一个新地方";
- * 桌面端切页保持瞬时(工具界面不该拖节奏)。 */
-html[data-ui='mobile'] .page.is-entering,
+ * 换页时不再"整块啪一下出现":页面壳先淡入(160ms),标题区与内容分两级错峰
+ * (各自 200/210ms,内容晚 50ms),总时长 260ms —— 在 start-screen.ts 移除
+ * is-entering 之前一定走完。层级只讲两件事:先看见"到了哪一页",再看见"这一页有什么"。
+ * 只在真的换页时挂(start-screen 的 changed 判据),同一页重复点不重播。
+ * 编辑器(.layout)保持原样:画布几何归适配算法,入场不做子元素编排,只淡入 + 4px。 */
+html[data-ui='mobile'] .page.is-entering {
+  animation: m-page-fade 160ms var(--ease-out) both;
+}
 html[data-ui='mobile'] .layout.is-entering {
-  animation: page-enter 220ms var(--ease-out) both;
+  animation: page-enter 200ms var(--ease-out) both;
+}
+@keyframes m-page-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* 第 1 级:这一页叫什么(立即) */
+html[data-ui='mobile'] .page.is-entering .page-head,
+html[data-ui='mobile'] .page.is-entering .home-brandline,
+html[data-ui='mobile'] .page.is-entering .home-title {
+  animation: m-page-rise 200ms var(--ease-out) both;
+}
+/* 第 2 级:这一页有什么(晚 50ms) */
+html[data-ui='mobile'] .page.is-entering .home-desc,
+html[data-ui='mobile'] .page.is-entering .home-actions,
+html[data-ui='mobile'] .page.is-entering .home-keys,
+html[data-ui='mobile'] .page.is-entering .home-last,
+html[data-ui='mobile'] .page.is-entering .home-side,
+html[data-ui='mobile'] .page.is-entering .about-card,
+html[data-ui='mobile'] .page.is-entering .logs-user-pane,
+html[data-ui='mobile'] .page.is-entering .logs-dev-pane,
+html[data-ui='mobile'] .page.is-entering .logs-foot {
+  animation: m-page-rise 210ms var(--ease-out) 50ms both;
+}
+@keyframes m-page-rise {
+  from { opacity: 0; transform: translateY(9px); }
+  to { opacity: 1; transform: none; }
 }
 @keyframes page-enter {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
@@ -784,28 +842,93 @@ html[data-ui='mobile'] .page-scroll {
   max-width: none;
   padding: var(--sp-5) var(--m-pad-r) var(--sp-6) var(--m-pad-l);
 }
-/* 手机上的主页同样居中:一屏里看到 logo / 标题 / 两个按钮就够,不留半屏空白 */
+/* 主页新版是两栏(左边"要干什么"、右边"上次那一套"),980px 以下由 style.css 折成一列;
+ * 手机上内容比一屏长,不再垂直居中 —— 居中在内容溢出一屏时会把头部顶出可视区。 */
 html[data-ui='mobile'] .page-home .page-scroll {
-  min-height: 100%;
-  justify-content: center;
+  min-height: 0;
+  justify-content: flex-start;
+  padding-top: var(--sp-4);
 }
-html[data-ui='mobile'] .home-logo { width: 44px; height: 44px; }
+html[data-ui='mobile'] .home-split { gap: var(--sp-5); }
+html[data-ui='mobile'] .home-brandline { gap: 10px; }
+/* 源图是 385×322 的透明标志:同时写死 44×44 会把它纵向拉长。
+ * 浅色主题下的"近白标志"由 style.css 统一做亮度归零(见那里的 brand-logo 规则),
+ * 这里只修比例,不再给标志垫底色 —— 垫了反而会让黑色剪影消失。 */
+html[data-ui='mobile'] .home-logo {
+  width: 44px;
+  height: auto;
+}
 html[data-ui='mobile'] .home-title {
   max-width: none;
-  font-size: 26px;
-  line-height: 1.26;
-  letter-spacing: -0.022em;
+  font-size: 27px;
+  line-height: 1.2;
+  letter-spacing: -0.026em;
 }
-html[data-ui='mobile'] .home-desc { font-size: 13px; line-height: 1.66; }
+html[data-ui='mobile'] .home-desc { font-size: 13.5px; line-height: 1.7; }
 html[data-ui='mobile'] .home-actions {
   flex-direction: column;
   align-items: stretch;
   width: 100%;
   gap: var(--sp-2);
-  margin-top: var(--sp-3);
+  margin-top: var(--sp-2);
 }
 html[data-ui='mobile'] .home-primary { justify-content: center; width: 100%; height: 48px; font-size: 15px; }
 html[data-ui='mobile'] .home-ghost { justify-content: center; width: 100%; height: 46px; font-size: 13.5px; }
+/* 快捷键条:手机上没有"Ctrl+B 收起侧栏"这个动作(底栏不是可收起的侧栏),
+ * 留着只会把这一行挤成三截;其余两项接外接键盘时仍成立,保留。 */
+html[data-ui='mobile'] .home-keys {
+  gap: 6px 14px;
+  margin-top: 2px;
+  font-size: 11px;
+}
+html[data-ui='mobile'] .home-keys li:last-child { display: none; }
+/* 右卡:竖排的 16:9 封面会吃掉 200px+,把主按钮挤出首屏;
+ * 手机上改成横排卡 —— 封面 44%、文字在右,整张卡压在 150px 左右。 */
+html[data-ui='mobile'] .home-side { max-width: none; }
+html[data-ui='mobile'] .home-side-kicker {
+  margin-bottom: var(--sp-2);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+html[data-ui='mobile'] .home-recent {
+  flex-direction: row;
+  align-items: stretch;
+  border-radius: var(--r-md);
+}
+html[data-ui='mobile'] .home-recent-cover {
+  flex: 0 0 44%;
+  width: 44%;
+  min-height: 132px;
+  aspect-ratio: auto;
+}
+html[data-ui='mobile'] .home-recent-cover img { height: 100%; }
+html[data-ui='mobile'] .home-recent-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: center;
+  gap: 3px;
+  padding: 12px 14px;
+}
+html[data-ui='mobile'] .home-recent-name { font-size: 15px; }
+html[data-ui='mobile'] .home-recent-meta { font-size: 11px; line-height: 1.5; }
+html[data-ui='mobile'] .home-recent-cta { margin-top: 6px; font-size: 11.5px; }
+html[data-ui='mobile'] .home-recent.is-no-cover .home-recent-body { padding: 14px 16px; }
+html[data-ui='mobile'] .home-empty {
+  padding: 16px 14px;
+  border-radius: var(--r-md);
+}
+html[data-ui='mobile'] .home-empty-title { font-size: 14px; }
+html[data-ui='mobile'] .home-empty-desc { margin: 6px 0 12px; font-size: 12.5px; line-height: 1.6; }
+html[data-ui='mobile'] .home-browse { height: 40px; padding: 0 16px; font-size: 13px; }
+/* "换一套动画"是文字链式的次级动作:外观不变,命中区抬到 40 */
+html[data-ui='mobile'] .home-switch {
+  min-height: 40px;
+  margin-top: 6px;
+  padding: 0 2px;
+  font-size: 12px;
+}
+html[data-ui='mobile'] .home-last { font-size: 11px; }
+
 
 html[data-ui='mobile'] .about-card { border-radius: var(--r-md); padding: 2px var(--sp-3); }
 html[data-ui='mobile'] .about-row { flex-wrap: wrap; gap: 6px; padding: 8px 0; min-height: 52px; }
@@ -813,12 +936,137 @@ html[data-ui='mobile'] .about-label { width: 100%; }
 html[data-ui='mobile'] .about-actions { width: 100%; }
 html[data-ui='mobile'] .about-btn { height: 40px; padding: 0 var(--sp-3); }
 html[data-ui='mobile'] .about-path { flex: 1; }
-html[data-ui='mobile'] .update-link { height: 32px; padding: 0 12px; }
+html[data-ui='mobile'] .update-link { height: 40px; padding: 0 14px; }
 html[data-ui='mobile'] .about-craft-card { padding: var(--sp-3); }
 
 /* 手机上的顶栏:动画选择器 / 下载入口只在编辑器页出现(与桌面同一套规则,
  * 但手机端 .anim-switch 的 grid-area 由顶栏网格决定,隐藏时那一格自然空出) */
 html[data-ui='mobile']:not([data-page='editor']) .topbar { grid-template-rows: var(--topbar-h) var(--m-craft-h); }
+
+/* ---------- 11b. 日志页(手机 / 平板) ----------
+ * 结构与桌面同一份(index.html 的 #viewLogs),这里只把"宽屏版式"改成"拇指版式":
+ *   · 类型筛选横向滑动(5 枚胶囊在 390px 上放不下,折行会把工具条撑成三行);
+ *   · 搜索框独占一行;操作按钮两行(四个常规动作一行、破坏性的「清空」单独一行),
+ *     全部抬到 40px —— 手机上 30-34px 的胶囊命中区不到指腹的一半;
+ *   · 行从「左元信息 + 右消息」折成上下两段,消息拿到整行宽度 —— 中文日志长句多,
+ *     两列布局在手机上会把正文压成一条竖线。
+ * 页面仍然由 .logs-body 单独滚动,底栏切换页时不再出现"整页被工具条顶走"的错位。 */
+html[data-ui='mobile'] .logs-wrap {
+  padding: var(--sp-4) var(--m-pad-r) var(--sp-3) var(--m-pad-l);
+}
+/* 页头 = 标题 / 副标题(第一层)+ 视图切换与存储状态(第二层)+ 工具条(第三层)。
+ * 三层共用一个左边界,工具条与列表之间只有一条分隔线 —— 不该像另一个页面的工具栏。 */
+html[data-ui='mobile'] .logs-head {
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+html[data-ui='mobile'] .logs-head-actions { gap: 6px; }
+html[data-ui='mobile'] .logs-state { font-size: 10.5px; padding: 3px 9px; }
+html[data-ui='mobile'] .logs-bar { gap: 8px; }
+/* 类型筛选:一行横向滑动,隐藏滚动条本身(内容仍然可滑)。
+ * 芯片抬到 40px —— 手机上这是最常点的一排,32px 的芯片实际命中区只有一半。 */
+html[data-ui='mobile'] .logs-filters {
+  flex: 1 1 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+html[data-ui='mobile'] .logs-filters::-webkit-scrollbar { display: none; }
+html[data-ui='mobile'] .logs-chip {
+  flex: none;
+  height: 40px;
+  padding: 0 13px;
+  font-size: 12px;
+}
+html[data-ui='mobile'] .logs-search { flex: 1 1 auto; min-width: 0; height: 40px; }
+html[data-ui='mobile'] .logs-search input { font-size: 13px; }
+/* 操作区:四个常规动作等宽一行;「清空」是破坏性动作,单独一行、靠右,
+ * 与它们拉开距离 —— 原来它紧挨「下载」,手指滑一下就点到清空(用户实测反馈)。
+ * 不做"更多"菜单:这一页总共五个动作,多一层收纳反而多一次点击。 */
+html[data-ui='mobile'] .logs-actions {
+  flex: 1 1 100%;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+  margin-left: 0;
+  padding-bottom: 2px;
+}
+html[data-ui='mobile'] .logs-btn {
+  height: 40px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+html[data-ui='mobile'] .logs-btn-danger {
+  grid-column: 1 / -1;
+  justify-self: end;
+  min-width: 76px;
+  margin-top: 4px;
+}
+html[data-ui='mobile'] .logs-hint { right: 8px; bottom: 8px; max-width: calc(100% - 16px); font-size: 11.5px; }
+html[data-ui='mobile'] .log-row { grid-template-columns: 1fr; gap: 3px; padding: 8px 6px; }
+html[data-ui='mobile'] .log-detail summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px 0;
+}
+html[data-ui='mobile'] .log-meta { gap: 8px; }
+html[data-ui='mobile'] .log-time { width: auto; font-size: 10.5px; }
+html[data-ui='mobile'] .log-lvl { width: auto; padding: 1px 6px; font-size: 10px; }
+html[data-ui='mobile'] .log-tag { flex: 1; font-size: 10.5px; }
+html[data-ui='mobile'] .log-msg { font-size: 12.5px; line-height: 1.62; }
+html[data-ui='mobile'] .log-detail pre { max-height: 180px; font-size: 10.5px; }
+html[data-ui='mobile'] .logs-foot { font-size: 10.5px; }
+html[data-ui='mobile'] .logs-empty { padding: 40px 16px; }
+
+/* ---------- 11c. 开发者终端(手机) ----------
+ * 终端本身已经是"行"的形态,手机上只需要把四列压成两段:
+ * 第一行 time + LEVEL + source,第二行 message(整行宽);详情不再缩进。
+ * 命令输入抬到 36px,便于点按;顶部工具条横向滑动,避免在 390px 上折成三行。 */
+/* 手机上切换器与状态枚仍靠右成组(状态枚的 order:-1 让它排在切换器左边):
+ * 不铺满整行,否则两枚之间会被 space-between 拉开成"左一个右一个"。 */
+html[data-ui='mobile'] .logs-head-actions { width: 100%; justify-content: flex-end; }
+html[data-ui='mobile'] .logs-mode-btn { height: 40px; padding: 0 13px; font-size: 12px; }
+html[data-ui='mobile'] .logs-dev-pane { padding-bottom: 0; }
+html[data-ui='mobile'] .dev-term { border-radius: var(--r-sm); }
+html[data-ui='mobile'] .dev-term-head { flex-wrap: wrap; gap: 8px; padding: 8px 10px; }
+html[data-ui='mobile'] .dev-term-title { font-size: 12.5px; }
+html[data-ui='mobile'] .dev-term-meta { flex: 1; font-size: 11px; }
+html[data-ui='mobile'] .dev-term-actions {
+  width: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  margin-left: 0;
+  scrollbar-width: none;
+}
+html[data-ui='mobile'] .dev-term-actions::-webkit-scrollbar { display: none; }
+html[data-ui='mobile'] .dev-term-btn { flex: none; height: 30px; padding: 0 11px; font-size: 11.5px; }
+html[data-ui='mobile'] .dev-term-filters {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding: 7px 10px;
+  scrollbar-width: none;
+}
+html[data-ui='mobile'] .dev-term-filters::-webkit-scrollbar { display: none; }
+html[data-ui='mobile'] .dev-chip { flex: none; height: 28px; padding: 0 10px; font-size: 11.5px; }
+html[data-ui='mobile'] .dev-term-hint { display: none; }
+html[data-ui='mobile'] .dev-term-filter { flex: none; font-size: 11px; }
+html[data-ui='mobile'] .dev-term-body { padding: 8px 10px; font-size: 11px; line-height: 1.55; }
+html[data-ui='mobile'] .dev-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+html[data-ui='mobile'] .dev-time { font-size: 10px; }
+html[data-ui='mobile'] .dev-lvl { font-size: 10px; }
+html[data-ui='mobile'] .dev-src { font-size: 10px; }
+html[data-ui='mobile'] .dev-msg { flex: 1 1 100%; }
+html[data-ui='mobile'] .dev-detail { max-height: 160px; margin-left: 0; font-size: 10.5px; }
+/* 命令行输出在手机上不再额外缩进:文本自己已经带两个空格,
+ * 再加 2ch 会把本就不宽的终端压得更窄,help 更容易折行。 */
+html[data-ui='mobile'] .dev-row.is-out .dev-local,
+html[data-ui='mobile'] .dev-row.is-err .dev-local { padding-left: 0; }
+html[data-ui='mobile'] .dev-term-prompt { padding: 9px 10px; }
+html[data-ui='mobile'] .dev-term-prompt input { font-size: 13px; }
 
 /* ---------- 12. 全屏更新提示(手机版式) ----------
  * 与桌面是同一份 DOM、同一套状态,版式完全不同:
@@ -884,6 +1132,69 @@ html[data-ui='mobile'] .upd-secondary {
 html[data-ui='mobile'] .upd-skip-row { justify-content: center; margin-top: var(--sp-3); }
 html[data-ui='mobile'] .upd-skip { height: 40px; min-height: 40px; padding: 0 10px; font-size: 12.5px; }
 
+/* ---------- 13. 导出浮层(手机版式) ----------
+ * 浮层与桌面共用同一份 DOM 与 style.css(成功态见 style.css 9.2c),这里只做手机上的
+ * 版式与命中区:
+ *   · 卡片贴近整屏宽,上下带安全区;内容超过视口时卡片自己滚,动作永远够得到;
+ *   · 动作通栏 46px,主操作在最靠拇指的一档;
+ *   · 成功态的对勾与文案只调间距/字号,文件名最多两行(桌面是一行省略号);
+ *   · 「查看渲染日志」是一条 40px 的整行命中区,不把点按目标缩到一行小字。
+ * 自动关闭时机在 main.ts(成功后 6s、指针进入即停),这里不写任何关闭逻辑。 */
+html[data-ui='mobile'] .export-overlay {
+  align-items: center;
+  padding: calc(var(--sp-4) + var(--m-safe-t)) var(--m-pad-r) calc(var(--sp-4) + var(--m-safe-b)) var(--m-pad-l);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+html[data-ui='mobile'] .export-card {
+  width: 100%;
+  max-width: 520px;
+  max-height: calc(100dvh - var(--sp-4) * 2 - var(--m-safe-t) - var(--m-safe-b));
+  padding: var(--sp-4);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+html[data-ui='mobile'] .export-percent { font-size: 30px; }
+html[data-ui='mobile'] .export-actions {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: var(--sp-4);
+}
+html[data-ui='mobile'] .export-actions :is(button, fluent-button) {
+  width: 100%;
+  height: 46px;
+  min-height: 46px;
+  justify-content: center;
+  font-size: 14px;
+}
+/* 成功态:对勾是整张卡的重心,手机上再放大一档;文件名允许两行(中文文件名很长) */
+html[data-ui='mobile'] .export-card.is-done .export-success { padding: 6px 0 2px; }
+html[data-ui='mobile'] .export-card.is-done .export-check { width: 84px; height: 84px; margin-bottom: 12px; }
+html[data-ui='mobile'] .export-card.is-done .export-success-title { font-size: 19px; }
+html[data-ui='mobile'] .export-success-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  font-size: 13px;
+  line-height: 1.45;
+}
+html[data-ui='mobile'] .export-success-sub { max-width: none; font-size: 12px; }
+html[data-ui='mobile'] .export-foot { margin-top: var(--sp-3); }
+html[data-ui='mobile'] .export-foot :is(button, fluent-button) {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 2px;
+  font-size: 12px;
+}
+/* 日志展开时给槽位一点呼吸;卡片高度仍由 main.ts 的一次有界过渡负责 */
+html[data-ui='mobile'] .export-card.is-done.is-log-open .export-log-slot { margin-top: var(--sp-2); }
+html[data-ui='mobile'] .render-log-body { height: clamp(140px, 26vh, 220px); }
+
 /* ---------- 10. 减少动效 ---------- */
 
 @media (prefers-reduced-motion: reduce) {
@@ -893,4 +1204,37 @@ html[data-ui='mobile'] .upd-skip { height: 40px; min-height: 40px; padding: 0 10
     transition: none;
     scroll-behavior: auto;
   }
+  /* 这一轮新增的入场、指示条与按压:减少动效下全部瞬时完成。
+   * style.css 末尾已有全局 0.001ms 兜底,这里仍然显式写一遍 ——
+   * 兜底规则哪天被挪走,这里的降级不能跟着失效。 */
+  html[data-ui='mobile'] .page.is-entering,
+  html[data-ui='mobile'] .page.is-entering .page-head,
+  html[data-ui='mobile'] .page.is-entering .home-brandline,
+  html[data-ui='mobile'] .page.is-entering .home-title,
+  html[data-ui='mobile'] .page.is-entering .home-desc,
+  html[data-ui='mobile'] .page.is-entering .home-actions,
+  html[data-ui='mobile'] .page.is-entering .home-keys,
+  html[data-ui='mobile'] .page.is-entering .home-last,
+  html[data-ui='mobile'] .page.is-entering .home-side,
+  html[data-ui='mobile'] .page.is-entering .about-card,
+  html[data-ui='mobile'] .page.is-entering .logs-user-pane,
+  html[data-ui='mobile'] .page.is-entering .logs-dev-pane,
+  html[data-ui='mobile'] .page.is-entering .logs-foot,
+  html[data-ui='mobile'] .layout.is-entering {
+    animation: none;
+  }
+  html[data-ui='mobile'] .rail-items[data-nav-ready]::before,
+  html[data-ui='mobile'] .rail-item,
+  html[data-ui='mobile'] .rail-item .bi,
+  html[data-ui='mobile'] .anim-trigger,
+  html[data-ui='mobile'] .theme-btn,
+  html[data-ui='mobile'] .theme-btn .bi {
+    transition: none;
+  }
+  /* 按下/选中的缩放与位移一并取消:状态已经由颜色、指示条位置与 aria-current 表达 */
+  html[data-ui='mobile'] .rail-item:active .bi,
+  html[data-ui='mobile'] .rail-item.is-active .bi,
+  html[data-ui='mobile'] .rail-item.is-active:active .bi,
+  html[data-ui='mobile'] .theme-btn:active .bi { transform: none; }
+  html[data-ui='mobile'] .rail-items[data-nav-ready]::before { transition: none; }
 }

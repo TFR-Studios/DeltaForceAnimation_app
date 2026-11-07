@@ -3,8 +3,8 @@
  * 用法(先确保 dev server 在 5173 上跑着):
  *   node tools/verify-mobile-export.mjs desktop   # 桌面基准:必须与改造前一致(1920×1080 / 有音轨)
  *   node tools/verify-mobile-export.mjs ladder    # 模拟"手机硬编码器只到 960 宽":应自动降档并成功
- *   node tools/verify-mobile-export.mjs recorder  # 模拟"完全没有 WebCodecs":应走兼容录制并出片
- *   node tools/verify-mobile-export.mjs noaac     # 模拟"不支持 AAC":应导成无音轨的 MP4(而不是失败)
+ *   node tools/verify-mobile-export.mjs recorder  # 模拟"完全没有 WebCodecs":应走兼容录制并出片(带音轨)
+ *   node tools/verify-mobile-export.mjs noaac     # 模拟"不支持 AAC":应改走兼容录制(带音轨),而不是无声 MP4
  *   node tools/verify-mobile-export.mjs all
  *
  * 三个"环境"都是 evaluateOnNewDocument 注入的:必须在页面脚本执行前改写好,
@@ -46,7 +46,9 @@ const noAac = () => {
  *  - 撤离动画(extraction)= canvas 渲染器,逐帧画面真的在变,用来验证"录到的是不是动画本身";
  *  - 任务弹窗(mission)走 SVG 逐帧光栅化,在无头 Chrome 里栅格化会出空帧(环境限制,与本改造无关),
  *    所以内容类断言不用它 —— 否则会把"渲染环境的问题"误判成导出管线的问题;
- *  - 核电站功率(blinds)有音轨,用来验证"不支持 AAC 时降级为无声导出"。 */
+ *  - 所有用例用的撤离动画都带音轨:每个用例都应当产出带音轨的成片,
+ *    包括「无 WebCodecs」(兼容录制带音轨)与「不支持 AAC」(改走兼容录制带音轨)。
+ *    缺少音轨即判失败(见文件末尾的 audioOk 断言)。 */
 const CASES = {
   desktop: { anim: null, ua: null, preload: null, res: 'auto', format: 'mp4' },
   ladder: { anim: 'extraction', ua: IPHONE_UA, preload: rejectBig, res: 'auto', format: 'mp4' },
@@ -160,7 +162,13 @@ async function runCase(name) {
     const out = TMP + '/' + name + '.bin';
     const saved = await saveBlob(page, out);
     report.bytes = saved.size;
-    if (saved.size > 0) { report.probe = probe(out); report.content = frameFingerprints(out, [10, 60, 120, 180]); }
+    if (saved.size > 0) {
+      report.probe = probe(out);
+      /* 本次修复的核心断言:成片必须带音轨。以前「无 WebCodecs」与「不支持 AAC」两条降级路
+       * 都会静默产出无声文件,正是用户报的「部分机型导出没声音」。 */
+      report.audioOk = !!(report.probe && report.probe.audio && report.probe.audio !== '(无音轨)');
+      report.content = frameFingerprints(out, [10, 60, 120, 180]);
+    }
   } finally {
     await browser.close();
   }
@@ -172,8 +180,15 @@ fs.rmSync(TMP, { recursive: true, force: true });
 fs.mkdirSync(TMP, { recursive: true });
 const want = process.argv[2] || 'desktop';
 const names = want === 'all' ? Object.keys(CASES) : [want];
+let failed = 0;
 for (const n of names) {
   if (!CASES[n]) { console.log('未知用例:', n, '可选:', Object.keys(CASES).join(', ')); process.exit(1); }
   console.log('=== ' + n + ' ===');
-  console.log(JSON.stringify(await runCase(n), null, 2));
+  const report = await runCase(n);
+  console.log(JSON.stringify(report, null, 2));
+  if (!report.audioOk) {
+    failed++;
+    console.log('!! ' + n + ': 成片缺少音轨(本次修复要求所有用例都带音轨)');
+  }
 }
+if (failed) process.exitCode = 1;

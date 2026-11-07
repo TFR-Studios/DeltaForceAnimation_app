@@ -96,3 +96,43 @@ contextBridge.exposeInMainWorld('dfaeDownloads', {
     return () => ipcRenderer.removeListener('dfae:downloads-changed', listener);
   },
 });
+
+/* ---------------------------------------------------------------------------
+ * 日志持久化(window.dfaeLogs)
+ *
+ * 日志页要能「关掉应用再打开还看得到」,所以渲染进程只负责产生记录,
+ * 落盘、轮转、合并读取、导出对话框都在主进程(见 electron/logs.cjs 与 main.cjs 的 6b 段)。
+ *
+ * 仍然守住上面那三条红线:
+ *   · 逐条具名方法,不暴露 ipcRenderer 本体;
+ *   · append 只能往 <userData>/logs/ 里的日志文件追加;exportText 只能写到用户在
+ *     系统「另存为」对话框里亲手选中的那一个路径 —— 页面依旧拿不到「写任意文件」的能力;
+ *   · 不提供任何执行命令的入口(reveal 只是用资源管理器打开日志目录)。
+ * ------------------------------------------------------------------------- */
+contextBridge.exposeInMainWorld('dfaeLogs', {
+  /** 固定为 true:页面据此判断日志页是否运行在桌面端。 */
+  isDesktop: true,
+  /**
+   * 追加记录(单次最多 200 条,非法记录由主进程丢弃)。
+   * 返回 { ok, written, dropped? } 或 { ok:false, error }。
+   */
+  append: (records) => ipcRenderer.invoke('dfae:logs-append', records),
+  /**
+   * 读最近的记录(时间升序)。limit 1..5000,默认 1000。
+   * 返回 { ok, records, total, dir, file } 或 { ok:false, records:[], error }。
+   */
+  read: (opts) => ipcRenderer.invoke('dfae:logs-read', { limit: opts && opts.limit }),
+  /** 清空两代日志文件。返回 { ok } 或 { ok:false, error }。 */
+  clear: () => ipcRenderer.invoke('dfae:logs-clear'),
+  /**
+   * 导出文本:主进程弹系统「另存为」,只写用户选中的路径。
+   * 返回 { ok, path } 或 { ok:true, canceled:true }(用户取消)或 { ok:false, error }。
+   */
+  exportText: (text, defaultName) => ipcRenderer.invoke('dfae:logs-export', String(text == null ? '' : text), String(defaultName == null ? '' : defaultName)),
+  /** 在资源管理器里打开日志目录(目录不存在会先建)。 */
+  reveal: () => ipcRenderer.invoke('dfae:logs-reveal'),
+  /** 复制文本到系统剪贴板。 */
+  copyText: (text) => ipcRenderer.invoke('dfae:logs-copy', String(text == null ? '' : text)),
+  /** 日志目录 / 文件 / 体积等信息,日志页顶栏用来显示「日志存哪儿了」。 */
+  info: () => ipcRenderer.invoke('dfae:logs-info'),
+});

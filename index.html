@@ -159,6 +159,12 @@
             <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.2 1.72v12.56c0 .66.72 1.07 1.29.74l10.3-6.28a.86.86 0 0 0 0-1.48L4.49.98a.86.86 0 0 0-1.29.74z"/></svg>
             <span>编辑器</span>
           </button>
+          <!-- 日志:应用运行 / 导出 / 更新 / 错误的关键事件。桌面版写入本地日志文件,
+               网页版与手机端只保留本次会话的记录(见 src/logs.ts)。 -->
+          <button type="button" class="rail-item" data-page="logs" id="navLogs" title="日志">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M5 10.5a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5m0-2a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5m0-2a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5"/><path d="M3 0h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-1h1v1a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v1H1V2a2 2 0 0 1 2-2"/><path d="M1 5a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1A.5.5 0 0 1 1 5m0 2.5a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1a.5.5 0 0 1-.5-.5m0 2.5a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1a.5.5 0 0 1-.5-.5"/></svg>
+            <span>日志</span>
+          </button>
           <button type="button" class="rail-item" data-page="downloads" id="navDownloads" title="下载列表">
             <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 1.2a.9.9 0 0 1 .9.9v6.03l1.53-1.53a.9.9 0 1 1 1.27 1.27l-3.06 3.06a.9.9 0 0 1-1.27 0L4.3 7.87a.9.9 0 0 1 1.27-1.27L7.1 8.13V2.1a.9.9 0 0 1 .9-.9z"/><path d="M2.4 11.2a.9.9 0 0 1 .9.9v1.1h9.4v-1.1a.9.9 0 1 1 1.8 0v1.5a1.4 1.4 0 0 1-1.4 1.4H2.9a1.4 1.4 0 0 1-1.4-1.4v-1.5a.9.9 0 0 1 .9-.9z"/></svg>
             <span>下载列表</span>
@@ -503,16 +509,53 @@
          ============================================================ -->
     <section class="page page-home" id="viewHome" hidden aria-labelledby="homeTitle">
       <div class="page-scroll">
-        <div class="home-card">
-          <img class="home-logo" src="/logo.svg" alt="" aria-hidden="true" />
-          <p class="home-channel" id="homeChannel">桌面版 v1.0.5</p>
-          <h1 class="home-title" id="homeTitle">把游戏动画改成你自己的</h1>
-          <p class="home-desc">十套由人工用 AE 制作的 HUD 动画。改文案、配色和图标,导出成带音效的 MP4 / AVI。</p>
-          <div class="home-actions">
-            <button type="button" class="home-primary" id="btnOpenEditor">打开编辑器</button>
-            <button type="button" class="home-ghost" id="btnGoAbout">关于与更新</button>
+        <div class="home-split">
+          <div class="home-card">
+            <div class="home-brandline">
+              <img class="home-logo" src="/logo.svg" alt="" aria-hidden="true" />
+              <p class="home-channel" id="homeChannel">桌面版 v1.0.5</p>
+            </div>
+            <h1 class="home-title" id="homeTitle">把游戏动画改成你自己的</h1>
+            <p class="home-desc">十套由人工用 AE 制作的 HUD 动画。改文案、配色和图标,导出成带音效的 MP4 / AVI。</p>
+            <div class="home-actions">
+              <button type="button" class="home-primary" id="btnOpenEditor">
+                <span id="btnOpenEditorText">打开编辑器</span>
+                <svg class="bi home-arrow" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <path d="M5.3 2.6 11.7 8l-6.4 5.4z" />
+                </svg>
+              </button>
+              <button type="button" class="home-ghost" id="btnGoAbout">关于与更新</button>
+            </div>
+            <ul class="home-keys" aria-label="常用快捷键">
+              <li><kbd>空格</kbd>播放 / 暂停</li>
+              <li><kbd>/</kbd>选择动画</li>
+              <li><kbd>Ctrl</kbd><kbd>B</kbd>收起侧栏</li>
+            </ul>
+            <p class="home-last" id="homeLast" hidden></p>
           </div>
-          <p class="home-last" id="homeLast"></p>
+          <!-- 右侧只放"上一次打开的那一套"这一张卡:主页不放动画列表(见 PRODUCT.md),
+               但把"继续编辑"做成可以直接点的一步,而不是让用户回编辑器再开画廊找一次。 -->
+          <aside class="home-side" aria-label="继续上次的动画">
+            <p class="home-side-kicker" id="homeSideKicker">从这里开始</p>
+            <button type="button" class="home-recent" id="homeRecent" hidden>
+              <span class="home-recent-cover"><img id="homeRecentCover" src="" alt="" /></span>
+              <span class="home-recent-body">
+                <span class="home-recent-name" id="homeRecentName">—</span>
+                <span class="home-recent-meta" id="homeRecentMeta"></span>
+                <span class="home-recent-cta">继续编辑
+                  <svg class="bi home-cta-arrow" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path d="M5.3 2.6 11.7 8l-6.4 5.4z" />
+                  </svg>
+                </span>
+              </span>
+            </button>
+            <button type="button" class="home-switch" id="homeSwitch" hidden>换一套动画</button>
+            <div class="home-empty" id="homeEmpty">
+              <p class="home-empty-title">还没有打开过动画</p>
+              <p class="home-empty-desc">十套 HUD 动画在编辑器里,任选一套开始改文案、配色和图标。</p>
+              <button type="button" class="home-browse" id="btnBrowseAnims">选择动画</button>
+            </div>
+          </aside>
         </div>
       </div>
     </section>
@@ -588,6 +631,140 @@
         </div>
       </div>
     </section>
+
+    <!-- ============================================================
+         日志(应用运行记录)
+         ------------------------------------------------------------
+         侧边栏「日志」进入。同一页有两种视图:
+           · 用户日志(src/logs.ts)—— console / 未捕获异常 / 状态栏 / 关键业务事件;
+             桌面版由主进程写入 <用户数据目录>/logs/dfae.log(JSONL,超过 2MB 轮转一代);
+             按类型筛选、搜索、跟随最新、复制 / 下载 / 清空(桌面版)；
+           · 开发者日志(src/devlog.ts)—— 原生英文等级/来源的原始流,内嵌终端 + CLI:
+             console 原始参数 / fetch / 全局异常 / 状态栏 / 页面切换 / 动画与导出事件;
+             只存在本次会话内存,COPY / SAVE 导出文本,不写入用户日志文件。
+         页面本身不滚动:.logs-body 是唯一滚动区,这样筛选条与操作永远看得见 ——
+         日志是"越到后面越要看的"内容,操作条跟着内容滚走就很难用。
+         ============================================================ -->
+    <section class="page page-logs" id="viewLogs" hidden aria-labelledby="logsTitle">
+      <div class="logs-wrap">
+        <header class="page-head logs-head">
+          <div class="logs-title-wrap">
+            <h1 class="page-title" id="logsTitle">日志</h1>
+            <p class="page-sub" id="logsSub">应用运行、导出与更新过程中的关键事件;遇到问题先看这里</p>
+          </div>
+          <!-- 视图切换:同一页两种日志。用户日志是校对过的中文事件流;开发者日志是
+               原生控制台格式的原始流(见 src/devlog.ts)。选择记在 localStorage,刷新后保持。 -->
+          <div class="logs-head-actions">
+            <div class="logs-mode" id="logsMode" role="tablist" aria-label="切换日志视图" data-current="user">
+              <!-- 滑动指示器:两格等宽(grid 1fr),位置只由 data-current 决定。
+                   和顶栏主题开关是同一套语言(见 style.css 的 .theme-switch):选择位置变了,
+                   指示器 220ms 滑过去;减少动效时直接落位。 -->
+              <span class="logs-mode-indicator" aria-hidden="true"></span>
+              <button type="button" class="logs-mode-btn is-active" id="logsModeUser" data-mode="user" data-df-native role="tab" aria-selected="true" aria-controls="logsUserPane" tabindex="0" title="面向普通用户的简版日志">用户日志</button>
+              <button type="button" class="logs-mode-btn" id="logsModeDev" data-mode="dev" data-df-native role="tab" aria-selected="false" aria-controls="logsDevPane" tabindex="-1" title="原生控制台格式的开发者日志">开发者日志</button>
+            </div>
+            <!-- 状态一枚:桌面版 = 自动保存到本地文件;网页 / 手机 = 仅本次会话。开发者视图下隐藏 -->
+            <span class="logs-state" id="logsState">本次会话</span>
+          </div>
+        </header>
+        <!-- ===== 用户日志(现有功能,保持原样) ===== -->
+        <div class="logs-user-pane" id="logsUserPane" role="tabpanel" aria-labelledby="logsModeUser">
+        <div class="logs-bar">
+          <!-- 类型筛选:单选。计数显示在每一枚后面,是"这个类型有多少条"的真实数字。 -->
+          <div class="logs-filters" id="logsFilters" role="group" aria-label="选择日志类型">
+            <button type="button" class="logs-chip is-active" data-level="all" data-df-native aria-pressed="true" title="显示全部类型的日志">全部 <b id="logsCountAll">0</b></button>
+            <button type="button" class="logs-chip" data-level="info" data-df-native aria-pressed="false" title="信息:正常流程里的关键节点(载入、导出完成、更新检查)">信息 <b id="logsCountInfo">0</b></button>
+            <button type="button" class="logs-chip" data-level="warn" data-df-native aria-pressed="false" title="警告:还能继续,但结果可能不如预期">警告 <b id="logsCountWarn">0</b></button>
+            <button type="button" class="logs-chip" data-level="error" data-df-native aria-pressed="false" title="错误:操作失败或运行异常">错误 <b id="logsCountError">0</b></button>
+            <button type="button" class="logs-chip" data-level="debug" data-df-native aria-pressed="false" title="调试:控制台细节,排障时再展开看">调试 <b id="logsCountDebug">0</b></button>
+          </div>
+          <!-- 搜索框复用动画画廊的 .ap-search 外壳(图标 + 原生 input + 清空按钮),
+               尺寸由 .logs-search 覆盖成这一页需要的一档。 -->
+          <div class="logs-search ap-search">
+            <svg class="bi ap-search-ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M11.74 10.34a6.5 6.5 0 1 0-1.397 1.398l.098.115 3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+            </svg>
+            <input type="search" id="logsSearch" placeholder="搜索日志内容 / 标签…" autocomplete="off" spellcheck="false" aria-label="搜索日志" />
+            <button type="button" class="ap-search-clear" id="logsSearchClear" data-df-native title="清空搜索" aria-label="清空搜索" hidden>
+              <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M4.65 4.65a.8.8 0 0 1 1.13 0L8 6.87l2.22-2.22a.8.8 0 1 1 1.13 1.13L9.13 8l2.22 2.22a.8.8 0 0 1-1.13 1.13L8 9.13l-2.22 2.22a.8.8 0 0 1-1.13-1.13L6.87 8 4.65 5.78a.8.8 0 0 1 0-1.13z"/>
+              </svg>
+            </button>
+          </div>
+          <!-- 操作条:跟随 / 刷新 / 复制 / 下载 / 打开文件夹(仅桌面)/ 清空。
+               按钮全部 data-df-native:它们是这一页自己的紧凑控件,不套 Fluent 的默认尺寸。 -->
+          <div class="logs-actions">
+            <button type="button" class="logs-btn" id="logsFollow" data-df-native aria-pressed="true" title="新日志出现时自动滚动到最新一条">跟随最新</button>
+            <button type="button" class="logs-btn" id="logsRefresh" data-df-native title="重新读取磁盘上的日志(桌面版)">刷新</button>
+            <button type="button" class="logs-btn" id="logsCopy" data-df-native title="复制当前筛选结果到剪贴板">复制</button>
+            <button type="button" class="logs-btn" id="logsDownload" data-df-native title="把当前筛选结果下载成日志文件">下载</button>
+            <button type="button" class="logs-btn" id="logsReveal" data-df-native title="打开日志文件所在的文件夹" hidden>打开文件夹</button>
+            <button type="button" class="logs-btn logs-btn-danger" id="logsClear" data-df-native title="清空本次日志(桌面版会同时清空日志文件)">清空</button>
+          </div>
+        </div>
+        <!-- 列表舞台:日志区与"操作结果条"共用一块定位上下文。
+             结果条绝对定位在右下角(浮在列表上方、不占布局),所以它出现 / 收起时
+             列表不会整体弹一下 —— 之前它在流里,一次复制就会把日志推动 42px。 -->
+        <div class="logs-stage">
+          <!-- 操作结果(已复制 N 条 / 已保存到…):aria-live 让读屏也能听到,几秒后自动收起 -->
+          <p class="logs-hint" id="logsHint" role="status" aria-live="polite" hidden></p>
+          <div class="logs-body" id="logsBody">
+            <ul class="logs-list" id="logsList"></ul>
+            <div class="ap-empty" id="logsEmpty" hidden>
+              <svg class="bi bi-xl" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M5 10.5a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5m0-2a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5m0-2a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5"/>
+                <path d="M3 0h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-1h1v1a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v1H1V2a2 2 0 0 1 2-2"/>
+              </svg>
+              <p id="logsEmptyText">还没有日志。应用的关键操作与错误会记录在这里。</p>
+            </div>
+          </div>
+        </div>
+        <footer class="logs-foot">
+          <span class="logs-foot-note" id="logsFoot"></span>
+        </footer>
+        </div>
+
+        <!-- ===== 开发者日志:内嵌终端 / CLI(见 src/devlog.ts) =====
+             全部文案与日志用原生英文格式;这里只搭骨架,采集、筛选、命令与导出逻辑在模块里。
+             终端自身是唯一滚动区(.dev-term-body),顶部工具条与底部命令输入始终可见。 -->
+        <div class="logs-dev-pane" id="logsDevPane" role="tabpanel" aria-labelledby="logsModeDev" hidden>
+          <div class="dev-term">
+            <div class="dev-term-head">
+              <span class="dev-term-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="dev-term-title">DFAE 开发者日志</span>
+              <span class="dev-term-meta" id="devLogMeta">本次会话</span>
+              <div class="dev-term-actions">
+                <button type="button" class="dev-term-btn" id="devLogFollow" data-df-native aria-pressed="true" title="自动滚动到最新一行">跟随最新</button>
+                <button type="button" class="dev-term-btn" id="devLogCopy" data-df-native title="复制当前筛选结果到剪贴板">复制</button>
+                <button type="button" class="dev-term-btn" id="devLogDownload" data-df-native title="把当前筛选结果保存为文件">保存</button>
+                <button type="button" class="dev-term-btn dev-term-btn-danger" id="devLogClear" data-df-native title="清空本次会话日志(不影响用户日志文件)">清空</button>
+              </div>
+            </div>
+            <!-- 等级筛选:单击选中,计数恒为全量。控制区用中文;日志行里的 LEVEL 仍是原生 DEBUG/INFO/WARN/ERROR -->
+            <div class="dev-term-filters" id="devLogFilters" role="group" aria-label="日志等级筛选">
+              <button type="button" class="dev-chip is-active" data-level="all" data-df-native aria-pressed="true">全部 <b id="devCountAll">0</b></button>
+              <button type="button" class="dev-chip" data-level="debug" data-df-native aria-pressed="false">调试 <b id="devCountDebug">0</b></button>
+              <button type="button" class="dev-chip" data-level="info" data-df-native aria-pressed="false">信息 <b id="devCountInfo">0</b></button>
+              <button type="button" class="dev-chip" data-level="warn" data-df-native aria-pressed="false">警告 <b id="devCountWarn">0</b></button>
+              <button type="button" class="dev-chip" data-level="error" data-df-native aria-pressed="false">错误 <b id="devCountError">0</b></button>
+              <span class="dev-term-filter" id="devLogFilterInfo" hidden></span>
+              <span class="dev-term-hint">仅本次会话 · 原始流</span>
+            </div>
+            <div class="dev-term-body" id="devLogBody">
+              <div class="dev-log-list" id="devLogList"></div>
+              <div class="dev-log-empty" id="devLogEmpty" hidden>
+                <span class="dev-log-empty-sign" aria-hidden="true">$</span>
+                <p id="devLogEmptyText">本次会话还没有日志。控制台输出、错误与网络请求会出现在这里。</p>
+              </div>
+            </div>
+            <div class="dev-term-prompt">
+              <span class="dev-prompt-sign" aria-hidden="true">$</span>
+              <input id="devLogCmd" type="text" autocomplete="off" spellcheck="false" placeholder="输入 help 查看命令" aria-label="开发者日志命令" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
     </div>
 
     <!-- 切换动画时按需下载数据包的加载浮层(实时进度) -->
@@ -607,24 +784,68 @@
     <!-- 导出浮层是模态的:role/aria-modal/aria-labelledby 让读屏知道"现在只在跟这一层交互",
          键盘焦点由 main.ts 的 holdFocusInside 锁在浮层内(否则 Tab 会跑到被盖住的页面上)。 -->
     <div class="export-overlay" id="exportOverlay" hidden role="dialog" aria-modal="true" aria-labelledby="exportTitle" tabindex="-1">
-      <div class="export-card">
-        <div class="export-head">
+      <div class="export-card" id="exportCard">
+        <!-- 头部在成功态整体淡出(保留高度,避免卡片在动画中塌一下);标题文字先更新成
+             「导出成功」再淡出,读屏拿到的对话框名字始终正确。 -->
+        <div class="export-head" id="exportHead">
           <span class="export-title" id="exportTitle">
             <svg class="bi bi-lg" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
               <path d="M1.6 3.6h12.8a1.6 1.6 0 0 1 1.6 1.6v5.6a1.6 1.6 0 0 1-1.6 1.6H1.6A1.6 1.6 0 0 1 0 10.8V5.2a1.6 1.6 0 0 1 1.6-1.6zm3.7 2.1a.7.7 0 0 0-1.06.6v3.4a.7.7 0 0 0 1.06.6l2.9-1.7a.7.7 0 0 0 0-1.2zM4.5 0h7l-.6 2.4h-7z" opacity=".95"/>
             </svg>
-            正在导出视频
+            <span id="exportTitleText">正在导出视频</span>
           </span>
           <span class="export-format" id="exportFormatTag"></span>
         </div>
-        <div class="export-status" id="exportStatus">正在准备…</div>
-        <div class="export-percent" id="exportPercent">0%</div>
-        <!-- 进度用 progressbar 语义表达:读屏读"导出进度 42%",而不是每秒重播一句状态文案 -->
-        <div class="export-bar" role="progressbar" aria-label="导出进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="export-bar-fill" id="exportBarFill"></div></div>
-        <div class="export-detail" id="exportDetail"></div>
+        <!-- 进度 / 成功两态叠在同一格里:切换只做透明度与位移,卡片高度由 main.ts 做一次
+             有界的高度过渡负责收缩。这样 100% -> 对勾的过程不会让卡片跳。 -->
+        <div class="export-stage" id="exportStage">
+          <div class="export-progress" id="exportProgress">
+            <div class="export-status" id="exportStatus">正在准备…</div>
+            <div class="export-percent" id="exportPercent">0%</div>
+            <!-- 进度用 progressbar 语义表达:读屏读"导出进度 42%",而不是每秒重播一句状态文案 -->
+            <div class="export-bar" role="progressbar" aria-label="导出进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="export-bar-fill" id="exportBarFill"></div></div>
+            <div class="export-detail" id="exportDetail"></div>
+          </div>
+          <!-- 成功态:对勾自绘(stroke-dashoffset),标题与文件信息分两级出现。
+               只有导出成功时才会被 main.ts 解除 hidden;失败 / 取消保持进度态。 -->
+          <div class="export-success" id="exportSuccess" role="status" aria-live="polite" hidden>
+            <span class="export-check" aria-hidden="true">
+              <svg class="export-check-ring" viewBox="0 0 96 96" aria-hidden="true" focusable="false">
+                <circle cx="48" cy="48" r="45" />
+              </svg>
+              <svg class="export-check-mark" viewBox="0 0 96 96" aria-hidden="true" focusable="false">
+                <path d="M29 49.5 42 62.5 67.5 35" />
+              </svg>
+            </span>
+            <p class="export-success-title">导出成功</p>
+            <p class="export-success-name" id="exportSuccessName">—</p>
+            <p class="export-success-sub" id="exportSuccessSub"></p>
+          </div>
+        </div>
+        <!-- 渲染器日志窗口(用户要求:一块简单的黑色矩形,逐条显示导出正在做什么)。
+             纯展示:信息与上面的状态行 / 进度条重复,所以整块对读屏隐藏(aria-hidden);
+             真正的进度语义仍由 .export-status 与 progressbar 承担。
+             不画红黄绿圆点、LIVE 呼吸灯与闪烁光标 —— 这里只要日志本身。
+             成功态默认折叠(卡片交给对勾),需要排查时由底部「查看渲染日志」再展开。 -->
+        <div class="export-log-slot" id="exportLogSlot">
+          <div class="export-log-inner">
+            <div class="render-log" id="renderLog" aria-hidden="true">
+              <div class="render-log-head">
+                <span class="render-log-title">渲染器日志</span>
+                <span class="render-log-frame" id="renderLogFrame">FRAME — / —</span>
+              </div>
+              <div class="render-log-body" id="renderLogBody"></div>
+              <div class="render-log-foot">
+                <span class="render-log-state" id="renderLogState">准备中</span>
+                <span class="render-log-elapsed" id="renderLogElapsed">00:00.0</span>
+              </div>
+            </div>
+          </div>
+        </div>
         <!-- 正在导出的这个文件本身(用户要求:点了导出视频就能看到"下载列表 + 下载进度条")。
              结构与下载列表里的一行一致(类型图标 + 文件名 + 元信息 + 状态),它由 main.ts 在导出期间
-             实时更新:编码阶段的进度写成百分比,落盘阶段换成「正在写入下载文件夹…」,成功变成「已保存」。 -->
+             实时更新:编码阶段的进度写成百分比,落盘阶段换成「正在写入下载文件夹…」,成功变成「已保存」。
+             成功态下这一行收起:文件名与状态已经在对勾下方写清楚了,不必再占一份。 -->
         <div class="export-file" id="exportFile" hidden>
           <span class="dw-type" id="exportFileIcon"></span>
           <div class="dw-info">
@@ -634,12 +855,22 @@
           <span class="export-file-pct" id="exportFilePct"></span>
         </div>
         <div class="export-warn" id="exportWarn" hidden></div>
-        <!-- 完成后才出现:保存到手机(Web Share,手机把视频存进相册/文件最可靠的一条路)、
+        <!-- 完成后才出现:打开文件夹(桌面)、保存到手机(移动端 Web Share,把视频真正落到相册/文件)、
              重新下载(自动下载被拦截或没找到文件时再触发一次);导出中与失败态下都隐藏。 -->
         <div class="export-actions">
+          <button id="btnExportOpenDir" type="button" class="primary" hidden>打开文件夹</button>
           <button id="btnExportSave" type="button" class="primary" hidden>保存到手机</button>
           <button id="btnExportRedownload" type="button" hidden>重新下载</button>
           <button id="btnExportCancel" type="button">取消导出</button>
+        </div>
+        <!-- 成功态的次要出口:日志默认收起,需要排查时再展开(展开/收起都走同一次卡片高度过渡)。 -->
+        <div class="export-foot" id="exportFoot" hidden>
+          <button id="btnExportLog" type="button" aria-expanded="false" aria-controls="renderLog">
+            <svg class="bi export-log-caret" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M6 2.6 12.9 8 6 13.4z" />
+            </svg>
+            <span id="btnExportLogText">查看渲染日志</span>
+          </button>
         </div>
       </div>
     </div>
@@ -788,6 +1019,7 @@
               <path d="M2.4 11.2a.9.9 0 0 1 .9.9v1.1h9.4v-1.1a.9.9 0 1 1 1.8 0v1.5a1.4 1.4 0 0 1-1.4 1.4H2.9a1.4 1.4 0 0 1-1.4-1.4v-1.5a.9.9 0 0 1 .9-.9z"/>
             </svg>
             <p id="downloadsEmptyText">还没有导出记录</p>
+            <button type="button" class="dw-empty-go" id="downloadsEmptyGo" data-df-native>去编辑器导出</button>
           </div>
         </div>
         <!-- 底部只放一条"历史存在哪"的说明:面板已有的信息(记录数、丢失数)在副标题里,

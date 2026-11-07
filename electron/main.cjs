@@ -32,13 +32,17 @@
  * ========================================================================== */
 'use strict';
 
-const { app, BrowserWindow, Menu, shell, dialog, session, Notification, nativeImage, ipcMain, net } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog, session, Notification, nativeImage, ipcMain, net, clipboard } = require('electron');
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 /* 应用内更新:下载流写盘 + detached 启动安装器(见 5c 段) */
 const spawn = require('node:child_process').spawn;
 const { createDownloads } = require('./downloads.cjs');
+/* 日志持久化(见 electron/logs.cjs):渲染进程的日志页与主进程关键事件写同一份 JSONL。
+ * 与 downloads 一样延迟到 bootstrap 里创建 —— 目录在 userData 下,ready 之前拿到的
+ * 可能还不是最终位置(受 --user-data-dir 等开关影响)。 */
+const { createLogs, logDebug, logInfo, logWarn, logError } = require('./logs.cjs');
 
 /* ---------------------------------------------------------------------------
  * 0. 运行期常量与命令行开关
@@ -69,6 +73,23 @@ const MEASURE_OUT = path.resolve(APP_ROOT, argValue('--measure-out', path.join('
  * 延迟到 bootstrap 里创建:它要读 app.getPath('userData'),而 userData 在 ready 之前
  * 还可能是默认值(受 --user-data-dir 等开关影响),早期解析会把历史写到错的地方。 */
 let downloads = null;
+
+/* 日志持久化控制器(bootstrap 里创建);模块级 logInfo/logWarn/logError 会把事件写进它。
+ * 在 createLogs 之前调用这些函数也是安全的 —— logs.cjs 会先把记录排进内存队列。 */
+let logs = null;
+
+/**
+ * 主进程事件日志的便捷写法,形如 mlog('warn', '消息', '多行细节')。
+ * 这里再包一层 try/catch:logs.cjs 内部已经不抛异常,但「记日志」绝不该成为第二个故障点。
+ */
+function mlog(level, msg, detail) {
+  try {
+    if (level === 'error') logError(msg, detail);
+    else if (level === 'warn') logWarn(msg, detail);
+    else if (level === 'debug') logDebug(msg, detail);
+    else logInfo(msg, detail);
+  } catch { /* 忽略 */ }
+}
 
 const APP_ID = 'top.tfrstudio.dfae';
 const DEFAULT_BOUNDS = { width: 1480, height: 940 };
@@ -348,6 +369,7 @@ function installDownloadHandler(getWin) {
      * "will-download 到底有没有触发、存到哪个路径"是唯一能区分两类原因的信息
      * (站点没触发下载 vs 主进程接管失败)。 */
     const trace = (m) => { if (SMOKE) smokeState.notes.push('[download] ' + m); };
+    mlog('debug', '导出下载开始', filename);
     let allocated = null;                 // 自动保存时记下分配到的落点,完成后据此登记历史
     if (SMOKE) {
       try { fs.mkdirSync(SMOKE_OUT, { recursive: true }); } catch { /* 忽略 */ }
@@ -373,6 +395,11 @@ function installDownloadHandler(getWin) {
     item.once('done', (_e, state) => {
       const savePath = item.getSavePath();
       const report = { filename, state, savePath, bytes: safeSize(savePath), elapsedMs: Date.now() - started };
+      if (state === 'completed') {
+        mlog('info', '导出落盘完成(下载管线)', filename + ' → ' + savePath + '\n' + (report.bytes / 1024 / 1024).toFixed(1) + ' MB · ' + report.elapsedMs + ' ms');
+      } else if (state === 'interrupted') {
+        mlog('warn', '导出中断(下载管线)', filename + ' → ' + savePath);
+      }
       /* 先登记下载历史 —— 自检模式也要走这一步(自检正是用来证明这条链路通的),
        * 所以不能像以前那样在 SMOKE 分支里提前 return 掉。 */
       let entry = null;
@@ -476,7 +503,13 @@ function createWindow(origin, restored) {
     if (restored && restored.maximized) win.maximize();
     if (!SMOKE) win.show();
   });
-  win.on('close', () => saveWindowState(win));
+  win.on('close', () => {
+    saveWindowState(win);
+    mlog('info', '窗口关闭');
+  });
+  /* 界面卡死 / 恢复:打包版没有终端输出,「点了没反应」这类问题只能靠日志留下时间点 */
+  win.on('unresponsive', () => mlog('warn', '界面无响应', '渲染进程超过 5 秒没有响应'));
+  win.on('responsive', () => mlog('info', '界面恢复响应'));
 
   /* 外链一律交给系统浏览器:应用窗口只用来跑编辑器本身。 */
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -506,6 +539,31 @@ function loadAppIcon() {
 async function bootstrap() {
   app.setAppUserModelId(APP_ID);          // Windows 通知/任务栏归组要靠它
 
+  /* 日志持久化。放这里而不是模块顶层:目录在 app.getPath('userData') 下,
+   * 必须等 ready 之后才是最终位置。初始化失败不阻塞启动 —— 日志是辅助能力,
+   * 不能成为「应用起不来」的原因;之后未就绪时的调用只会排队/丢弃(见 logs.cjs)。 */
+  try {
+    logs = createLogs({ dir: path.join(app.getPath('userData'), 'logs'), version: app.getVersion() });
+  } catch (e) {
+    logs = null;
+    console.error('[logs] 初始化失败:', e);
+  }
+
+  /* 进程级异常:以前这些只在开发者工具的终端里一闪而过,打包版连终端都没有。
+   * 这里只记录、不再抛出 —— 在 handler 里重新 throw 会变成死循环;
+   * 应用要不要退出交给 Electron 自己的策略(界面崩溃见下面的 render-process-gone)。 */
+  process.on('uncaughtException', (e) => mlog('error', '主进程未捕获异常', e && e.stack ? e.stack : String(e)));
+  process.on('unhandledRejection', (e) => mlog('error', '主进程未处理的 Promise 拒绝', e && e.stack ? e.stack : String(e)));
+
+  mlog('info', '应用启动', [
+    '版本 ' + app.getVersion(),
+    '打包 ' + (app.isPackaged ? '是' : '否'),
+    '平台 ' + process.platform + ' / ' + process.arch,
+    'Electron ' + process.versions.electron + ' · Chromium ' + process.versions.chrome,
+    '用户数据 ' + app.getPath('userData'),
+    '日志 ' + (logs ? logs.file() : '(未就绪)'),
+  ].join('\n'));
+
   /* 自检时把主进程里的未捕获异常/未处理拒绝也记进报告:
    * 这类异常只会让某个回调"悄悄不执行"(比如下载完成后的历史登记),
    * 表面上一切正常,不记下来根本查不到。 */
@@ -515,6 +573,7 @@ async function bootstrap() {
   }
 
   if (!DEV_URL && !fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
+    mlog('error', '缺少构建产物', path.join(DIST_DIR, 'index.html'));
     dialog.showErrorBox('缺少构建产物', `没有找到 ${path.join(DIST_DIR, 'index.html')}。\n\n请在工程目录先执行 npm run build,或用 npm run dist 重新打包。`);
     app.exit(2);
     return;
@@ -523,10 +582,12 @@ async function bootstrap() {
   let server = null;
   if (DEV_URL) {
     appOrigin = DEV_URL.replace(/\/+$/, '');
+    mlog('info', '使用开发服务器', appOrigin);
   } else {
     const started = await startStaticServer();
     server = started.server;
     appOrigin = started.origin;
+    mlog('info', '静态服务已启动', '地址 ' + appOrigin + '\n站点根目录 ' + DIST_DIR);
   }
 
   /* 导出落盘 / 下载列表。必须在 installDownloadHandler 之前建好 ——
@@ -544,6 +605,10 @@ async function bootstrap() {
 
   const restored = readWindowState() || {};
   mainWindow = createWindow(appOrigin, restored);
+  try {
+    const bounds = mainWindow.getBounds();
+    mlog('info', '窗口已创建', '页面 ' + appOrigin + '\n窗口 ' + bounds.width + '×' + bounds.height + (restored.maximized ? '(最大化)' : ''));
+  } catch { /* 拿不到窗口尺寸不影响任何事 */ }
 
   /* 诊断收集:控制台告警/错误 + 4xx/5xx 与网络失败。
    * 平时只在开发者工具里能看到的这些东西,自检模式会把它们写进报告 —— 
@@ -572,7 +637,14 @@ async function bootstrap() {
   /* 自检 / 布局审计直接进编辑器(?view=editor):它们量的是编辑器几何与导出链路,
    * 开始页盖在上面会让截图与点击全部落在开始页上。开始页自己的回归在
    * tools/verify-start-screen.mjs(它显式带 ?view=home)。 */
-  await mainWindow.loadURL(appOrigin + '/index.html' + (SMOKE || MEASURE ? '?view=editor' : ''));
+  try {
+    await mainWindow.loadURL(appOrigin + '/index.html' + (SMOKE || MEASURE ? '?view=editor' : ''));
+  } catch (e) {
+    /* 加载失败(服务没起来 / 产物被删)以前只会留下一扇白窗口,现在日志里至少有原因;
+     * 仍然把异常抛出去,保持 bootstrap 原本的失败行为。 */
+    mlog('error', '加载页面失败', appOrigin + '\n' + (e && e.message ? e.message : String(e)));
+    throw e;
+  }
 
   if (SMOKE) {
     const { runSmoke } = require('./smoke.cjs');
@@ -616,6 +688,7 @@ async function bootstrap() {
   mainWindow.show();
 
   app.on('window-all-closed', () => {
+    mlog('info', '所有窗口已关闭,退出应用');
     if (server) server.close();
     app.quit();
   });
@@ -635,6 +708,7 @@ if (!gotLock) {
 
   /* 渲染进程崩溃时别静默留个白窗口,至少告诉用户发生了什么。 */
   app.on('render-process-gone', (_e, _wc, details) => {
+    mlog('error', '渲染进程异常退出', '原因 ' + details.reason + ' · 退出码 ' + details.exitCode);
     if (SMOKE) return;
     dialog.showErrorBox('界面进程异常退出', `原因:${details.reason}\n\n重新打开应用即可继续。`);
   });
@@ -704,11 +778,14 @@ ipcMain.handle('dfae:check-update', async () => {
     try {
       const data = await fetchReleaseJson(src.url, 8000);
       if (!data || !data.tag_name) throw new Error('返回内容里没有版本号');
+      mlog('info', '检查更新成功', src.label + ' → ' + String(data.tag_name));
       return { ok: true, source: src.id, label: src.label, release: data };
     } catch (e) {
       tried.push(src.label + ': ' + ((e && e.message) || String(e)));
+      mlog('warn', '检查更新失败(' + src.label + ')', String((e && e.message) || e));
     }
   }
+  mlog('warn', '检查更新失败:所有更新源都不可用', tried.join('\n'));
   return { ok: false, tried };
 });
 
@@ -765,11 +842,20 @@ ipcMain.handle('dfae:update-download', async (_e, arg) => {
   } catch {
     return { ok: false, error: '下载地址不合法' };
   }
-  if (parsed.protocol !== 'https:') return { ok: false, error: '只允许 https 下载' };
-  if (!UPDATE_DOWNLOAD_HOSTS.has(parsed.hostname)) return { ok: false, error: '不在允许的下载站点内: ' + parsed.hostname };
+  if (parsed.protocol !== 'https:') {
+    mlog('warn', '更新下载被拒绝:不是 https 地址', rawUrl);
+    return { ok: false, error: '只允许 https 下载' };
+  }
+  if (!UPDATE_DOWNLOAD_HOSTS.has(parsed.hostname)) {
+    mlog('warn', '更新下载被拒绝:不在允许的下载站点内', parsed.hostname);
+    return { ok: false, error: '不在允许的下载站点内: ' + parsed.hostname };
+  }
   if (!IS_PORTABLE && process.platform !== 'win32') return { ok: false, error: '当前平台不支持应用内安装' };
 
-  if (updateJob && !updateJob.done) return { ok: false, error: '已经有一个下载在进行中' };
+  if (updateJob && !updateJob.done) {
+    mlog('warn', '更新下载被拒绝:已经有一个下载在进行中');
+    return { ok: false, error: '已经有一个下载在进行中' };
+  }
 
   /* 文件名:只保留安全字符,并且必须以 .exe 结尾(应用内安装只处理 Windows 安装包) */
   const safeName = rawName.replace(/[\\/:*?"<>|]/g, '_').trim() || 'setup.exe';
@@ -777,6 +863,7 @@ ipcMain.handle('dfae:update-download', async (_e, arg) => {
   const dir = updateDownloadDir();
   const file = path.join(dir, Date.now() + '-' + safeName);
   const stream = fs.createWriteStream(file);
+  mlog('info', '开始下载更新安装包', rawUrl + '\n文件名 ' + safeName + '\n落地 ' + file);
 
   return await new Promise((resolve) => {
     let received = 0;
@@ -788,6 +875,11 @@ ipcMain.handle('dfae:update-download', async (_e, arg) => {
       updateJob = null;
       try { stream.close(); } catch { /* ignore */ }
       if (!result.ok) { try { fs.unlinkSync(file); } catch { /* ignore */ } }
+      if (result.ok) {
+        mlog('info', '更新安装包下载完成', file + '\n' + Math.round((result.size || 0) / 1024 / 1024) + ' MB');
+      } else {
+        mlog('warn', '更新安装包下载失败', String(result.error || ''));
+      }
       resolve(result);
     };
 
@@ -848,6 +940,7 @@ ipcMain.handle('dfae:update-download', async (_e, arg) => {
 
 ipcMain.handle('dfae:update-cancel', () => {
   if (!updateJob) return false;
+  mlog('warn', '取消更新下载');
   updateJob.cancelled = true;
   try { updateJob.req.abort(); } catch { /* ignore */ }
   const file = updateJob.file;
@@ -862,21 +955,35 @@ ipcMain.handle('dfae:update-install', async (_e, arg) => {
   const dir = updateDownloadDir();
   /* 只接受我们自己下载到临时目录里的文件:路径必须落在该目录内,且是 .exe */
   const resolved = path.resolve(file);
-  if (!resolved.startsWith(path.resolve(dir) + path.sep)) return { ok: false, error: '安装包路径不在允许范围内' };
-  if (!/\.exe$/i.test(resolved)) return { ok: false, error: '不是安装包' };
-  if (!fs.existsSync(resolved)) return { ok: false, error: '安装包已被删除,请重新下载' };
+  if (!resolved.startsWith(path.resolve(dir) + path.sep)) {
+    mlog('warn', '安装更新失败:安装包路径不在允许范围内', resolved);
+    return { ok: false, error: '安装包路径不在允许范围内' };
+  }
+  if (!/\.exe$/i.test(resolved)) {
+    mlog('warn', '安装更新失败:不是 .exe 安装包', resolved);
+    return { ok: false, error: '不是安装包' };
+  }
+  if (!fs.existsSync(resolved)) {
+    mlog('warn', '安装更新失败:安装包已被删除', resolved);
+    return { ok: false, error: '安装包已被删除,请重新下载' };
+  }
   try {
     const fd = fs.openSync(resolved, 'r');
     const head = Buffer.alloc(2);
     fs.readSync(fd, head, 0, 2, 0);
     fs.closeSync(fd);
-    if (head.toString('latin1') !== 'MZ') return { ok: false, error: '安装包损坏' };
+    if (head.toString('latin1') !== 'MZ') {
+      mlog('warn', '安装更新失败:安装包损坏(文件头不是 MZ)', resolved);
+      return { ok: false, error: '安装包损坏' };
+    }
   } catch (e) {
+    mlog('warn', '安装更新失败:安装包读取失败', (e && e.message) || String(e));
     return { ok: false, error: '安装包读取失败: ' + (e && e.message) };
   }
 
   /* detached + unref:主进程退出后安装器继续跑;oneClick 安装器装完会自动拉起新版
    * (package.json 的 nsis.runAfterFinish 已经是 true)。 */
+  mlog('info', '开始安装更新', resolved + '\n启动安装器后本进程退出');
   const child = spawn(resolved, [], { detached: true, stdio: 'ignore' });
   child.unref();
   setTimeout(() => { try { app.quit(); } catch { /* ignore */ } }, 400);
@@ -919,21 +1026,48 @@ ipcMain.handle('dfae:downloads-prompt', (_e, on) => (downloads ? downloads.setPr
 ipcMain.handle('dfae:downloads-save', async (_e, filename, bytes) => {
   if (!downloads) throw new Error('下载历史尚未就绪');
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-  const res = await downloads.saveBytes(buf, String(filename || 'animation.mp4'), { source: 'export' });
-  /* 自检时记录这次落盘决策:能区分「页面没走 IPC」「用户关了自动保存」与「真的写失败了」。 */
-  if (SMOKE) smokeState.notes.push('[ipc-save] ' + filename + ' → ' + res.mode + (res.path ? ' ' + res.path : '')); 
-  return res;
+  try {
+    const res = await downloads.saveBytes(buf, String(filename || 'animation.mp4'), { source: 'export' });
+    /* 自检时记录这次落盘决策:能区分「页面没走 IPC」「用户关了自动保存」与「真的写失败了」。 */
+    if (SMOKE) smokeState.notes.push('[ipc-save] ' + filename + ' → ' + res.mode + (res.path ? ' ' + res.path : ''));
+    if (res.mode === 'auto') {
+      mlog('info', '导出落盘完成', String(res.name || filename) + '\n' + String(res.path || '') + '\n' + buf.length + ' 字节');
+    } else {
+      mlog('info', '导出改用系统另存为', String(filename));   // 用户关了「自动保存」,不是错误
+    }
+    return res;
+  } catch (e) {
+    mlog('error', '导出落盘失败', String(filename) + '\n' + ((e && e.message) || String(e)));
+    throw e;                                                   // 保持原有行为:页面要拿到失败
+  }
 });
 
 /** 重命名。返回新的条目;重名不会覆盖,自动加序号后缀。 */
 ipcMain.handle('dfae:downloads-rename', (_e, id, name) => {
   if (!downloads) throw new Error('下载历史尚未就绪');
-  return downloads.rename(String(id || ''), String(name || ''));
+  try {
+    const entry = downloads.rename(String(id || ''), String(name || ''));
+    mlog('info', '下载记录重命名', String(id || '') + ' → ' + entry.name);
+    return entry;
+  } catch (e) {
+    mlog('warn', '下载记录重命名失败', String(id || '') + '\n' + ((e && e.message) || String(e)));
+    throw e;
+  }
 });
 
-/** 删除。mode='file' 连文件一起删;默认只删记录,磁盘上的视频保持不动。 */ipcMain.handle('dfae:downloads-remove', (_e, id, mode) => {
+/** 删除。mode='file' 连文件一起删;默认只删记录,磁盘上的视频保持不动。 */
+ipcMain.handle('dfae:downloads-remove', (_e, id, mode) => {
   if (!downloads) return { ok: false };
-  return downloads.remove(String(id || ''), mode === 'file' ? 'file' : 'record');
+  const withFile = mode === 'file';
+  try {
+    const res = downloads.remove(String(id || ''), withFile ? 'file' : 'record');
+    if (res.ok) mlog('info', withFile ? '删除下载记录与文件' : '删除下载记录', String(id || ''));
+    else mlog('warn', '删除下载记录失败:记录不存在', String(id || ''));
+    return res;
+  } catch (e) {
+    mlog('error', '删除下载记录失败', String(id || '') + '\n' + ((e && e.message) || String(e)));
+    throw e;
+  }
 });
 
 /** 在资源管理器里定位:传条目 id 就定位该文件,传空就打开下载目录。 */
@@ -954,3 +1088,111 @@ ipcMain.handle('dfae:downloads-open', async (_e, id) => {
   const err = await shell.openPath(target);
   return !err;
 });
+
+/* ---------------------------------------------------------------------------
+ * 6b. 日志持久化(渲染进程日志页的 window.dfaeLogs)
+ *
+ * 落盘、轮转、合并读取都在 logs.cjs;这里只做三件事:把 IPC 接到日志控制器、
+ * 用系统「另存为」对话框拿到导出路径、把剪贴板/资源管理器这类系统能力包成布尔结果。
+ *
+ * 与 6 段一致:logs 未就绪(理论上只会在 bootstrap 之前或初始化失败时出现)时
+ * 一律返回空结果 / ok:false,让页面表现为「没有日志」,而不是弹一个看不懂的异常。
+ * ------------------------------------------------------------------------- */
+
+ipcMain.handle('dfae:logs-append', (_e, records) => {
+  if (!logs) return { ok: false, written: 0, error: '日志尚未就绪' };
+  return logs.append(records);
+});
+
+ipcMain.handle('dfae:logs-read', (_e, opts) => {
+  if (!logs) return { ok: false, records: [], total: 0, dir: '', file: '', error: '日志尚未就绪' };
+  return logs.read(opts || {});
+});
+
+/** 清空两代日志文件。页面随后重新 read 就会拿到空列表。 */
+ipcMain.handle('dfae:logs-clear', () => (logs ? logs.clear() : { ok: false, error: '日志尚未就绪' }));
+
+/**
+ * 导出日志文本。
+ * 硬约束:只写用户在「另存为」对话框里亲手选中的路径 —— 页面传来的 text 只是内容,
+ * defaultName 只作为对话框里的建议文件名(会被清掉路径分隔符和非法字符),
+ * 所以这个通道并不等于给页面一个「写任意文件」的能力。
+ */
+ipcMain.handle('dfae:logs-export', async (_e, text, defaultName) => {
+  if (!logs) return { ok: false, error: '日志尚未就绪' };
+  try {
+    const info = logs.info();
+    const options = {
+      title: '导出日志',
+      defaultPath: path.join(info.dir, safeLogName(defaultName)),
+      filters: [
+        { name: '日志文件', extensions: ['log'] },
+        { name: '文本文件', extensions: ['txt'] },
+      ],
+    };
+    const picked = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options);
+    if (!picked || picked.canceled || !picked.filePath) {
+      mlog('info', '导出日志已取消');
+      return { ok: true, canceled: true };     // 用户取消不是错误,页面不该因此弹红条
+    }
+    const written = logs.writeText(picked.filePath, String(text == null ? '' : text));
+    if (!written.ok) {
+      mlog('error', '导出日志失败', String(written.error || ''));
+      return { ok: false, error: written.error };
+    }
+    mlog('info', '导出日志成功', written.path + '\n' + written.size + ' 字节');
+    return { ok: true, path: written.path };
+  } catch (e) {
+    const reason = (e && e.message) || String(e);
+    mlog('error', '导出日志失败', reason);
+    return { ok: false, error: reason };
+  }
+});
+
+/** 在资源管理器里打开日志目录(不存在先建,避免点了「打开目录」却什么都没发生)。 */
+ipcMain.handle('dfae:logs-reveal', async () => {
+  const dir = logs ? logs.dir() : path.join(app.getPath('userData'), 'logs');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const err = await shell.openPath(dir);
+    if (err) {
+      mlog('warn', '打开日志目录失败', err);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    mlog('warn', '打开日志目录失败', (e && e.message) || String(e));
+    return false;
+  }
+});
+
+/** 复制到系统剪贴板。纯系统能力,与日志是否就绪无关。 */
+ipcMain.handle('dfae:logs-copy', (_e, text) => {
+  try {
+    clipboard.writeText(String(text == null ? '' : text));
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+/** 日志目录 / 文件 / 体积等信息,日志页顶栏用来显示「日志存哪儿了」。 */
+ipcMain.handle('dfae:logs-info', () => (logs
+  ? logs.info()
+  : { dir: '', file: '', rotated: '', size: 0, rotatedSize: 0, maxBytes: 0, version: '' }));
+
+/**
+ * 建议文件名:只留最后一段、去掉 Windows 非法字符,扩展名只认 .log/.txt,其余补 .log。
+ * 对话框里出现一个带反斜杠的怪名字只会让用户迷惑。
+ */
+function safeLogName(name) {
+  const fallback = 'dfae-logs.log';
+  let base = String(name == null ? '' : name).trim();
+  if (!base) base = fallback;
+  base = base.split(/[\\/]/).pop() || fallback;
+  base = base.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/[. ]+$/, '');
+  if (!/\.(log|txt)$/i.test(base)) base += '.log';
+  return base.length > 120 ? base.slice(-120) : base;
+}

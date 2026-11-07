@@ -118,10 +118,28 @@
   /* 状态色(语义固定,两套主题各取一版以保证 4.5:1) */
   --danger: #ff99a4;
   --danger-subtle: #4a2a2e;
+  --on-danger: #2a1416;          /* 危险实心面上的文字:深底浅字,对比 8.9:1 */
   --warn: #f9d67a;
   --warn-subtle: #453a20;
   --ok: #54d6a4;
   --ok-subtle: #1f3d33;
+
+  /* ---------- 终端面(导出浮层里的「渲染器日志」) ----------
+   * 固定近黑,不随主题翻转:用户明确要"矩形黑底",而且这块终端本身就是"画面之外的屏幕",
+   * 与预览舞台固定 #16181d 是同一条道理 —— 它是终端/画面自己的颜色,不是界面配色。
+   * 因为底色永远是黑的,状态色不能复用 --warn / --ok:浅色主题里它们是深黄/深绿,
+   * 落在黑底上读不出来,所以这里另给一组只在黑底上用的值。两套主题同值(浅色主题里
+   * 也显式再列一遍,见 1.2b),改这里时两边要同步。
+   * 其余组件只允许引用这里的 --term-* 令牌,不在规则里写死颜色。 */
+  --term-bg: #0a0b0e;
+  --term-line: #24262d;
+  --term-text: #d8dce3;
+  --term-text-2: #9ba1ac;
+  --term-dim: #858c98;
+  --term-frame: #f2f5f9;
+  --term-ok: #54d6a4;
+  --term-warn: #f9d67a;
+  --term-danger: #ff99a4;
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.28);
   --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.34), 0 1px 2px rgba(0, 0, 0, 0.28);
@@ -221,10 +239,24 @@
 
   --danger: #a4262c;
   --danger-subtle: #fbeaeb;
+  --on-danger: #ffffff;          /* 浅色主题:白字压在深红上,对比 7.4:1 */
   --warn: #8a5a00;
   --warn-subtle: #fdf3e0;
   --ok: #0b6a45;
   --ok-subtle: #e6f7ef;
+
+  /* 导出浮层「渲染器日志」的终端面不随主题翻转:它是一块"屏幕",亮色主题里也保持近黑。
+   * 规范要求新增语义色在两套主题里都给出取值,所以这里与 1.2 节逐项同值重列一遍
+   * (只改一边会让两套主题下的终端出现色差;对比度已加进 tools/contrast.mjs)。 */
+  --term-bg: #0a0b0e;
+  --term-line: #24262d;
+  --term-text: #d8dce3;
+  --term-text-2: #9ba1ac;
+  --term-dim: #858c98;
+  --term-frame: #f2f5f9;
+  --term-ok: #54d6a4;
+  --term-warn: #f9d67a;
+  --term-danger: #ff99a4;
 
   --shadow-1: 0 1px 2px rgba(36, 36, 36, 0.08);
   --shadow-2: 0 4px 12px rgba(36, 36, 36, 0.1), 0 1px 2px rgba(36, 36, 36, 0.08);
@@ -792,6 +824,12 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   letter-spacing: 0.1px;
   white-space: nowrap;
   flex: none;
+}
+/* 品牌标志源图是近白 #e2e2e8(深色主题的主交互色),浅色底上几乎看不见。
+ * 只反向处理标志本身(亮度归零保留 alpha),不动其它图片;两套主题都保留品牌形状。 */
+html[data-theme='light'] .brand-logo,
+html[data-theme='light'] .home-logo {
+  filter: brightness(0) saturate(100%) opacity(0.82);
 }
 .brand-logo { display: block; height: 24px; width: auto; flex: none; user-select: none; }
 .brand .tag {
@@ -2052,6 +2090,13 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   100% { transform: translateX(0); }
 }
 .statusbar.error { color: var(--danger); }
+/* 桌面端状态栏属于整个窗口,但它写的是编辑器状态(第几帧 / 已载入哪一套)。
+ * 主页 / 关于 / 日志页上把这行字压低一档(不是隐藏):视觉上不再抢戏,
+ * 真出错时 .error 仍然用满色红字,信息不丢。textContent 不变,读屏与校验脚本不受影响。 */
+html:not([data-page='editor']) .statusbar:not(.error) .statusbar-text { opacity: 0.92; }
+/* 0.92 是量出来的下限:再低一档(0.88)深色主题就只有 4.34:1,12px 小字不满足 WCAG AA。
+ * 视觉上这点差别已经够把"编辑器状态"从主页/关于的注意力里挪开,
+ * 又不需要换一个只在非编辑页出现的弱化色令牌。 */
 /* 状态文案包一层再让省略号生效:flex 容器上的 text-overflow 不会画出省略号
  * (省略号只对块级 / 行内框生效),长文案以前是被硬切掉的。
  * 文案写进这个 span 之后,#statusbar.textContent 依然能读到完整文本
@@ -2137,12 +2182,43 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
   backdrop-filter: blur(2px);
 }
 .export-overlay[hidden] { display: none; }
+/* 数据加载与更新提示的卡片:与画廊卡片同一套入场(df-card-in 240ms)。
+ * 浮层本身已经有一次淡入,卡片再轻微落定一下,视线会先落在内容上。 */
+.dl-card, .upd-card { animation: df-card-in 240ms var(--ease-out) both; }
+/* 下载列表空状态里的「去编辑器导出」:不是主操作,用次级按钮语言。 */
+.dw-empty-go {
+  margin-top: 14px;
+  height: var(--h-ctl);
+  padding: 0 16px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.dw-empty-go:hover { background: var(--surface-hover); border-color: var(--line-accent); }
+.dw-empty-go:active { background: var(--surface-3); transform: scale(0.985); }
+
 /* 导出浮层的进/出场:入场 240ms 有惯性,出场 140ms 更快。
  * 为什么出场要单独写而不是直接 hidden:失败态是常驻的,用户点「关闭」时如果整块
  * 瞬间消失,视线会来不及确认"它确实走了";一个更快的退场既有交代又不拖时间。
  * 与画廊面板同一套参数(见 9.3 的 is-closing)——同一支界面里只留一种退场手感。 */
 .export-overlay { animation: df-overlay-in 240ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 .export-overlay.is-closing { animation: df-overlay-out 140ms var(--ease) both; }
+/* 矮视口(手机横屏 ~390px 高、或被压得很低的桌面窗口):详细的日志窗口会让卡片高于屏幕。
+ * flex 居中会把卡片顶到视口外,底部的取消按钮够不到 —— 改成贴顶 + 遮罩自身滚动,
+ * 正常高度下这条不命中,浮层仍然居中。 */
+@media (max-height: 640px) {
+  .export-overlay {
+    align-items: flex-start;
+    padding: 12px 16px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
 .export-card {
   width: 420px;
   max-width: 92vw;
@@ -2250,6 +2326,326 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
 .export-percent.error ~ .export-bar .export-bar-fill::after,
 .export-percent.cancel ~ .export-bar .export-bar-fill::after { animation: none; opacity: 0; }
 .export-detail { margin-top: 10px; color: var(--text-3); font-size: 11px; min-height: 16px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+
+/* ---------- 9.2c 导出成功态:100% 让位给对勾 ----------
+ * 用户的原话是"导出成功后,窗口中间丝滑过渡为一个对勾,并显示导出成功"。
+ * 实现上没有引入动画库:对勾是两条 SVG 描边(stroke-dashoffset)画出来的,
+ * 进度区淡出、成功区淡入,卡片高度由 main.ts 做一次 420ms 的显式高度过渡 ——
+ * 只动 transform / opacity / 一次有界的 height,不进入任何循环。
+ * 强调色只用 --ok:这是 DESIGN 里唯一允许表达"导出成功"的颜色。 */
+.export-stage { display: grid; }
+.export-stage > * { grid-area: 1 / 1; min-width: 0; }
+.export-progress {
+  transition: opacity 180ms var(--ease), transform 220ms var(--ease), filter 220ms var(--ease);
+}
+.export-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 0 2px;
+  text-align: center;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px);
+  transition: opacity 240ms var(--ease), transform 320ms var(--ease-out), visibility 0s 240ms;
+}
+.export-success[hidden] { display: none; }
+.export-card.is-done .export-progress {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px) scale(0.97);
+  filter: blur(1.5px);
+  pointer-events: none;
+  transition: opacity 180ms var(--ease), transform 220ms var(--ease), filter 220ms var(--ease), visibility 0s 180ms;
+}
+.export-card.is-done .export-success {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition-delay: 120ms;
+}
+/* 对勾:一圈细环 + 一道粗勾。环从 12 点方向开始描,勾随后画出来。 */
+.export-check {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  margin-bottom: 10px;
+  color: var(--ok);
+}
+.export-check::before {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 44%, color-mix(in srgb, var(--ok) 18%, transparent), color-mix(in srgb, var(--ok) 5%, transparent));
+  border: 1px solid color-mix(in srgb, var(--ok) 26%, transparent);
+  transform: scale(0.56);
+  opacity: 0;
+}
+.export-card.is-done .export-check::before {
+  animation: df-check-pop 480ms var(--ease-out) 120ms both;
+}
+@keyframes df-check-pop {
+  0% { transform: scale(0.56); opacity: 0; }
+  62% { opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.export-check::after {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+  opacity: 0;
+}
+.export-card.is-done .export-check::after {
+  animation: df-check-halo 760ms var(--ease-out) 300ms both;
+}
+@keyframes df-check-halo {
+  0% { transform: scale(0.72); opacity: 0.7; }
+  100% { transform: scale(1.34); opacity: 0; }
+}
+.export-check-ring,
+.export-check-mark {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.export-check-ring circle {
+  fill: none;
+  stroke: color-mix(in srgb, var(--ok) 56%, transparent);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-dasharray: 283;
+  stroke-dashoffset: 283;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+}
+.export-card.is-done .export-check-ring circle {
+  animation: df-check-ring-draw 560ms var(--ease-out) 140ms forwards;
+}
+@keyframes df-check-ring-draw { to { stroke-dashoffset: 0; } }
+.export-check-mark path {
+  fill: none;
+  stroke: var(--ok);
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 64;
+  stroke-dashoffset: 64;
+}
+.export-card.is-done .export-check-mark path {
+  animation: df-check-mark-draw 420ms cubic-bezier(0.65, 0, 0.35, 1) 300ms forwards;
+}
+@keyframes df-check-mark-draw { to { stroke-dashoffset: 0; } }
+/* 文案分三级出现:标题 -> 文件名 -> 补充信息,错峰 60-80ms。 */
+.export-success-title {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+.export-success-name {
+  max-width: 100%;
+  margin: 9px 0 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.export-success-sub {
+  max-width: 36ch;
+  margin: 4px 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+}
+.export-success-sub.is-warn { color: var(--warn); }
+.export-card.is-done .export-success-title { animation: df-success-rise 380ms var(--ease-out) 220ms both; }
+.export-card.is-done .export-success-name { animation: df-success-rise 380ms var(--ease-out) 300ms both; }
+.export-card.is-done .export-success-sub { animation: df-success-rise 380ms var(--ease-out) 360ms both; }
+@keyframes df-success-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+/* 头部淡出但保留高度:aria-labelledby 仍指向 #exportTitle,读屏拿到的名字同步变成「导出成功」。 */
+.export-card.is-done .export-head { opacity: 0; pointer-events: none; transition: opacity 180ms var(--ease); }
+/* 日志槽:1fr -> 0fr 由卡片高度过渡一起收;日志本身先淡出,避免最后一行"啪"地消失。 */
+.export-log-slot { display: grid; grid-template-rows: 1fr; }
+.export-log-inner { min-height: 0; overflow: hidden; }
+.export-card.is-done .render-log { transition: opacity 160ms var(--ease); }
+.export-card.is-done:not(.is-log-open) .export-log-slot { grid-template-rows: 0fr; }
+.export-card.is-done:not(.is-log-open) .render-log { opacity: 0; }
+.export-card.is-done.is-log-open .export-log-slot { margin-top: 2px; }
+/* 成功态下文件行收起:文件名与保存结果已经在对勾下方写好。 */
+.export-card.is-done .export-file { display: none; }
+/* 动作与日志开关在成功卡落定后错峰出现,不做无意义的循环。 */
+.export-card.is-done .export-actions { animation: df-success-rise 360ms var(--ease-out) 420ms both; }
+.export-card.is-done .export-warn { display: none; }
+.export-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+.export-foot[hidden] { display: none; }
+.export-card.is-done .export-foot { animation: df-success-rise 320ms var(--ease-out) 520ms both; }
+.export-foot :is(button, fluent-button) {
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  padding: 0;
+  color: var(--text-3);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.6;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--text-3) 42%, transparent);
+  text-underline-offset: 3px;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), text-decoration-color var(--dur) var(--ease);
+}
+.export-foot :is(button, fluent-button):hover {
+  color: var(--text);
+  text-decoration-color: color-mix(in srgb, var(--text) 55%, transparent);
+}
+.export-foot :is(button, fluent-button):focus-visible { color: var(--text); }
+.export-foot :is(button, fluent-button):active { color: var(--text); }
+.export-log-caret { width: 9px; height: 9px; transition: transform 220ms var(--ease-out); }
+.export-card.is-log-open .export-log-caret { transform: rotate(90deg); }
+/* 触屏:日志开关是成功卡上的次要入口,但 18px 高的文字链在手机上点不中。
+ * 外形仍是文字链(不画按钮壳),命中区抬到 40px;成功卡动作按钮同时抬到 44。
+ * 用 pointer:coarse 而不是宽度断点:触屏笔记本 / 平板也一起照顾到。 */
+@media (pointer: coarse) {
+  .export-foot { margin-top: 10px; }
+  .export-foot :is(button, fluent-button) {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 0 2px;
+  }
+  .export-actions :is(button, fluent-button) { height: 44px; }
+}
+
+
+/* ---------- 9.2b 导出浮层里的「渲染器日志」 ----------
+ * 一块黑色矩形 + 等宽日志行。刻意不再画红黄绿圆点、LIVE 呼吸灯、闪烁光标与顶部渐隐 ——
+ * 用户要的是"简单黑色日志窗口",这里只保留日志本身与一条状态栏。
+ *
+ * 约定:
+ *   · 颜色只取 --term-* 令牌(见 1.2),底色两套主题下都是黑的(用户指定);
+ *   · 行由 main.ts 生成(.rl-time / .rl-tag / .rl-msg 三段网格对齐),
+ *     日志内容一律 textContent 写入,不拼 innerHTML;
+ *   · .render-log-body 是唯一滚动区,高度用 clamp 跟视口走,手机上不把浮层撑出屏幕;
+ *   · 日志内容比状态行细得多(逐帧拆出主渲染 / 光栅化 / 合成等耗时),所以窗口比原来高。 */
+.render-log {
+  margin-top: 10px;
+  overflow: hidden;
+  background: var(--term-bg);
+  border: 1px solid var(--term-line);
+  border-radius: var(--r-sm);
+  text-align: left;
+}
+.render-log-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px 5px;
+  border-bottom: 1px solid var(--term-line);
+}
+.render-log-title {
+  flex: none;
+  color: var(--term-text-2);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+}
+.render-log-frame {
+  margin-left: auto;
+  color: var(--term-frame);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.render-log-body {
+  height: clamp(120px, 18vh, 168px);
+  padding: 6px 10px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+  scrollbar-width: thin;
+  scrollbar-color: var(--term-line) transparent;
+}
+.render-log-line {
+  display: grid;
+  grid-template-columns: 56px 38px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+.rl-time { color: var(--term-dim); font-variant-numeric: tabular-nums; }
+.rl-tag { color: var(--term-dim); font-size: 9.5px; letter-spacing: 0.06em; }
+.rl-msg {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--term-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.render-log-line[data-level='frame'] .rl-msg { color: var(--term-text); }
+.render-log-line[data-level='stage'] .rl-msg { color: var(--term-text); }
+.render-log-line[data-level='stage'] .rl-tag { color: var(--term-text-2); }
+.render-log-line[data-level='dim'] .rl-msg { color: var(--term-dim); }
+.render-log-line[data-level='ok'] .rl-tag,
+.render-log-line[data-level='ok'] .rl-msg { color: var(--term-ok); }
+.render-log-line[data-level='warn'] .rl-tag,
+.render-log-line[data-level='warn'] .rl-msg { color: var(--term-warn); }
+.render-log-line[data-level='error'] .rl-tag,
+.render-log-line[data-level='error'] .rl-msg { color: var(--term-danger); }
+.render-log-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 10px 6px;
+  border-top: 1px solid var(--term-line);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.render-log-state {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--term-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.render-log-elapsed { flex: none; color: var(--term-dim); font-variant-numeric: tabular-nums; }
+/* 窄窗口(手机 390px 档、被拖窄的网页版):等宽字体收一档、时间 / 标签列收窄,
+ * 让一行拆分明细(主 / 弹 / 序 / 合 / 总)在 325px 左右的面板里也尽量完整显示。 */
+@media (max-width: 520px) {
+  .render-log-body { font-size: 9.5px; }
+  .render-log-line { grid-template-columns: 46px 32px minmax(0, 1fr); gap: 6px; }
+  .rl-tag { font-size: 9px; }
+  .render-log-frame { font-size: 9.5px; }
+  .render-log-foot { font-size: 9.5px; }
+}
+
 .export-warn {
   margin-top: 10px;
   padding: 7px 10px;
@@ -2788,7 +3184,30 @@ input[type='color']::-webkit-color-swatch { border: none; border-radius: 3px; }
 .rail-toggle:hover { color: var(--text); background: var(--surface-hover); border-color: var(--line); }
 .rail-toggle:active { background: var(--surface-3); transform: scale(0.94); }
 
-.rail-items { display: flex; flex-direction: column; gap: 2px; }
+.rail-items { position: relative; display: flex; flex-direction: column; gap: 2px; }
+/* 选中块的滑动:一枚铺满行宽的浅底块,由 start-screen.ts 同步 translateY。
+ * 行自己的选中底色在 .has-indicator 下让位给这枚滑块 ——
+ * 没有 JS 时 .has-indicator 不会出现,退回"每行自己换底色"的原样。
+ * 只动 transform / opacity(height 只在首帧写一次),不碰布局。 */
+.rail-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 0;
+  height: 36px;
+  border-radius: var(--r-md);
+  background: var(--brand-subtle);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1), opacity 160ms var(--ease);
+  will-change: transform;
+}
+.rail-items.has-indicator .rail-item { position: relative; z-index: 1; }
+.rail-items.has-indicator .rail-item.is-active { background: transparent; border-color: transparent; }
+/* 键盘聚焦到非当前页时,给行一个短暂的底色,别让"滑块在别处"看起来像没有焦点 */
+.rail-items.has-indicator .rail-item:focus-visible { background: var(--surface-hover); }
 /* ---------- 收起态 ----------
  * 只收宽度和文字,图标保留(图标本身就是最省位的导航语言,tooltip 由 title 兜住)。
  * 刻意**不做宽度过渡**:它是布局变化,过渡会让 ResizeObserver 在 176ms 里连开十几次
@@ -2876,6 +3295,33 @@ html[data-rail='collapsed'] .rail-version { opacity: 0; }
   background: var(--bg);
 }
 .page[hidden] { display: none; }
+/* 桌面切页:180ms 淡入 + 4px 上移。手机有自己的一套(mobile.css 第 11 节,260-280ms 两级错峰),
+ * 所以这里用 html:not([data-ui='mobile']) 收口 —— 两套前端不互相覆盖。
+ * 编辑器 .layout 不参与:画布一动就会被读成"画面跳了"。 */
+html:not([data-ui='mobile']) .page.is-entering { animation: df-page-in 180ms var(--ease-out) both; }
+html:not([data-ui='mobile']) .page.is-entering .page-head,
+html:not([data-ui='mobile']) .page.is-entering .home-card > *,
+html:not([data-ui='mobile']) .page.is-entering .home-side,
+html:not([data-ui='mobile']) .page.is-entering .about-card,
+html:not([data-ui='mobile']) .page.is-entering .logs-head,
+html:not([data-ui='mobile']) .page.is-entering .logs-bar { animation: df-page-item-in 220ms var(--ease-out) both; }
+html:not([data-ui='mobile']) .page.is-entering .home-card > :nth-child(2) { animation-delay: 30ms; }
+html:not([data-ui='mobile']) .page.is-entering .home-card > :nth-child(3) { animation-delay: 55ms; }
+html:not([data-ui='mobile']) .page.is-entering .home-card > :nth-child(4) { animation-delay: 80ms; }
+html:not([data-ui='mobile']) .page.is-entering .home-card > :nth-child(5) { animation-delay: 105ms; }
+html:not([data-ui='mobile']) .page.is-entering .home-side { animation-delay: 95ms; }
+html:not([data-ui='mobile']) .page.is-entering .about-card:nth-child(2) { animation-delay: 35ms; }
+html:not([data-ui='mobile']) .page.is-entering .about-card:nth-child(3) { animation-delay: 70ms; }
+html:not([data-ui='mobile']) .page.is-entering .logs-head { animation-delay: 20ms; }
+html:not([data-ui='mobile']) .page.is-entering .logs-bar { animation-delay: 55ms; }
+@keyframes df-page-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes df-page-item-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
 .page-scroll {
   width: 100%;
   max-width: 720px;
@@ -2891,9 +3337,31 @@ html[data-rail='collapsed'] .rail-version { opacity: 0; }
   justify-content: center;
 }
 
-/* ---------- 主页 ---------- */
+/* ---------- 主页(两栏:左边是"要干什么",右边是"上次那一套") ----------
+ * 主页曾经是一块垂直居中的单列,1480 宽下右侧空掉近一半;也没有"继续上次"的一步。
+ * 现在维持"不放动画列表"的约束,只把**上次打开的那一套**做成一张可点的卡:
+ * 左边回答现在做什么,右边回答从哪儿接着做。窄屏(<=980px)折成一列,手机同样命中。 */
+.page-home {
+  /* 环境光只用"面"的派生色(--surface),不借 --brand:交互色只许出现在主操作 /
+   * 当前选中 / 开关 / 焦点上,不做背景染色(见 DESIGN_SPEC 第 1 节)。 */
+  background:
+    radial-gradient(120% 92% at 82% 12%, color-mix(in srgb, var(--surface) 55%, transparent), transparent 62%),
+    var(--bg);
+}
+.page-home .page-scroll {
+  max-width: 1060px;
+  padding-top: clamp(32px, 8vh, 88px);
+  padding-bottom: clamp(32px, 8vh, 88px);
+}
+.home-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.06fr) minmax(300px, 0.94fr);
+  gap: clamp(32px, 6vw, 88px);
+  align-items: center;
+}
 .home-card { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-3); }
-.home-logo { display: block; width: 52px; height: 52px; }
+.home-brandline { display: flex; align-items: center; gap: 12px; }
+.home-logo { display: block; width: 44px; height: 44px; }
 .home-channel {
   margin: 0;
   color: var(--text-3);
@@ -2903,26 +3371,28 @@ html[data-rail='collapsed'] .rail-version { opacity: 0; }
 }
 .home-title {
   margin: 0;
-  max-width: 12em;
+  max-width: 11em;
   font-family: var(--font-display);
-  font-size: clamp(26px, 2.8vw, 34px);
+  font-size: clamp(30px, 3.4vw, 44px);
   font-weight: 700;
-  line-height: 1.2;
-  letter-spacing: -0.02em;
+  line-height: 1.14;
+  letter-spacing: -0.03em;
   text-wrap: balance;
 }
 .home-desc {
   margin: 0;
-  max-width: 34em;
+  max-width: 30em;
   color: var(--text-2);
-  font-size: 13.5px;
-  line-height: 1.72;
+  font-size: 14px;
+  line-height: 1.75;
+  text-wrap: pretty;
 }
-.home-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+.home-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: var(--sp-2); }
 /* 主操作:全站唯一的实心按钮(与导出按钮同一套 --brand / --on-brand) */
 .home-primary {
   display: inline-flex;
   align-items: center;
+  gap: 9px;
   height: var(--h-cta);
   padding: 0 22px;
   color: var(--on-brand);
@@ -2938,6 +3408,8 @@ html[data-rail='collapsed'] .rail-version { opacity: 0; }
 .home-primary:hover { background: var(--brand-hover); box-shadow: var(--shadow-1); }
 .home-primary:active { background: var(--brand-pressed); transform: scale(0.985); }
 .home-primary[disabled] { opacity: 0.6; cursor: progress; }
+.home-arrow { width: 10px; height: 10px; transition: transform 220ms var(--ease-out); }
+.home-primary:hover .home-arrow { transform: translateX(3px); }
 .home-ghost {
   display: inline-flex;
   align-items: center;
@@ -2953,7 +3425,142 @@ html[data-rail='collapsed'] .rail-version { opacity: 0; }
 }
 .home-ghost:hover { background: var(--surface-hover); border-color: var(--line-accent); color: var(--text); }
 .home-ghost:active { background: var(--surface-3); transform: scale(0.985); }
+/* 快捷键条:产品里真的能用的三个键,放在主按钮下面 —— 比再写一句欢迎语有用。 */
+.home-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.home-keys li { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.home-keys kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
 .home-last { margin: 0; color: var(--text-3); font-size: 11.5px; }
+
+/* 右卡:上次打开的那一套(只有一张,不是列表) */
+.home-side { min-width: 0; }
+.home-side-kicker { margin: 0 0 10px; color: var(--text-3); font-size: 11.5px; }
+.home-recent {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease), transform 240ms var(--ease-out), box-shadow 240ms var(--ease-out);
+}
+.home-recent:hover {
+  border-color: var(--line-accent);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2);
+}
+.home-recent:active { transform: translateY(0) scale(0.995); }
+.home-recent.is-no-cover .home-recent-cover { display: none; }
+.home-recent-cover {
+  display: block;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: var(--surface-3);
+}
+.home-recent-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 520ms var(--ease-out);
+}
+.home-recent:hover .home-recent-cover img { transform: scale(1.035); }
+.home-recent-body { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px 16px; }
+.home-recent-name {
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.home-recent-meta {
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.home-recent-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  transition: color var(--dur) var(--ease);
+}
+.home-cta-arrow { width: 9px; height: 9px; transition: transform 220ms var(--ease-out); }
+.home-recent:hover .home-recent-cta { color: var(--text); }
+.home-recent:hover .home-cta-arrow { transform: translateX(3px); }
+.home-switch {
+  margin-top: 10px;
+  padding: 0;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 11.5px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--text-3) 40%, transparent);
+  text-underline-offset: 3px;
+  transition: color var(--dur) var(--ease);
+}
+.home-switch:hover { color: var(--text); }
+.home-switch:active { color: var(--text-3); }
+.home-empty {
+  padding: 24px 22px;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+}
+.home-empty[hidden] { display: none; }
+.home-empty-title { margin: 0; color: var(--text); font-size: 13px; font-weight: 600; }
+.home-empty-desc { margin: 6px 0 14px; color: var(--text-3); font-size: 12px; line-height: 1.65; }
+.home-browse {
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-ctl);
+  padding: 0 14px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.home-browse:hover { background: var(--surface-hover); border-color: var(--line-accent); }
+.home-browse:active { background: var(--surface-3); transform: scale(0.985); }
+@media (max-width: 980px) {
+  .home-split { grid-template-columns: 1fr; gap: 32px; }
+  .page-home .page-scroll { justify-content: flex-start; }
+  .home-side { max-width: 560px; }
+}
 
 /* ---------- 页面标题 ---------- */
 .page-head { margin-bottom: var(--sp-4); }
@@ -3292,6 +3899,708 @@ html:not([data-page='editor']) .anim-switch,
 html:not([data-page='editor']) .dw-open { display: none; }
 
 /* ============================================================================
+ * 9.6 日志页(应用外壳的第四页:侧边栏「日志」)
+ * ---------------------------------------------------------------------------
+ * 结构见 index.html 的 #viewLogs,采集与交互见 src/logs.ts。
+ *
+ * 三条版式决定:
+ *  1) 页面自身不滚动(.page-logs 覆盖 .page 的 overflow):筛选条、操作条必须一直看得见。
+ *     唯一滚动区是 .logs-body —— 日志是"越到后面越要看"的内容,操作跟着滚走就很难用;
+ *  2) 类型筛选是单选胶囊 + 真实计数,搜索框与操作条同一行;窄屏时按"筛选 → 搜索 → 操作"折行;
+ *  3) 行 = 左侧元信息(时间 / 类型 / 标签)+ 右侧消息。错误行整行淡红、警告行左侧一道黄边,
+ *     不靠图标也不靠颜色单独表达(类型文字就在同一行),色弱用户同样能读。
+ *  4) 页头可切换「用户日志 / 开发者日志」;开发者视图是内嵌终端(见 src/devlog.ts),
+ *     它自带滚动区与命令输入,同样不能把页面整体撑成滚动。
+ * 所有颜色只取语义令牌,亮色主题自动跟着走。
+ * ========================================================================== */
+.page-logs {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* 这一页的所有 hidden 都必须真的隐藏:操作按钮与提示条自己带 display,UA 的 [hidden] 会被覆盖 */
+.page-logs [hidden] { display: none !important; }
+
+.logs-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: clamp(20px, 4vh, 44px) var(--sp-6) var(--sp-4);
+}
+.logs-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.logs-title-wrap { min-width: 0; }
+/* 页头右侧:视图切换 + 存储状态。两者成组靠右,窄屏时整组换到标题下方一行。 */
+.logs-head-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+/* 分段切换:与主题开关(见 .theme-switch)同一套语言 ——
+ * 胶囊外壳 + 滑动指示器,而不是每个按钮自己换底色。
+ * 两格用 1fr 等宽:否则"用户日志 / 开发者日志"两个标签宽度不同,
+ * 选中态一换,胶囊跟着变宽、整组还会横向位移(实测 73px)。
+ * 等宽之后切换只是指示器滑过去,位置稳定。 */
+.logs-mode {
+  position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  isolation: isolate;
+}
+/* 指示器:一枚浅底块,靠 translateX 在两格之间滑动(220ms,--ease-out,与主题开关同参数) */
+.logs-mode-indicator {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  z-index: 0;
+  width: calc(50% - 2px);
+  background: var(--brand-subtle);
+  border-radius: var(--r-pill);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.logs-mode[data-current='dev'] .logs-mode-indicator { transform: translateX(100%); }
+.logs-mode-btn {
+  position: relative;
+  z-index: 1;
+  height: 24px;
+  padding: 0 10px;
+  color: var(--text-3);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-pill);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease);
+}
+.logs-mode-btn:hover { color: var(--text-2); }
+.logs-mode-btn:active { color: var(--text); }
+.logs-mode-btn.is-active { color: var(--text); }
+.logs-mode-btn:focus-visible,
+.dev-term-btn:focus-visible,
+.dev-chip:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+/* 状态一枚:自动保存(桌面)/ 本次会话(网页、手机)。它同时是"日志存哪儿"的答案。
+ * order:-1 让它在视觉上排到「用户日志 / 开发者日志」左边:开发者视图会隐藏它,
+ * 如果它在右边,隐藏的一刻整组切换器会被 justify-content:flex-end 推着横移 73px。
+ * 现在切换器永远钉在最右,状态枚只在它左边出现 / 消失。 */
+.logs-state {
+  order: -1;
+  flex: none;
+  padding: 3px 9px;
+  color: var(--text-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* 用户日志整块:包一层 flex 容器,切换视图时整块隐藏,内部仍是"工具条 + 唯一滚动区 + 底注" */
+.logs-user-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- 工具条:类型筛选 / 搜索 / 操作 ---------- */
+.logs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.logs-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+.logs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+.logs-chip b {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.logs-chip:hover { color: var(--text); background: var(--surface-hover); border-color: var(--line-accent); }
+.logs-chip:active { background: var(--surface-3); }
+.logs-chip.is-active { color: var(--text); background: var(--brand-subtle); border-color: var(--line-strong); }
+.logs-chip.is-active b { color: var(--text-2); }
+/* 警告 / 错误筛选选中时,计数用对应状态色点一下:这是"现在只看坏消息"的视觉提示 */
+.logs-chip[data-level='warn'].is-active b { color: var(--warn); }
+.logs-chip[data-level='error'].is-active b { color: var(--danger); }
+.logs-chip[data-level='error'].is-active { border-color: color-mix(in srgb, var(--danger) 42%, var(--line-strong)); }
+
+.logs-search {
+  flex: 1 1 220px;
+  min-width: 200px;
+  height: var(--h-ctl);
+}
+.logs-search input { font-size: 12px; }
+
+.logs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.logs-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.logs-btn:hover { color: var(--text); background: var(--surface-hover); border-color: var(--line-accent); }
+.logs-btn:active { background: var(--surface-3); transform: scale(0.985); }
+.logs-btn[aria-pressed='true'] { color: var(--text); background: var(--brand-subtle); border-color: var(--line-accent); }
+.logs-btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 34%, var(--line-strong)); }
+.logs-btn-danger:hover { color: var(--danger); background: var(--danger-subtle); border-color: var(--danger); }
+/* 二段确认的"已上膛":整颗按钮变成实心危险面,再点一次才执行。
+ * 3.2s 没跟上由 logs.ts 自动复位,不会一直停在危险态。 */
+.logs-btn-danger.is-armed {
+  color: var(--on-danger);
+  background: var(--danger);
+  border-color: var(--danger);
+  animation: df-armed-pop 180ms var(--ease-out);
+}
+.logs-btn-danger.is-armed:hover { color: var(--on-danger); background: var(--danger); border-color: var(--danger); }
+@keyframes df-armed-pop {
+  from { transform: scale(0.94); }
+  to { transform: scale(1); }
+}
+
+/* ---------- 操作结果条(已复制 / 已保存) ----------
+ * 它是"刚才那次操作有结果了"的反馈(与状态栏微光同一职责),不是列表内容:
+ * 绝对定位浮在右下角,不占布局 —— 在流里时,一次复制会把整份日志往下推 42px,
+ * 收起时再弹回去,读日志的人正看到一半就被甩走。 */
+.logs-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.logs-hint {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  max-width: min(440px, calc(100% - 24px));
+  margin: 0;
+  padding: 7px 10px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--ok);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-2);
+  font-size: 11.5px;
+  line-height: 1.55;
+  word-break: break-word;
+  pointer-events: none;
+  opacity: 0;
+}
+/* 入场 180ms / 退场 120ms:退场比入场快。位移只有 6px / 4px,只动 transform + opacity。 */
+.logs-hint.is-in { animation: df-logs-hint-in var(--dur) var(--ease) both; }
+.logs-hint.is-leaving { animation: df-logs-hint-out var(--dur-fast) var(--ease) both; }
+@keyframes df-logs-hint-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes df-logs-hint-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(4px); }
+}
+/* 减少动效版:只淡入淡出,不带位移 */
+@keyframes df-logs-hint-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes df-logs-hint-fade-out { from { opacity: 1; } to { opacity: 0; } }
+.logs-hint[data-kind='error'] { color: var(--danger); border-left-color: var(--danger); }
+
+/* ---------- 日志列表(唯一滚动区) ---------- */
+.logs-body {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 底部留出结果条的落位:贴底时最后一行不会被浮在右下角的提示盖住 */
+  padding: 8px 0 52px;
+}
+.logs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.log-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 6px 8px 6px 6px;
+  border-left: 2px solid transparent;
+  border-radius: var(--r-sm);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+/* 新到的一行:一层很淡的底色在 300ms 里退掉 —— "这条是刚出现的,不是旧内容"。
+ * 只给增量追加的行挂(见 src/logs.ts 的 is-new);筛选重画时不播,否则每次输入都闪。
+ * 用伪元素叠一层,而不是直接动 row 的 background:错误行有自己的淡红底,不能被覆盖。 */
+.log-row.is-new::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--brand) 9%, transparent);
+  pointer-events: none;
+  opacity: 0;
+  animation: df-log-fresh var(--dur-slow) var(--ease);
+}
+@keyframes df-log-fresh {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+.log-row:hover { background: var(--surface-2); }
+.log-row[data-level='warn'] { border-left-color: var(--warn); }
+.log-row[data-level='error'] {
+  border-left-color: var(--danger);
+  background: color-mix(in srgb, var(--danger-subtle) 38%, transparent);
+}
+.log-row[data-level='error']:hover { background: color-mix(in srgb, var(--danger-subtle) 58%, transparent); }
+
+.log-meta { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.log-time {
+  flex: none;
+  width: 80px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+}
+.log-lvl {
+  flex: none;
+  width: 36px;
+  padding: 1px 0;
+  color: var(--text-2);
+  background: var(--surface-3);
+  border-radius: 3px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+.log-row[data-level='warn'] .log-lvl { color: var(--warn); background: var(--warn-subtle); }
+.log-row[data-level='error'] .log-lvl { color: var(--danger); background: var(--danger-subtle); }
+.log-row[data-level='debug'] .log-lvl { color: var(--text-3); background: transparent; }
+.log-tag {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.log-msg {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+.log-row[data-level='error'] .log-msg { color: var(--text); }
+.log-row[data-level='debug'] .log-msg { color: var(--text-3); }
+.log-detail summary {
+  width: max-content;
+  max-width: 100%;
+  color: var(--text-3);
+  font-size: 11px;
+  cursor: pointer;
+}
+.log-detail summary:hover { color: var(--text-2); }
+.log-detail pre {
+  max-height: 220px;
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  overflow: auto;
+  color: var(--text-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.logs-empty { padding: 48px var(--sp-4); }
+.logs-empty .bi { width: 28px; height: 28px; color: var(--text-3); }
+
+/* ---------- 底注:条数 + 日志文件位置 ---------- */
+.logs-foot {
+  flex: none;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+  font-size: 11px;
+}
+.logs-foot-note {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================================================================
+ * 9.6b 开发者日志:内嵌终端
+ * ---------------------------------------------------------------------------
+ * 视觉上刻意与上面的"产品页"分开:等宽字体、深色终端面、英文大写控件、$ 提示符。
+ * 它是开发者工具,不该伪装成页面的一块普通卡片;但颜色仍取语义令牌,
+ * 所以亮色主题下会得到一块"浅色终端",而不是在白色页面里塞一块刺眼的黑。
+ *   .dev-term-body  唯一滚动区(日志流)
+ *   .dev-term-prompt 底部命令输入;命令与输出行混排在日志流末尾
+ * ========================================================================== */
+.logs-dev-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding-bottom: var(--sp-2);
+}
+.dev-term {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-deep);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+}
+.dev-term-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.dev-term-dots { display: inline-flex; flex: none; gap: 5px; }
+.dev-term-dots i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.dev-term-dots i:nth-child(1) { background: color-mix(in srgb, var(--danger) 62%, var(--line-strong)); }
+.dev-term-dots i:nth-child(2) { background: color-mix(in srgb, var(--warn) 62%, var(--line-strong)); }
+.dev-term-dots i:nth-child(3) { background: color-mix(in srgb, var(--ok) 62%, var(--line-strong)); }
+.dev-term-title {
+  flex: none;
+  color: var(--text-2);
+  /* 控制区用界面字体(中文可读),下面的日志流仍保持等宽字体 ——
+   * 这样"控制条"和"日志"在视觉上是两种语言,不会混在一起。 */
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.dev-term-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dev-term-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-left: auto;
+}
+.dev-term-btn {
+  height: 26px;
+  padding: 0 10px;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.dev-term-btn:hover { color: var(--text); background: var(--surface-hover); border-color: var(--line-accent); }
+.dev-term-btn:active { background: var(--surface-3); }
+.dev-term-btn[aria-pressed='true'] { color: var(--text); background: var(--brand-subtle); border-color: var(--line-accent); }
+.dev-term-btn-danger:hover { color: var(--danger); background: var(--danger-subtle); border-color: var(--danger); }
+
+.dev-term-filters {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg-deep));
+  border-bottom: 1px solid var(--line);
+}
+.dev-chip {
+  height: 24px;
+  padding: 0 9px;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.dev-chip b { color: var(--text-3); font-weight: 500; font-variant-numeric: tabular-nums; }
+.dev-chip:hover { color: var(--text-2); background: var(--surface-2); }
+.dev-chip:active { color: var(--text); background: var(--surface-3); }
+.dev-chip.is-active { color: var(--text); background: var(--surface-2); border-color: var(--line-strong); }
+.dev-chip.is-active b { color: var(--text-2); }
+.dev-chip[data-level='warn'].is-active b { color: var(--warn); }
+.dev-chip[data-level='error'].is-active b { color: var(--danger); }
+/* 命令行设置的过滤词:像终端里的一个状态标记,不是可点的按钮 */
+.dev-term-filter {
+  max-width: 240px;
+  overflow: hidden;
+  padding: 1px 7px;
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line-strong));
+  border-radius: var(--r-pill);
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dev-term-hint {
+  margin-left: auto;
+  color: var(--text-3);
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  opacity: 0.75;
+}
+
+/* 日志流:唯一滚动区 */
+.dev-term-body {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 12px 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.dev-log-list { display: flex; flex-direction: column; gap: 2px; }
+.dev-row { padding: 1px 2px; border-radius: 3px; }
+.dev-row:hover { background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.dev-head {
+  display: grid;
+  grid-template-columns: 76px 46px 112px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+.dev-time { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.dev-lvl { font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; }
+.dev-row[data-level='debug'] .dev-lvl { color: var(--text-3); }
+.dev-row[data-level='info'] .dev-lvl { color: var(--text-2); }
+.dev-row[data-level='warn'] .dev-lvl { color: var(--warn); }
+.dev-row[data-level='error'] .dev-lvl { color: var(--danger); }
+.dev-src {
+  overflow: hidden;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dev-row[data-level='warn'] .dev-src { color: var(--warn); opacity: 0.78; }
+.dev-row[data-level='error'] .dev-src { color: var(--danger); opacity: 0.9; }
+.dev-msg { color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
+.dev-row[data-level='error'] .dev-msg { color: var(--text); }
+.dev-row[data-level='debug'] .dev-msg { color: var(--text-3); }
+/* 堆栈 / 多行详情:对齐到消息列下方;内容可横向滚动,终端不该被一行长栈撑宽 */
+.dev-detail {
+  max-height: 220px;
+  margin: 2px 0 3px 258px;
+  padding: 0;
+  overflow: auto;
+  color: var(--text-3);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 命令行回显与输出:没有等级列,整行文本 */
+.dev-local {
+  display: block;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.dev-row.is-cmd .dev-local { color: var(--text); }
+.dev-row.is-cmd .dev-local::before { content: '$ '; color: var(--ok); }
+.dev-row.is-out .dev-local { color: var(--text-3); }
+.dev-row.is-err .dev-local { color: var(--danger); }
+.dev-row.is-out .dev-local { padding-left: 2ch; }
+.dev-row.is-err .dev-local { padding-left: 2ch; }
+
+.dev-log-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 180px;
+  padding: var(--sp-4);
+  color: var(--text-3);
+  text-align: center;
+}
+.dev-log-empty-sign { color: var(--ok); font-size: 18px; }
+.dev-log-empty p { max-width: 46em; margin: 0; font-size: 11.5px; }
+
+/* 底部命令输入:终端里唯一"可以打字"的地方 */
+.dev-term-prompt {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+}
+.dev-prompt-sign { color: var(--ok); font-size: 12px; }
+.dev-term-prompt input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: 11.5px;
+}
+/* 输入内容仍是等宽(命令是英文);占位符是中文提示,交给界面字体 */
+.dev-term-prompt input::placeholder {
+  color: var(--text-3);
+  font-family: var(--font-ui);
+  letter-spacing: 0;
+  opacity: 0.9;
+}
+.dev-term-prompt:focus-within { box-shadow: inset 0 1px 0 var(--line-accent); }
+
+/* ---------- 侧边栏「日志」上的未读错误小点 ----------
+ * 与「关于」的 has-update 同一套语言:真实状态才亮,不是装饰。
+ * 点进日志页即清除(见 src/logs.ts 的 markLogsSeen)。 */
+.rail-item.has-error { position: relative; }
+.rail-item.has-error::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+html[data-rail='collapsed'] .rail-item.has-error::after { top: 6px; right: 6px; }
+html[data-ui='mobile'] .rail-item.has-error::after { top: 8px; right: 26%; }
+
+/* ---------- 窄窗口:行从"左右两列"折成"元信息在上、消息在下" ---------- */
+@media (max-width: 900px) {
+  .logs-wrap { padding: var(--sp-4) var(--sp-4) var(--sp-3); }
+  .log-row { grid-template-columns: 210px minmax(0, 1fr); }
+  .dev-head { grid-template-columns: 68px 44px 96px minmax(0, 1fr); gap: 6px; }
+  .dev-detail { margin-left: 214px; }
+}
+@media (max-width: 720px) {
+  .logs-head { flex-wrap: wrap; align-items: flex-start; }
+  /* 窄屏整组换行后仍然靠右成组:状态枚在切换器左边(order:-1),
+   * space-between 会把两枚拉开成"左一个右一个"。 */
+  .logs-head-actions { width: 100%; justify-content: flex-end; }
+  .logs-actions { width: 100%; margin-left: 0; }
+  .log-row { grid-template-columns: 1fr; gap: 3px; }
+  .log-time { width: auto; }
+  .log-lvl { width: auto; padding: 1px 6px; }
+  .log-tag { flex: 1; }
+}
+
+/* ============================================================================
  * 10. 自适应:收窄时先让侧栏变窄,再折行,最后单栏
  * ========================================================================== */
 @media (max-width: 1380px) { :root { --side-w: 316px; } }
@@ -3421,6 +4730,11 @@ html:not([data-page='editor']) .dw-open { display: none; }
    * (那一行原来被它撑到 413px 的问题随位置一起消失了),这里不需要任何降级。 */
   .export-card, .dl-card { width: 94vw; padding: var(--sp-4); }
   .export-percent { font-size: 28px; }
+  /* 成功态:小屏上对勾与标题各降一档,卡片不把动作按钮挤出屏幕 */
+  .export-check { width: 64px; height: 64px; margin-bottom: 8px; }
+  .export-success-title { font-size: 16px; }
+  .export-success-name { margin-top: 7px; }
+  .export-success-sub { max-width: 30ch; }
   .anim-switch { order: 1; flex: 1 1 100%; }
   .craft-note { order: 2; }
   .ap-head, .dw-head { flex-wrap: wrap; row-gap: 10px; }
@@ -3485,6 +4799,18 @@ html.is-theme-fading *::after {
   .export-percent.done,
   .export-percent.error,
   .export-percent.cancel { animation: none; }
+  /* 导出成功态:对勾直接是画好的(描边动画取消),文字与动作直接出现;
+   * 信息完整,只是没有过程。模糊滤镜一并去掉。 */
+  .export-card.is-done .export-progress { filter: none; }
+  .export-card.is-done .export-check::before { animation: none; transform: none; opacity: 1; }
+  .export-card.is-done .export-check::after { display: none; }
+  .export-card.is-done .export-check-ring circle,
+  .export-card.is-done .export-check-mark path { animation: none; stroke-dashoffset: 0; }
+  .export-card.is-done .export-success-title,
+  .export-card.is-done .export-success-name,
+  .export-card.is-done .export-success-sub,
+  .export-card.is-done .export-actions,
+  .export-card.is-done .export-foot { animation: none; opacity: 1; transform: none; }
   .ap-card:hover { transform: none; }
   .ap-card:hover .ap-card-cover img { transform: none; }
   /* 开始页:检查更新时那颗转圈图标与扫描条都是"动效承载信息"的例子 ——
@@ -3508,7 +4834,7 @@ html.is-theme-fading *::after {
   .export-actions :is(button, fluent-button):active, .export-actions .primary:active,
   .transport .icon-btn:active, #btnExport:active,
   .tb-home:active, .ss-primary:active, .ss-btn:active, .ss-card:active, .ss-status-link:active,
-  .df-select-btn:active { transform: none; }
+  .df-select-btn:active, .logs-btn:active { transform: none; }
   /* 滑杆与开关的位移 / 缩放反馈同样取消:位置与颜色已经表达了状态 */
   input[type='range']:hover::-webkit-slider-thumb,
   input[type='range']:active::-webkit-slider-thumb { transform: none; }
@@ -3525,4 +4851,9 @@ html.is-theme-fading *::after {
   /* 自绘下拉:弹层直接出现、箭头直接翻转(状态本身已经足够明确) */
   .df-select-pop { animation: none; }
   .df-select-caret { transition: none; }
+  /* 日志页:结果条只留"出现 / 消失"这条有意义的反馈,6px 上浮去掉;
+   * 新行提示是一层纯装饰的底色,减少动效时直接不画(滚动位置已经说明有新内容)。 */
+  .logs-hint.is-in { animation-name: df-logs-hint-fade-in; }
+  .logs-hint.is-leaving { animation-name: df-logs-hint-fade-out; }
+  .log-row.is-new::after { animation: none; }
 }

@@ -94,6 +94,40 @@ export function initMobileUI(hooks: MobileHooks): void {
   if (downloadsBtn) downloadsBtn.hidden = true;
 
   /* ========================================================================
+   * 〇、底栏选中指示条:一条共享的 2px 条在四格之间滑过去
+   *
+   * 改版前每格各挂一条 ::before,切换时"旧的消失、新的从中间长出来" —— 看不出方向。
+   * 这里把"选中"当成一个位置来移动:指示条是 .rail-items::before,只由两个 CSS 变量
+   * 决定位置(mobile.css 第 11 节):
+   *   --m-nav-count  可见格子数 —— 手机端「下载列表」整项不显示,不能写死 4 或 5;
+   *   --m-nav-i      当前页在可见格子里的序号。
+   * 指示条宽度 = 100% / 格数,位置 = 序号 × 自身宽度,所以过渡只发生在 transform 上。
+   * 方向(往左 / 往右滑)由序号差自然给出,不需要额外记录"上一页"。
+   *
+   * 首帧不加过渡(mobile.css 只认 [data-nav-ready]):带 ?view=editor 打开时,
+   * 指示条应该一开始就在「编辑器」上,而不是从「主页」滑过去。
+   * 页面状态唯一权威仍然是 <html data-page>,select 与事件都不参与判断。
+   * ====================================================================== */
+  const railItems = document.querySelector<HTMLElement>('.rail-items');
+  if (railItems) {
+    const visibleNavItems = (): HTMLElement[] =>
+      Array.from(railItems.querySelectorAll<HTMLElement>('.rail-item'))
+        .filter((el) => !el.hidden && el.getClientRects().length > 0);
+    const syncNavIndicator = (): void => {
+      const items = visibleNavItems();
+      if (!items.length) return;
+      const idx = Math.max(0, items.findIndex((el) => el.dataset.page === (root.dataset.page || 'home')));
+      railItems.style.setProperty('--m-nav-count', String(items.length));
+      railItems.style.setProperty('--m-nav-i', String(idx));
+    };
+    syncNavIndicator();
+    /* 下一帧再挂过渡:首帧那次定位必须"本来就在那儿"(见上)。 */
+    requestAnimationFrame(() => railItems.setAttribute('data-nav-ready', ''));
+    /* showPage 已经先改完 data-page 与 .is-active 再广播,所以这里只读状态、不推断方向 */
+    window.addEventListener('dfae:viewchange', syncNavIndicator);
+  }
+
+  /* ========================================================================
    * 一、播放条重组
    *
    * 问题:播放条原来是横向滚动的,一屏放不下就得滑;而滑动的起手常常落在

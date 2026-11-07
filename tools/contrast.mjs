@@ -10,8 +10,10 @@ const lum = (h) => { const [r, g, b] = hex2rgb(h); return 0.2126 * lin(r) + 0.71
 const ratio = (a, b) => { const l1 = lum(a), l2 = lum(b); const [hi, lo] = l1 > l2 ? [l1, l2] : [l2, l1]; return (hi + 0.05) / (lo + 0.05); };
 
 /* 两套主题的七个中性锚点(与 style.css 的令牌一一对应) */
-const D = { bg: '#242424', surface: '#2b2b2e', surface2: '#333336', line: '#3e3e42', text: '#f2f2f4', text2: '#c3c3c9', text3: '#9b9ba3', brand: '#e2e2e8', onBrand: '#1a1a1c', danger: '#ff99a4', warn: '#f9d67a', ok: '#54d6a4' };
-const L = { bg: '#eaeaf0', surface: '#ffffff', surface2: '#f7f7fa', inset: '#e4e4ec', line: '#c6c6d0', text: '#242424', text2: '#4b4b52', text3: '#5f5f68', brand: '#4a4a52', onBrand: '#ffffff', danger: '#a4262c', warn: '#8a5a00', ok: '#0b6a45' };
+const D = { bg: '#242424', surface: '#2b2b2e', surface2: '#333336', line: '#3e3e42', text: '#f2f2f4', text2: '#c3c3c9', text3: '#9b9ba3', brand: '#e2e2e8', onBrand: '#1a1a1c', danger: '#ff99a4', onDanger: '#2a1416', warn: '#f9d67a', ok: '#54d6a4' };
+const L = { bg: '#eaeaf0', surface: '#ffffff', surface2: '#f7f7fa', inset: '#e4e4ec', line: '#c6c6d0', text: '#242424', text2: '#4b4b52', text3: '#5f5f68', brand: '#4a4a52', onBrand: '#ffffff', danger: '#a4262c', onDanger: '#ffffff', warn: '#8a5a00', ok: '#0b6a45' };
+/* 终端面(导出浮层的渲染器日志):两套主题同值,固定近黑 —— 它是"屏幕",不参与界面的明暗切换。 */
+const T = { bg: '#0a0b0e', text: '#d8dce3', text2: '#9ba1ac', dim: '#858c98', ok: '#54d6a4', warn: '#f9d67a', danger: '#ff99a4' };
 
 const cases = [
   ['dark  正文 on 页面底', D.text, D.bg],
@@ -20,6 +22,7 @@ const cases = [
   ['dark  三级文字 on 控件底', D.text3, D.surface2],
   ['dark  品牌面文字', D.onBrand, D.brand],
   ['dark  danger on 面板', D.danger, D.surface],
+  ['dark  危险面文字 on 危险底', D.onDanger, D.danger],
   ['dark  warn on 面板', D.warn, D.surface],
   ['dark  ok on 面板', D.ok, D.surface],
   ['dark  正文 on 控件底', D.text, D.surface2],
@@ -32,9 +35,17 @@ const cases = [
   ['light 次要文字 on 内嵌槽', L.text2, L.inset],
   ['light 品牌面文字', L.onBrand, L.brand],
   ['light danger on 面板', L.danger, L.surface],
+  ['light 危险面文字 on 危险底', L.onDanger, L.danger],
   ['light warn on 面板', L.warn, L.surface],
   ['light ok on 面板', L.ok, L.surface],
   ['light 正文 on 控件底', L.text, L.surface2],
+  /* 终端面:两套主题同值;文字 / 状态色都落在黑底上,按 4.5:1 门槛核对 */
+  ['term  正文 on 终端底', T.text, T.bg],
+  ['term  次要文字 on 终端底', T.text2, T.bg],
+  ['term  三级文字 on 终端底', T.dim, T.bg],
+  ['term  ok on 终端底', T.ok, T.bg],
+  ['term  warn on 终端底', T.warn, T.bg],
+  ['term  danger on 终端底', T.danger, T.bg],
   /* 描边不是文字,只做"看得见"的参考(>=1.3 即可分辨边界) */
   ['dark  分隔线 on 页面底', D.line, D.bg],
   ['light 分隔线 on 页面底', L.line, L.bg],

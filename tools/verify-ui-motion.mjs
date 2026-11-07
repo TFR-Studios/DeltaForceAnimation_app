@@ -35,6 +35,12 @@ const CONTROLS = [
   ['画廊·卡片', '.ap-card'],
   ['画廊·搜索清空', '.ap-search-clear'],
   ['画廊·卡片选中图标', '.ap-card-pick'],
+  /* 日志页(2026-11):控件在隐藏的 #viewLogs 里也存在,样式表口径照样能核对 */
+  ['日志·类型芯片', '.logs-chip'],
+  ['日志·操作按钮', '.logs-btn'],
+  ['日志·视图切换', '.logs-mode-btn'],
+  ['日志·开发者芯片', '.dev-chip'],
+  ['日志·终端按钮', '.dev-term-btn'],
 ];
 
 const res = await page.evaluate((CONTROLS) => {
