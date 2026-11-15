@@ -195,7 +195,44 @@ jobs:
       # GitCode 上的 Setup 和 APK 因此消失了好几天。现在脚本已改成"只补缺、绝不先删",
       # 而且附件默认由维护者本机用「管理工具.bat → 3 上传安装包到 GitCode」补传(实测 11~19 MB/s)。
       # 这里仍然跑,能补齐就补齐;补不齐不该把整条发布判成失败 —— 发行版本体已经发出去了。
+      # 补充(2026-11-15):打标签之前维护者可能已经在本地跑过「管理工具.bat → 3 上传安装包到 GitCode」,
+      # 这时 GitCode 上四个包都已就位(脚本幂等、同名跳过)。这种情况直接跳过,既省掉 runner 上行
+      # 那几十分钟,也避免上传中断把一次已经成功的发布拖红。
+      # 判定很保守:GitCode 上必须已经有**当前版本**的 Setup / Portable / win-unpacked.zip / APK
+      # 四个包中的一个都不许少,而且要在本地产物清单里;少一个就照常走完整同步。
+      - name: 检查 GitCode 是否已由本地补传
+        id: gitcode_precheck
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          GITCODE_REPO: DeltaForceAnimation_app
+        run: |
+          if [ -z "$GITCODE_TOKEN" ]; then
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TAG="$GITHUB_REF_NAME"
+          VER="${TAG#v}"
+          BODY=$(curl -fsS -m 30 -H "Authorization: Bearer $GITCODE_TOKEN" \
+            "https://api.gitcode.com/api/v5/repos/TFR-Studios/${GITCODE_REPO}/releases/tags/${TAG}" 2>/dev/null || true)
+          if [ -z "$BODY" ]; then
+            echo "GitCode 上还没有 $TAG 的发行版,照常同步"
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ## 只认当前版本的包;GitCode 自带的 v1.1.4.zip / .tar.gz 这类源码包不计入
+          for want in "DeltaForceAnimationEditor-Setup-${VER}.exe" "DeltaForceAnimationEditor-Portable-${VER}.exe" "DeltaForceAnimationEditor-${VER}-win-unpacked.zip" "dfae-${VER}-arm64-v8a.apk"; do
+            if printf '%s' "$BODY" | grep -qF "\"$want\""; then
+              echo "已有: $want"
+            else
+              echo "缺少: $want"
+              echo "ready=no" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "GitCode 上 $TAG 的四个安装包已齐全,跳过重复上传"
+          echo "ready=yes" >> "$GITHUB_OUTPUT"
       - name: 同步发行版到 GitCode
+        if: steps.gitcode_precheck.outputs.ready != 'yes'
         continue-on-error: true
         env:
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
