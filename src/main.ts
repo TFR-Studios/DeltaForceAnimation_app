@@ -80,6 +80,10 @@ import bundledAudioUrl from '../animations/animation_1/gunmuchenggong.mp3?url';
 import exposedAudioUrl from '../animations/animation_2/UI_C201_Energy_Scout_Bow_Scout_02.wav?url';
 /* 核电站功率动画音效(48kHz 立体声,约 6.0s,与 359 帧 @60fps 基本等长) */
 import blindsAudioUrl from '../animations/animation_3/反应堆音效.wav?url';
+/* 首领入侵/曼德尔砖标题动画音效(48kHz 立体声,约 3.25s,与 188 帧 @60fps ≈ 3.13s 基本等长) */
+import mandelBrickAudioUrl from '../animations/animation_9/UI_SOL_Said_Entry_Banner_611300523.wav?url';
+/* 任务弹窗动画音效(48kHz 立体声,约 4.4s,与 214 帧 @60fps ≈ 3.57s 不等长,导出时按画面时长截断) */
+import missionAudioUrl from '../animations/animation_4/misson.wav?url';
 
 /* 共享字体资源的静态地址。
  * 不要写成 import ... from '*.ttf?url':Vite 7 的 dev server 对「模块请求 + ?url」
@@ -1097,9 +1101,9 @@ function patchSvgRendererTree(renderer: any) {
       if (seqEntry) patchSeqSvgElement(el, seqEntry);
       else if (el.data.ty === 0 && typeof el.buildItem === 'function') patchSvgRendererTree(el);
       applySeqTintToSvg(el); // 预合成宿主(黑潮爆破的逐帧序列)也要挂调色滤镜
-      /* AE 效果补丁:投影与填充都要写 style.filter,统一由 patchSvgDropShadow 合并成一条。
+      /* AE 效果补丁:把「投影」写进 style.filter(覆盖 lottie 自带的那条 filter 属性)。
        * 不能只按"有没有投影"来调 —— 只有「填充」没有投影的图层(黑潮爆破的 HUD 底条与提示条)
-       * 会因此被整段跳过,表现为"改了颜色画面没反应"。 */
+       * 会因此被整段跳过,表现为"改了颜色画面没反应"(填充走位图烘焙,这里只做清理/占位)。 */
       if (getDropShadow(el.data) || getFillEffect(el.data)) patchSvgDropShadow(el);
     }
   }
@@ -4826,24 +4830,43 @@ function onImageColorReset(refId: string) {
 /* ---------- AE 投影效果(ADBE Drop Shadow)渲染 ----------
  * lottie-web 不渲染 AE 效果,这里手动解析「投影」参数并渲染:
  * - SVG 渲染器:对图层 <g> 应用 CSS drop-shadow filter;
- * - Canvas 渲染器:双次绘制(先带阴影画内容,再清晰覆盖)。 */
+ * - Canvas 渲染器:在图层真正绘制内容的那一步(renderInnerContent)设置 ctx.shadow*,
+ *   Canvas 的阴影会自然铺在内容下方,一次绘制即可。 */
 /* 从图层效果列表里读出 AE「投影」(ADBE Drop Shadow)参数。
  * lottie-web 不渲染任何 AE 效果(ef 字段),必须自己解析:
- *  - e.ty === 25 是投影类型,e.mn 是效果名,e.en === 0 表示效果被关掉,跳过;
- *  - 参数按 ix 索引取:1 颜色、2 不透明度、3 角度、4 距离、5 柔化。
- * 三处单位换算的坑:
- *  - 不透明度是 0~255(不是 0~1),要除 255 再钳到 [0,1];
- *  - 角度是度且 0° 指向上方,而屏幕 y 轴向下,所以 dy 取负、dx 用 cos;
- *  - 柔化值到 CSS blur 半径是经验换算 /2,直接当半径会明显糊成一片。
+ *  - e.ty === 25 是投影类型,e.en === 0 表示效果被关掉,跳过;
+ *  - 参数按 ix 索引取:1 颜色、2 不透明度、3 角度、4 距离、5 柔化、6 仅阴影。
+ *
+ * 单位与坐标口径(与 lottie-web 原生 SVGDropShadowEffect / AE 完全对齐):
+ *  - 颜色:[r,g,b,(a)] 0~1 浮点,交给 fcToHex;
+ *  - 不透明度:0~255(百分比 × 2.55),除 255 再钳到 [0,1];
+ *  - 角度:0° 指向正上方、顺时针为正(135° = 右下,180° = 正下)。
+ *      屏幕 y 轴向下,所以 dx = 距离·sin(θ)、dy = −距离·cos(θ)。
+ *      ⚠ 这里原先是 dx = 距离·cos(θ)、dy = −距离·sin(θ) —— 等于把方向整体转 90° 再镜像,
+ *      22 处投影(133/135/165/180/195/102°)全跑到了左上,这是「和 AE 对不上」的主因;
+ *  - 距离:图层坐标系像素。滤镜/阴影的长度会随图层缩放旋转,与 AE「效果作用于图层变换之前」一致;
+ *  - 柔化(softness):高斯模糊量。lottie 原生取 stdDeviation = 柔化/4;
+ *      CSS drop-shadow 的模糊半径实测与 stdDeviation 近似 1:1(同版本 Chromium 上标定),
+ *      所以 CSS 也用 柔化/4 —— 原先用 /2,阴影会明显比 AE 软一倍;
+ *      Canvas 的 shadowBlur 口径是 2σ,因此用 柔化/2(见 patchCanvasDropShadow)。
+ *  - ix 6「仅阴影」:本项目 22 处素材全部为 0,未单独实现(置 1 时仍按普通投影渲染)。
  * 参数缺失或结构异常时返回 null,调用方保持原样渲染。 */
-function getDropShadow(layer: any): { color: string; alpha: number; dx: number; dy: number; blur: number } | null {
+type DropShadow = { color: string; alpha: number; dx: number; dy: number; softness: number };
+
+function getDropShadow(layer: any): DropShadow | null {
   const ef = layer?.ef;
   if (!Array.isArray(ef)) return null;
-  const ds = ef.find((e: any) => e.ty === 25 && e.mn === 'ADBE Drop Shadow' && e.en !== 0);
+  const ds = ef.find((e: any) => e.ty === 25 && e.en !== 0);
   if (!ds || !Array.isArray(ds.ef)) return null;
+  /* 参数值一般是标量或颜色数组;若被做成关键帧(元素是 {t,s} 对象)就取首关键帧,
+   * 宁可当静态值画,也不要把整层投影丢掉。 */
   const getVal = (ix: number) => {
     const p = ds.ef.find((x: any) => x.ix === ix);
-    return p ? p.v?.k : undefined;
+    let v = p && p.v ? p.v.k : undefined;
+    if (Array.isArray(v) && v.length > 0 && v[0] && typeof v[0] === 'object' && 's' in (v[0] as object)) {
+      v = (v[0] as any).s;
+    }
+    return v;
   };
   const color = getVal(1);
   const opacity = getVal(2);
@@ -4855,21 +4878,24 @@ function getDropShadow(layer: any): { color: string; alpha: number; dx: number; 
   return {
     color: fcToHex([color[0], color[1], color[2]]),
     alpha: Math.max(0, Math.min(1, opacity / 255)),
-    dx: distance * Math.cos(rad),
-    dy: -distance * Math.sin(rad),
-    blur: (typeof softness === 'number' ? softness : 0) / 2,
+    dx: distance * Math.sin(rad),
+    dy: -distance * Math.cos(rad),
+    softness: typeof softness === 'number' && isFinite(softness) ? Math.max(0, softness) : 0,
   };
 }
 
-/* 拼出 SVG 渲染器用的 filter 字符串:drop-shadow(dx dy blur #rrggbbaa)。
- * CSS 的 8 位十六进制颜色把 alpha 直接写在颜色里,这里由 0~1 的 alpha 换算成两位。 */
-function dropShadowCss(ds: { color: string; alpha: number; dx: number; dy: number; blur: number }): string {
+/* 拼出 SVG 渲染器用的 filter 字符串:drop-shadow(dx dy 模糊半径 #rrggbbaa)。
+ * CSS 的 8 位十六进制颜色把 alpha 直接写在颜色里,这里由 0~1 的 alpha 换算成两位。
+ * 模糊半径取 柔化/4:与 lottie 原生投影的 stdDeviation = 柔化/4 同口径(实测 CSS 的
+ * drop-shadow 模糊半径与 stdDeviation 近似 1:1),这样 SVG 预览/光栅化导出与 Canvas 一致。 */
+function dropShadowCss(ds: DropShadow): string {
   const a = Math.round(ds.alpha * 255).toString(16).padStart(2, '0');
-  return 'drop-shadow(' + ds.dx.toFixed(2) + 'px ' + ds.dy.toFixed(2) + 'px ' + ds.blur.toFixed(2) + 'px ' + ds.color + a + ')';
+  const blur = ds.softness / 4;
+  return 'drop-shadow(' + ds.dx.toFixed(2) + 'px ' + ds.dy.toFixed(2) + 'px ' + blur.toFixed(2) + 'px ' + ds.color + a + ')';
 }
 
 /* 拼出 Canvas 渲染器用的 rgba() 颜色字符串(0~255 的整数分量 + 0~1 的 alpha)。 */
-function dropShadowRgba(ds: { color: string; alpha: number; dx: number; dy: number; blur: number }): string {
+function dropShadowRgba(ds: DropShadow): string {
   return 'rgba(' + parseInt(ds.color.slice(1, 3), 16) + ',' + parseInt(ds.color.slice(3, 5), 16) + ',' + parseInt(ds.color.slice(5, 7), 16) + ',' + ds.alpha + ')';
 }
 
@@ -4879,8 +4905,10 @@ function dropShadowRgba(ds: { color: string; alpha: number; dx: number; dy: numb
 function patchSvgDropShadow(el: any) {
   if (!el.layerElement) return;
   /* 只处理投影。AE「填充」不在这里实现 —— 见 bakeFillColor 的说明:
-   * 导出把当帧 SVG 序列化成**独立文档**用 <img> 加载,该环境下 CSS/SVG filter 不可靠,
-   * 挂滤镜会导致导出画面缺层。填充改为"烘焙进位图资源",预览与导出走同一条位图路径。 */
+   * 填充改走"烘焙进位图资源",预览与导出走同一条位图路径。
+   * (历史注释曾把原因写成"<img> 独立文档里 filter 不产出像素":那只对**引用站外
+   *  离屏滤镜的 url(#…)** 成立;内联在本图层 style 上的 drop-shadow() 属于文档内滤镜,
+   *  序列化后照样生效 —— 投影正是靠这一点在光栅化导出里保留下来。) */
   const ds = getDropShadow(el.data);
   el.layerElement.style.filter = ds ? dropShadowCss(ds) : '';
 }
@@ -4993,27 +5021,79 @@ function getFillEffect(layer: any): FillEffect | null {
  * 该环境下 CSS/SVG filter 实测不产出像素(会缺层)。改走 bakeFillColor 的位图烘焙。 */
 
 
-/* 给 Canvas 渲染器里的图层补投影:包装该图层的 renderFrame,一帧画两次 ——
- * 第一次设好 shadowColor/Blur/Offset 后照常画(内容被盖住,只留下外扩的阴影),
- * restore 之后再清晰地画一遍覆盖上去。
- * 必须画两次:ctx 的阴影会作用于每一笔画出来的内容,单次绘制会把文字、图标本身糊掉。
- * 代价是该图层每帧多画一遍,只有带投影的图层才走这条路径。 */
+/* Canvas 的 ctx.shadow* 是设备像素,**不受当前变换矩阵影响**(实测:缩放 200% 的图层,
+ * 阴影偏移不会跟着翻倍;预览 dpr=2 时阴影只有一半大)。
+ * AE 的投影作用在图层变换之前,所以这里按当前绘制变换矩阵把偏移/模糊换算到设备像素:
+ * 预览(dpr/适配缩放)与导出(dpr=1)才都跟 SVG 版一致。
+ * 模糊:Canvas 的 shadowBlur 口径是 2σ(lottie/AE 的 σ = 柔化/4),所以取 柔化/2 再乘缩放系数。 */
+function canvasShadowMetrics(ctx: any, ds: DropShadow): { dx: number; dy: number; blur: number } {
+  let a = 1, b = 0, c = 0, d = 1;
+  try {
+    const m = typeof ctx.getTransform === 'function' ? ctx.getTransform() : null;
+    if (m) { a = m.a; b = m.b; c = m.c; d = m.d; }
+  } catch { /* 老内核没有 getTransform:按 1:1 处理 */ }
+  const det = Math.abs(a * d - b * c) || 1;
+  return {
+    dx: a * ds.dx + c * ds.dy,
+    dy: b * ds.dx + d * ds.dy,
+    blur: (ds.softness / 2) * Math.sqrt(det),
+  };
+}
+
+/* 给 Canvas 渲染器里的图层补投影:包住 renderInnerContent —— 这一步才是"这个图层画了什么",
+ * 而且此时 ctx 的变换已经含图层自身的位置/缩放/旋转(见 CVBaseElement.renderFrame 里的
+ * ctxTransform(this.finalTransform.localMat)),正好用来把阴影换算到设备像素。
+ * 只画一遍:Canvas 的阴影本来就是在每次绘制的内容下方铺一层,内容随后盖上去。
+ * ⚠ 早期实现是画两遍(先带阴影画一遍、再清晰覆盖一遍),为的是盖掉"后一次绘制的阴影压在前
+ * 一次内容上"的多段绘制瑕疵;代价却是半透明图层被叠两次(50% 透明度叠成 75%),整段淡入淡出
+ * 的文字都会发亮 —— 本项目 22 处投影层都是单次绘制(单行纯填充文字 / 单图 / 单填充形状),
+ * 单次绘制就是正确结果,双绘的代价远大于收益,已去掉。
+ * (若日后真出现"描边 + 多行文字"这类多段绘制又带投影的素材,再改成离屏图层合成。) */
 function patchCanvasDropShadow(el: any) {
   const ds = getDropShadow(el.data);
   if (!ds) return;
-  const orig = el.renderFrame ? el.renderFrame.bind(el) : null;
+  const rgba = dropShadowRgba(ds);
+  /* 在"设置好阴影 → 绘制 → 还原阴影四件套"之间执行 draw。
+   * 刻意不用 ctx.save()/restore():lottie 的 canvas 渲染器自己缓存了 fillStyle/globalAlpha/
+   * 变换,靠 save/restore 成对维护;外面再套一层原生 save/restore 会把原生状态拨回去而缓存
+   * 不知情,后续元素可能命中错误缓存(颜色错乱)。阴影四件套 lottie 从不使用,单独存取最安全,
+   * 也支持"预合成投影里再套子图层投影"这种嵌套。 */
+  const withShadow = (ctx: any, draw: () => any) => {
+    if (!ctx || typeof ctx.shadowColor !== 'string') return draw();
+    const prevColor = ctx.shadowColor;
+    const prevBlur = ctx.shadowBlur;
+    const prevX = ctx.shadowOffsetX;
+    const prevY = ctx.shadowOffsetY;
+    const m = canvasShadowMetrics(ctx, ds);
+    ctx.shadowColor = rgba;
+    ctx.shadowBlur = m.blur;
+    ctx.shadowOffsetX = m.dx;
+    ctx.shadowOffsetY = m.dy;
+    try {
+      return draw();
+    } finally {
+      ctx.shadowColor = prevColor;
+      ctx.shadowBlur = prevBlur;
+      ctx.shadowOffsetX = prevX;
+      ctx.shadowOffsetY = prevY;
+    }
+  };
+  /* 首选:包 renderInnerContent(lottie 的 5 类 canvas 元素都有这个方法)。 */
+  const inner = (el as any).renderInnerContent;
+  if (typeof inner === 'function' && !el.__dfShadowInnerPatched) {
+    el.__dfShadowInnerPatched = true;
+    const origInner = inner.bind(el);
+    el.renderInnerContent = function (this: any) {
+      return withShadow(this.canvasContext, origInner);
+    };
+    return;
+  }
+  /* 兜底(理论上走不到):没有 renderInnerContent 的元素才退回包 renderFrame。
+   * 这条路径上图层变换要等 orig 内部才应用,取到的设备比例会滞后一帧,仅作保险。 */
+  const orig = (el as any).renderFrame ? (el as any).renderFrame.bind(el) : null;
   if (!orig) return;
   el.renderFrame = function (this: any, forceRender: boolean) {
-    const ctx = this.canvasContext;
-    if (!ctx) return orig(forceRender);
-    ctx.save();
-    ctx.shadowColor = dropShadowRgba(ds);
-    ctx.shadowBlur = ds.blur;
-    ctx.shadowOffsetX = ds.dx;
-    ctx.shadowOffsetY = ds.dy;
-    orig(forceRender);
-    ctx.restore();
-    orig(forceRender);
+    return withShadow(this.canvasContext, () => orig(forceRender));
   };
 }
 
@@ -7028,8 +7108,25 @@ async function ensureMissionData(onProgress?: (p: number | null) => void): Promi
   }
   missionDataPromise = (async () => {
     try {
+      // 音效与数据包并行预取(不放到启动预载里:只有切到本动画才需要)
+      void audioFactory(missionAudioUrl);
       const [raw] = await fetchJsonBundle([missionDataUrl], onProgress);
       const data = JSON.parse(raw);
+      /* 音效资源(audio_0)指向打包的 WAV 文件:JSON 里写的是素材目录下的相对文件名,
+       * 站点产物里没有那个目录,不换地址预览会静音、导出也找不到音轨。
+       * e:1 让 lottie 把 p 当完整地址(不做 u/p 拼接),与其它注入资源一致。
+       * 这一步必须排在下面「按图标文件名改写图片资源」之前:那段循环会把相对路径的
+       * 非图标资源当成待处理的图片,这里先给音频资源定死地址即可跳过。 */
+      data.assets = data.assets ?? [];
+      const audioAsset = data.assets.find((a: any) => a?.id === 'audio_0');
+      if (audioAsset) {
+        audioAsset.p = missionAudioUrl;
+        audioAsset.u = '';
+        audioAsset.e = 1;
+        audioAsset.t = 2;
+      } else {
+        data.assets.push({ id: 'audio_0', p: missionAudioUrl, u: '', e: 1, t: 2 });
+      }
       /* 图标资源的 u/p 拼接改成完整静态资源地址(与 animations/animation_2 图标同做法)。
        * 只认「相对路径」的资源:重新导出时若 Bodymovin 直接输出 data: URI,或导成了别的绝对地址,就别去动它。 */
       const isAbsoluteAssetUrl = (p: string) => /^(data:|https?:|\/\/|\/|\.\.?[\/\\])/i.test(p);
@@ -7387,6 +7484,8 @@ async function ensureMandelBrickData(onProgress?: (p: number | null) => void): P
   }
   mandelBrickDataPromise = (async () => {
     try {
+      // 音效与数据包并行预取(不放到启动预载里:只有切到本动画才需要)
+      void audioFactory(mandelBrickAudioUrl);
       const [raw] = await fetchJsonBundle([mandelBrickDataUrl], onProgress);
       const data = JSON.parse(raw);
       rewriteRelativeImageAssets(data, mandelBrickImageUrlByBase); // ①
@@ -7401,6 +7500,20 @@ async function ensureMandelBrickData(onProgress?: (p: number | null) => void): P
        *    默认立绘与资源声明的画框(283×425)一致,slice 与 meet 结果相同(默认画面不变);
        *    上传的任意长宽比自定义图在默认 slice 下会被裁掉一条边,这里统一兜住。 */
       for (const a of data.assets ?? []) if (a?.w && a?.h && a.t !== 'seq') a.pr = MANDELBRICK_ICON_FIT;
+      /* ⑤ 音效资源(audio_0)指向打包的 WAV 文件:JSON 里写的是素材目录下的相对文件名,
+       *    站点产物里没有那个目录,不换地址预览会静音、导出也找不到音轨。
+       *    e:1 让 lottie 把 p 当完整地址(不做 u/p 拼接),与其它注入资源一致;
+       *    音频层(ty:6)的音量在数据里已是满音量 [100],运行时再按 AUDIO_VOLUME 调低。 */
+      data.assets = data.assets ?? [];
+      const audioAsset = data.assets.find((a: any) => a?.id === 'audio_0');
+      if (audioAsset) {
+        audioAsset.p = mandelBrickAudioUrl;
+        audioAsset.u = '';
+        audioAsset.e = 1;
+        audioAsset.t = 2;
+      } else {
+        data.assets.push({ id: 'audio_0', p: mandelBrickAudioUrl, u: '', e: 1, t: 2 });
+      }
       mandelBrickData = data;
     } catch (e) {
       console.error('[首领入侵/曼德尔砖标题动画数据解析失败]', e);
@@ -8028,7 +8141,7 @@ const ANIMATIONS: AnimDef[] = [
     poster: posterOf('mission'),
     data: () => missionData,
     popup: () => null,
-    audioUrl: null,
+    audioUrl: missionAudioUrl,
     loaded: () => !!missionData,
     load: (p) => ensureMissionData(p),
     caps: {},
@@ -8137,7 +8250,7 @@ const ANIMATIONS: AnimDef[] = [
     poster: posterOf('mandelbrick'),
     data: () => mandelBrickData,
     popup: () => null,
-    audioUrl: null,
+    audioUrl: mandelBrickAudioUrl,
     loaded: () => !!mandelBrickData,
     load: (p) => ensureMandelBrickData(p),
     /* caps 全空:侧栏不出现「动画时长」区块,时间轴完全按 AE 导出原样呈现(188 帧 ≈ 3.13s)——
