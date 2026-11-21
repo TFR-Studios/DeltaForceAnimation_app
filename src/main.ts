@@ -697,6 +697,14 @@ async function loadEmbeddedFonts(data: any) {
     })
   );
   await document.fonts.ready.catch(() => undefined);
+  /* 字体状态对排障必须"随时可读",不能只在 DEV 才挂:手机上没有 DevTools,
+   * 用户能提供的信息只有「关于」页里那一份设备快照 + 日志。
+   * 这里挂一份只读摘要,start-screen.ts 会把它一起显示 / 复制出去。 */
+  try {
+    const states: Record<string, string> = {};
+    fontLoadState.forEach((v, k) => { states[k] = v; });
+    (window as any).__DFAE_FONTS__ = { states, warnings: lastFontWarnings.slice() };
+  } catch { /* 极老内核上 window 属性写入不该影响主流程 */ }
   if (import.meta.env.DEV) {
     // 自检用:确认这些 family 是「本站注册的」,而不是碰巧命中本机安装的同名字体
     (window as any).__fontDebug = {
@@ -707,6 +715,96 @@ async function loadEmbeddedFonts(data: any) {
   }
 }
 
+/* ---------- 内嵌字体是否真的生效(导出前自检) ----------
+ * 为什么需要它:手机(尤其国产 ROM 的 WebView)上,内嵌字体偶尔没能注册成功,
+ * 文字就会整段回退系统字体 —— 字形不同、字宽也变,用户看到的就是"导出视频里字大了一圈"。
+ * 桌面端因为本机装了同名字体("战术体 Medium" 的内部 family 名就是 ProjectD Type),
+ * 回退后看起来一模一样,所以这个问题只在手机上暴露。
+ * 这里在导出前用"同一句话、同一字号"分别量内嵌 family 与 sans-serif:
+ * 宽度一致 = 字体没生效(浏览器用了同一份回退字体),宽度不同 = 内嵌字体确实在参与排版。
+ * 检测到没生效时**当场重试注册**(先 TTF 后 WOFF2,带 cache-bust 绕过坏缓存),仍失败才如实记录。 */
+const FONT_PROBE_TEXT = '三角洲行动 AWM 0123';
+/** 量文本宽度用的离屏上下文(懒创建、常驻复用) */
+let fontProbeCtx: CanvasRenderingContext2D | null = null;
+function getFontProbeCtx(): CanvasRenderingContext2D | null {
+  if (!fontProbeCtx) fontProbeCtx = document.createElement('canvas').getContext('2d');
+  return fontProbeCtx;
+}
+
+/* CSS font-family 里带空格的族名必须加引号:canvas 的 ctx.font 走的是 CSS 解析,
+ * "120px ProjectD Type Medium" 这种写法在部分内核上会被判非法并**整句忽略**,
+ * 结果沿用上一次的 ctx.font(字号/字体全错)。统一走这里转义一次。 */
+function quoteFontFamily(family: unknown): string {
+  const f = String(family ?? '').trim();
+  if (!f) return 'sans-serif';
+  if (/^(sans-serif|serif|monospace|cursive|fantasy|system-ui|ui-sans-serif|ui-serif|ui-monospace)$/i.test(f)) return f;
+  if (/^["']/.test(f)) return f;
+  return '"' + f.replace(/"/g, '\\"') + '"';
+}
+
+function measureFontWidth(family: string): number {
+  const ctx = getFontProbeCtx();
+  if (!ctx) return 0;
+  ctx.font = '100px ' + quoteFontFamily(family);
+  const w = ctx.measureText(FONT_PROBE_TEXT).width;
+  return Number.isFinite(w) ? w : 0;
+}
+
+/** 同一个字号下,内嵌 family 与 sans-serif 的宽度差 < 0.5% 就当作"字体没生效"。 */
+function isFontApplied(family: string): boolean {
+  const a = measureFontWidth(family);
+  const b = measureFontWidth('sans-serif');
+  if (!(a > 0) || !(b > 0)) return false;
+  return Math.abs(a - b) / b > 0.005;
+}
+
+type ExportFontReport = { ok: string[]; missing: string[]; retried: string[] };
+
+/* 导出前统一确认「这次要用的每个字体族都真的生效」。失败只记录、不阻断导出:
+ * 字形回退是"画面不够准",直接抛错是"没有成片",后者更糟。 */
+async function ensureExportFonts(dataList: any[]): Promise<ExportFontReport> {
+  const report: ExportFontReport = { ok: [], missing: [], retried: [] };
+  const families: string[] = [];
+  for (const data of dataList) {
+    for (const f of data?.fonts?.list ?? []) {
+      const fam = f?.fFamily || f?.fName;
+      if (!fam || families.includes(fam)) continue;
+      // 没有绑定字体文件的 family 本来就要回退系统字体,不算异常
+      if (!resolveFontUrl(f.fFamily, f.fName) && !String(f.fPath || '').startsWith('data:')) continue;
+      families.push(fam);
+    }
+  }
+  for (const fam of families) {
+    if (isFontApplied(fam)) { report.ok.push(fam); continue; }
+    report.retried.push(fam);
+    /* 重试一轮:先 TTF、再 WOFF2,带 cache-bust 参数绕开"上一次拿到坏字节"的缓存。
+     * 两个候选都要过魔数校验,并等 FontFace.load() 真正完成才重新量。 */
+    let fixed = false;
+    for (const url of [resolveFontUrl(fam), resolveFontWoff2Url(fam)]) {
+      if (!url) continue;
+      try {
+        const sep = url.indexOf('?') === -1 ? '?' : '&';
+        const buf = await raceTimeout(fetchFontBinary(url + sep + 'dfae_font_retry=1'), FONT_FETCH_TIMEOUT_MS);
+        if (buf === TIMED_OUT || !looksLikeFontBuffer(buf)) continue;
+        const face = await new FontFace(fam, buf).load();
+        document.fonts.add(face);
+        loadedFontFamilies.add(fam);
+        fontLoadState.set(fam, 'ready');
+        if (isFontApplied(fam)) { fixed = true; break; }
+      } catch { /* 换下一个候选 */ }
+    }
+    if (fixed) report.ok.push(fam);
+    else { report.missing.push(fam); fontLoadState.set(fam, 'failed'); }
+  }
+  // 自检结果同步到全局摘要:导出后「关于」页的设备信息里能看到真实状态
+  try {
+    const states: Record<string, string> = {};
+    fontLoadState.forEach((v, k) => { states[k] = v; });
+    (window as any).__DFAE_FONTS__ = { states, warnings: lastFontWarnings.slice() };
+  } catch { /* ignore */ }
+  return report;
+}
+
 /* ---------- Canvas 渲染器文字兜底 ----------
  * lottie-web 的 Canvas 文字渲染依赖字体轮廓数据(chars);本动画的 JSON 只内嵌了
  * TTF 字体文件(fPath)而没有 chars,导致 Font.getCharData 抛异常、整帧绘制被中断
@@ -714,6 +812,9 @@ async function loadEmbeddedFonts(data: any) {
  * 保留 lottie 的逐字母动画(位置/透明度/颜色/描边),字形交给浏览器文本引擎。
  * 通过包装 buildItem 递归覆盖预合成内部的文字层。
  */
+/* Canvas 字号赋值失败只提醒一次:每帧几十次刷屏没有意义,而且这是"内核行为"级别的提示。 */
+let canvasFontWarned = false;
+
 /* 用原生 Canvas 文字绘制替换 lottie 的 Canvas 文字渲染。
  * 为什么必须换:Canvas 渲染器的文字依赖 JSON 里的 chars 字形轮廓,而本项目的数据没有携带,
  * lottie 会在 Font.getCharData 处抛异常并中断整个 renderFrame(表现是画布整块空白)。
@@ -749,8 +850,21 @@ function patchCanvasTextElement(el: any) {
       cd.appliedLineJoin = 'miter';
       cd.appliedMiterLimit = 4;
     }
-    // finalSize 已是最终像素字号;family 取 JSON 声明的 fFamily,查不到就退回 doc.f 或 sans-serif
-    ctx.font = doc.finalSize + 'px ' + family;
+    /* finalSize 已是最终像素字号;family 取 JSON 声明的 fFamily,查不到就退回 doc.f 或 sans-serif。
+     * 族名统一由 quoteFontFamily 加引号:带空格的族名在部分内核上会让整句 ctx.font 被判非法。
+     * 赋值之后**必须读回校验**:老内核(实测 Android WebView 99 一类)会把整句 font 静默判非法,
+     * 赋值被忽略、沿用上一次的字体与字号 —— 画面里"只有文字变大/变样"就是这么来的。
+     * 读回值里的 px 数与 finalSize 不一致就再换一次写法,并记一条日志,别让它无声发生。 */
+    const wantPx = Number(doc.finalSize) || 0;
+    ctx.font = wantPx + 'px ' + quoteFontFamily(family);
+    const gotPx = parseFloat((String(ctx.font).match(/([0-9.]+)px/) || [])[1] || '');
+    if (!(Math.abs(gotPx - wantPx) < 0.5)) {
+      ctx.font = wantPx + 'px "' + String(family).replace(/"/g, '\\"') + '"';
+      if (!canvasFontWarned) {
+        canvasFontWarned = true;
+        renderLogAppend('FONT', 'Canvas 字号赋值被内核忽略,已改用加引号族名(family=' + String(family) + ')', 'warn');
+      }
+    }
 
     const letters = Array.isArray(doc.l) ? doc.l : null;
     const renderedLetters = letters
@@ -1453,6 +1567,9 @@ const iconCount = $<HTMLElement>('iconCount');
 const iconFile = $<HTMLInputElement>('iconFile');
 const chkIcon = $<HTMLInputElement>('chkIcon');
 const iconNudgeRow = $<HTMLDivElement>('iconNudgeRow'); // 居中微调行:仅「显示图标」取消勾选(图标隐藏)后显示
+/* 图标大小(所有带图标位的动画):拖动滑杆改图标图层 ks.s,系数相对出厂尺寸 */
+const iconScaleSlider = $<HTMLInputElement>('iconScaleSlider');
+const iconScaleVal = $<HTMLSpanElement>('iconScaleVal');
 const iconToggleRow = $<HTMLLabelElement>('iconToggleRow'); // 「显示图标」开关行:仅位置暴露动画显示
 const iconScopeTabs = $<HTMLDivElement>('iconScopeTabs'); // 分段选项卡容器:仅位置暴露动画显示
 /* 图标不透明度(仅任务弹窗动画):图标是普通位图图层,直接改图层不透明度 */
@@ -2261,6 +2378,8 @@ async function loadData(data: any, name: string) {
   captureDikuangBaseState();
   captureMaptitlePlateBase(); // 地图标题动画:采集底框/描边的基准宽度与文字基准宽度
   captureIconState();
+  captureIconScaleOriginals(data); // 先采出厂 ks.s,再按用户选择的「图标大小」写回(幂等)
+  applyIconScaleToData(data);
   setupImageSequence(data);
   // 按本次载入的序列图层(重新)生成调色滤镜:叠加序列默认就挂出厂色滤镜,
   // 显式改过色的序列沿用用户颜色;切换动画后按新动画的序列重建
@@ -2779,8 +2898,15 @@ const exportProgress = $<HTMLElement>('exportProgress');
 const exportSuccess = $<HTMLElement>('exportSuccess');
 const exportSuccessName = $<HTMLElement>('exportSuccessName');
 const exportSuccessSub = $<HTMLElement>('exportSuccessSub');
+/** 结果卡的标题:成功「导出成功」/ 失败「导出失败」(同一个元素,只换文字与配色)。 */
+const exportSuccessTitle = document.querySelector<HTMLElement>('.export-success-title');
 const exportFoot = $<HTMLElement>('exportFoot');
 const btnExportLog = $<HTMLButtonElement>('btnExportLog');
+/** 渲染器日志标题栏里的「复制」(导出中就能用)。 */
+const btnRenderLogCopy = $<HTMLButtonElement>('btnRenderLogCopy');
+/** 导出结束后出口按钮里的「复制渲染日志」。 */
+const btnExportLogCopy = $<HTMLButtonElement>('btnExportLogCopy');
+const btnExportLogCopyText = $<HTMLElement>('btnExportLogCopyText');
 const btnExportLogText = $<HTMLElement>('btnExportLogText');
 const btnExportOpenDir = $<HTMLButtonElement>('btnExportOpenDir');
 
@@ -5280,7 +5406,7 @@ function measurePopupTextWidth(text: string, doc: any): number {
   if (!ctx || !doc || !doc.s) return 0;
   const fontDef = (popupData?.fonts?.list ?? []).find((f: any) => f.fName === doc.f || f.fFamily === doc.f);
   const family = (fontDef && fontDef.fFamily) || doc.f || 'sans-serif';
-  ctx.font = doc.s + 'px "' + family + '"';
+  ctx.font = doc.s + 'px ' + quoteFontFamily(family);
   const tracking = (doc.tr || 0) * 0.001 * (doc.s || 0); // 每字母字距(与 lottie 渲染一致)
   /* 多行文字取最长一行的宽度:底板/图标是按最长行居中的,只量第一行会算窄。 */
   let maxW = 0;
@@ -5567,7 +5693,7 @@ function measureDikuangTextWidth(text: string, doc: any): number {
   if (!ctx || !doc || !doc.s) return 0;
   const fontDef = (currentData?.fonts?.list ?? []).find((f: any) => f.fName === doc.f || f.fFamily === doc.f);
   const family = (fontDef && fontDef.fFamily) || doc.f || 'sans-serif';
-  ctx.font = doc.s + 'px "' + family + '"';
+  ctx.font = doc.s + 'px ' + quoteFontFamily(family);
   const tracking = (doc.tr || 0) * 0.001 * (doc.s || 0); // 每字母字距(与 Canvas 文字兜底一致)
   let maxW = 0;
   for (const line of String(text).split('\r')) {
@@ -8600,6 +8726,125 @@ function captureIconState() {
   }
 }
 
+/* ---------- 图标大小(缩放) ----------
+ * 只改图标图层自己的 ks.s —— 这几套动画的图标锚点都正好落在图片中心,所以是绕中心等比缩放:
+ * 不裁切、不挪位、不重排版式,SVG / Canvas 与导出走同一份数据。
+ * 值记成「相对出厂尺寸的百分比」(100% = 原样);写数据时必须从**出厂快照**乘系数重算,
+ * 不能就地把当前值再乘一次 —— 拖动滑杆、切动画、合并/取消二次扫描都会反复应用,乘上去会指数级放大。
+ *   • 位置暴露:主段 ind 5 / 合并后的二次扫描 ind 105,两段各记各的;
+ *     第二段的源数据 animation2NextData 不缩放,每次合并都由它深拷贝,出厂值不会被污染;
+ *   • 单图标位动画(任务弹窗 / 大战场 / 撤离点 / 首领入侵 / 物品搜索):各记一份,
+ *     大战场那两条共用同一份资源的位图图层一起缩放。
+ * 快照按「动画:分段」只采一次:出厂数据在运行期不会被其它编辑改到 ks.s。 */
+const iconScaleOriginal = new Map<string, { ind: number; a: number; k: any }[]>();
+const iconScaleValues = new Map<string, number>(); // `${动画key}:${分段}` → 系数
+const ICON_SCALE_MIN = 0.1;
+const ICON_SCALE_MAX = 3;
+
+function iconScaleKey(scope: IconScope, key: string = currentAnimKey): string {
+  return key + ':' + scope;
+}
+
+/* 该动画/分段当前生效的系数(没设置过 = 1) */
+function getIconScale(scope: IconScope = iconScope, key: string = currentAnimKey): number {
+  return iconScaleValues.get(iconScaleKey(scope, key)) ?? 1;
+}
+
+/* 某个数据对象里能缩放的图标图层(与「图标选择」认的是同一个图标位) */
+function iconScaleLayersOf(data: any, key: string = currentAnimKey): any[] {
+  const out: any[] = [];
+  if (!data) return out;
+  if (key === 'itemsearch') {
+    if (!itemSearchIconRefId) return out;
+    walkEditableLayers(data, (l) => {
+      if (l?.ty === 2 && !isSeqLayer(l) && l.refId === itemSearchIconRefId) out.push(l);
+    });
+    return out;
+  }
+  if (key === 'exposed') {
+    const main = findLayerInData(data, 5);
+    if (main?.ty === 2) out.push(main);
+    if (isMergedNext(data)) {
+      const next = findLayerInData(data, 105);
+      if (next?.ty === 2) out.push(next);
+    }
+    return out;
+  }
+  // 其余单图标位动画:位图图层就是图标位(大战场有两条共用同一资源,一并收进来)
+  walkEditableLayers(data, (l) => {
+    if (l?.ty === 2 && !isSeqLayer(l)) out.push(l);
+  });
+  return out;
+}
+
+/* 首次载入时采集出厂 ks.s。已采过就跳过:之后的 data 里可能已经带着缩放值,
+ * 再采一次会把「缩放后的值」当成出厂值,滑杆回 100% 也回不到原样。 */
+function captureIconScaleOriginals(data: any = currentData): void {
+  if (!data) return;
+  const key = currentAnimKey;
+  const take = (scope: IconScope, layers: any[]) => {
+    const id = iconScaleKey(scope, key);
+    if (iconScaleOriginal.has(id)) return;
+    const snaps = layers
+      .filter((l) => l?.ks?.s && typeof l.ind === 'number')
+      .map((l) => ({
+        ind: l.ind,
+        a: Number(l.ks.s.a) === 1 ? 1 : 0,
+        k: JSON.parse(JSON.stringify(l.ks.s.k)),
+      }));
+    if (snaps.length) iconScaleOriginal.set(id, snaps);
+  };
+  if (key === 'exposed') {
+    take('main', [findLayerInData(data, 5)]);
+    if (isMergedNext(data)) take('next', [findLayerInData(data, 105)]);
+  } else if (isSingleIconScope(key)) {
+    take('main', iconScaleLayersOf(data, key));
+  }
+}
+
+/* 把系数写进图层 ks.s:静态值直接乘;带关键帧的逐帧乘(保留曲线、时刻与 z 分量)。 */
+function writeIconScale(layer: any, factor: number, snap: { a: number; k: any }): void {
+  const s = layer?.ks?.s;
+  if (!s || !Array.isArray(snap.k)) return;
+  const scaled = (v: any) => {
+    if (!Array.isArray(v)) return v;
+    const out = v.slice();
+    out[0] = Number(v[0]) * factor;
+    out[1] = Number(out.length > 1 ? v[1] : v[0]) * factor;
+    return out;
+  };
+  s.a = snap.a;
+  if (snap.a === 1) {
+    s.k = JSON.parse(JSON.stringify(snap.k)).map((kf: any) => {
+      if (kf && Array.isArray(kf.s)) kf.s = scaled(kf.s);
+      return kf;
+    });
+  } else {
+    s.k = scaled(snap.k);
+  }
+}
+
+/* 把当前动画(位置暴露按分段)的缩放系数写回数据;幂等,可在每次载入/重建前调用。 */
+function applyIconScaleToData(data: any = currentData): void {
+  if (!data) return;
+  const key = currentAnimKey;
+  const applyScope = (scope: IconScope, layers: any[]) => {
+    const snaps = iconScaleOriginal.get(iconScaleKey(scope, key));
+    if (!snaps) return;
+    const factor = getIconScale(scope, key);
+    for (const snap of snaps) {
+      const layer = layers.find((l) => l?.ind === snap.ind) ?? findLayerInData(data, snap.ind);
+      if (layer) writeIconScale(layer, factor, snap);
+    }
+  };
+  if (key === 'exposed') {
+    applyScope('main', [findLayerInData(data, 5)]);
+    if (isMergedNext(data)) applyScope('next', [findLayerInData(data, 105)]);
+    return;
+  }
+  if (isSingleIconScope(key)) applyScope('main', iconScaleLayersOf(data, key));
+}
+
 /* 切换「显示图标」：隐藏时把图标层透明度改成动画关键帧、把文字及其底框父级移到画布中心；
  * 恢复时写回 captureIconState 捕获的原值（而非就地增减，重复调用不会累积偏移）。
  * rerender=false 用于「批量改完数据再统一重建」的场景，避免重建多次。 */
@@ -8661,6 +8906,25 @@ chkMissionReward.addEventListener('change', () => setMissionRewardVisible(chkMis
 /* 「图标不透明度」滑块(任务弹窗动画):复用图片/文字/形状列表那套 .o-slider 处理,
  * 只把根节点换成图标区块 —— 滑块是静态 DOM,模块加载时绑定一次即可,不会重复挂监听。 */
 bindOpacitySliders(iconOpacityRow);
+
+/* 图标大小滑杆:拖动时改数据并走节流重建,画面持续跟着变;「重置」回到 100%。
+ * 位置暴露在「二次扫描」选项卡下且尚未合并时,先记下系数 —— 开启二次扫描后 loadData 会自动应用。 */
+iconScaleSlider.addEventListener('input', () => {
+  const pct = Number(iconScaleSlider.value);
+  iconScaleVal.textContent = pct + '%';
+  iconScaleValues.set(iconScaleKey(iconScope), pct / 100);
+  applyIconScaleToData(currentData);
+  scheduleHotRebuild();
+});
+document.getElementById('btnIconScaleReset')?.addEventListener('click', () => {
+  iconScaleValues.set(iconScaleKey(iconScope), 1);
+  const pct = 100;
+  if (iconScaleSlider.value !== String(pct)) iconScaleSlider.value = String(pct);
+  iconScaleVal.textContent = pct + '%';
+  syncRangeFill(iconScaleSlider);
+  applyIconScaleToData(currentData);
+  scheduleHotRebuild();
+});
 
 /* 居中微调按钮:±1px(合成单位),重置归零 */
 document.getElementById('btnNudgeL')?.addEventListener('click', () => changeIconNudge(-1));
@@ -8963,6 +9227,11 @@ function syncIconScopeUI(data: any = currentData) {
     iconScopeHint.hidden = false;
     iconScopeHint.textContent = '二次扫描尚未开启:这里的选择会保留,在上方「动画时长 → 二次扫描」勾选后自动生效。';
   }
+  /* 图标大小滑杆:位置暴露跟着选项卡走(两段各记各的),其余动画只有一个图标位 */
+  const scalePct = Math.round(getIconScale(iconScope) * 100);
+  if (iconScaleSlider.value !== String(scalePct)) iconScaleSlider.value = String(scalePct);
+  iconScaleVal.textContent = scalePct + '%';
+  syncRangeFill(iconScaleSlider);
   syncIconOpacityRow(data);
   renderIconList();
 }
@@ -9462,6 +9731,8 @@ function resetAnimEditState(key: string): void {
   iconVisible = true;
   if (chkIcon) chkIcon.checked = true;
   iconCenterNudge = 0;
+  /* 图标大小也回到出厂尺寸(各动画/分段的系数一并清掉) */
+  iconScaleValues.clear();
   const nudgeVal = document.getElementById('iconNudgeVal');
   if (nudgeVal) nudgeVal.textContent = '0 px';
   /* 主题颜色:「当前这一族颜色」记在模块变量上(改色是整族替换,下一次接着从新值替换),
@@ -9782,6 +10053,87 @@ function renderLogAppend(tag: string, message: string, level: RenderLogLevel = '
     body.firstElementChild?.remove();
   }
   if (follow) body.scrollTop = body.scrollHeight;
+  /* 同一条渲染器日志也镜像进开发者日志(来源 render)。
+   * 为什么要镜像:浮层里的渲染器日志只在导出时可见、导出结束就没了,而"导出为什么慢/为什么降级"
+   * 恰恰要在事后翻;开发者日志有终端、能 COPY/SAVE,把这条流接进去就不用用户再截图。
+   * 只镜像阶段行(帧行本来就走 renderLogFrameTick,量太大),等级按颜色语义映射。 */
+  try {
+    const devLevel = level === 'error' ? 'error' : level === 'warn' ? 'warn' : level === 'dim' ? 'debug' : 'info';
+    devEvent('render', '[' + tag + '] ' + message, undefined, devLevel);
+  } catch { /* 开发者日志不可用不该影响导出 */ }
+}
+
+
+/* ---------- 渲染器日志的复制 ----------
+ * 用户排障时最需要的就是这一份:有规格头(格式 / 尺寸 / fps / 帧数 / 备注)+ 每行
+ * 「时间 标签 消息」,粘进聊天里就能看出卡在哪一步、降级到哪条路。
+ * 直接读 DOM 里的行而不是另存一份数组:日志行本来就是唯一真相(有滚动上限,保留的正是用户看得到的那些)。
+ * 剪贴板在安卓 WebView 上可能不存在(非安全上下文),所以带 execCommand 兜底。 */
+function buildRenderLogText(): string {
+  const head = [
+    'DFAE RENDER LOG',
+    'exported ' + new Date().toISOString(),
+    'spec ' + (exportFormatTag.textContent || '—'),
+    'frame ' + (renderLogFrame.textContent || '—') + ' · state ' + (renderLogState.textContent || '—')
+      + ' · elapsed ' + (renderLogElapsed.textContent || '—'),
+    '----',
+  ];
+  const lines: string[] = [];
+  for (const line of Array.from(renderLogBody.children)) {
+    const el = line as HTMLElement;
+    const time = el.querySelector('.rl-time')?.textContent ?? '';
+    const tag = el.querySelector('.rl-tag')?.textContent ?? '';
+    const msg = (el.querySelector('.rl-msg') as HTMLElement | null)?.textContent ?? '';
+    // 等级保留成一个可读标记:WARN / ERROR 才好被 grep 出来
+    const level = el.dataset.level && el.dataset.level !== 'info' && el.dataset.level !== 'dim' && el.dataset.level !== 'frame'
+      ? '[' + String(el.dataset.level).toUpperCase() + '] '
+      : '';
+    lines.push(time + ' ' + tag + ' ' + level + msg);
+  }
+  return head.concat(lines).join('\n');
+}
+
+function copyTextFallback(text: string): boolean {
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    // 用屏幕外定位而不是 display:none —— 选不中的元素 execCommand 会直接返回 false
+    area.setAttribute('readonly', '');
+    area.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+    document.body.appendChild(area);
+    area.select();
+    area.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  } catch { return false; }
+}
+
+/** 复制渲染器日志并给出按钮级反馈(已复制 / 复制失败,1.6s 后复原)。 */
+async function copyRenderLog(btn: HTMLButtonElement | null, labelEl: HTMLElement | null, idleText: string): Promise<void> {
+  const text = buildRenderLogText();
+  let ok = false;
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch { ok = false; }
+  if (!ok) ok = copyTextFallback(text);
+  if (btn) {
+    btn.classList.toggle('is-copied', ok);
+    btn.classList.toggle('is-failed', !ok);
+    const target = labelEl ?? btn;
+    const prev = target.textContent;
+    target.textContent = ok ? '已复制' : '复制失败';
+    window.setTimeout(() => {
+      target.textContent = prev;
+      btn.classList.remove('is-copied', 'is-failed');
+    }, 1600);
+  }
+  if (ok) setStatus('渲染器日志已复制 · ' + text.length + ' 字符');
+  else setStatus('复制渲染器日志失败(剪贴板不可用)', true);
+  logs.info('导出', ok ? '复制渲染器日志 · ' + text.length + ' 字符' : '复制渲染器日志失败');
 }
 
 /** 每次导出开始时复位日志窗口(showExportOverlay 调用)。 */
@@ -9944,7 +10296,7 @@ function resetExportOutcomeView(): void {
   exportUserInteracted = false;
   window.clearTimeout(exportCardHeightTimer);
   window.clearTimeout(downloadsAfterExportTimer);
-  exportCard.classList.remove('is-done', 'is-log-open');
+  exportCard.classList.remove('is-done', 'is-failed', 'is-log-open');
   exportCard.style.transition = '';
   exportCard.style.height = '';
   exportCard.style.overflow = '';
@@ -9955,6 +10307,7 @@ function resetExportOutcomeView(): void {
   btnExportLogText.textContent = '查看渲染日志';
   btnExportOpenDir.hidden = true;
   exportTitleText.textContent = '正在导出视频';
+  if (exportSuccessTitle) exportSuccessTitle.textContent = '导出成功';
   exportSuccessName.textContent = '—';
   exportSuccessSub.textContent = '';
   exportSuccessSub.classList.remove('is-warn');
@@ -10050,7 +10403,9 @@ function finishExportOverlay(kind: 'done' | 'error' | 'cancel', status: string, 
   const hasFile = kind === 'done' && !!lastExportBlob;
   const canShare = hasFile && IS_MOBILE && canShareFile();
   btnExportSave.hidden = !canShare;
-  btnExportOpenDir.hidden = !(hasFile && isDesktopDownloads);
+  /* 打开文件夹只在桌面客户端出现:手机上没有「下载列表 / 资源管理器」这套东西,
+   * 落点是系统相册(MediaStore),按钮点下去也只会是一个无效出口。 */
+  btnExportOpenDir.hidden = !(hasFile && isDesktopDownloads && !IS_MOBILE);
   btnExportRedownload.hidden = !(hasFile && !canShare);
   window.clearTimeout(exportOverlayTimer);
 
@@ -10058,6 +10413,7 @@ function finishExportOverlay(kind: 'done' | 'error' | 'cancel', status: string, 
     /* 对话框的可读名同步成「导出成功」(头部视觉淡出,但 aria-labelledby 仍指向它);
      * 成功块是 role=status,内容出现时读屏会播一次结果。 */
     exportTitleText.textContent = '导出成功';
+    if (exportSuccessTitle) exportSuccessTitle.textContent = '导出成功';
     exportSuccessName.textContent = lastExportBlob ? lastExportBlob.filename : '视频文件';
     exportSuccessSub.textContent = detail;
     btnExportLog.setAttribute('aria-expanded', 'false');
@@ -10072,10 +10428,29 @@ function finishExportOverlay(kind: 'done' | 'error' | 'cancel', status: string, 
       exportFoot.hidden = false;
       exportProgress.setAttribute('aria-hidden', 'true');
     });
+  } else if (kind === 'error') {
+    /* 失败也走"结果卡":红叉 + 原因 + 默认展开的渲染器日志。
+     * 以前失败只停在进度区,视觉上没有"结束"的信号;现在与成功对称(同一套环 + 笔画描出动画,
+     * 只把颜色换成 --danger、对勾换成两条对角笔画)。日志默认展开 —— 这一态要回答"为什么没成",
+     * 证据不能收起来;复制按钮就在下面那排出口里。 */
+    exportTitleText.textContent = '导出失败';
+    if (exportSuccessTitle) exportSuccessTitle.textContent = '导出失败';
+    exportSuccessName.textContent = '';
+    exportSuccessSub.textContent = detail || status;
+    exportSuccessSub.classList.add('is-warn');
+    btnExportLog.setAttribute('aria-expanded', 'true');
+    btnExportLogText.textContent = '收起渲染日志';
+    animateExportCardHeight(() => {
+      exportCard.classList.add('is-failed', 'is-log-open');
+      exportCard.classList.remove('is-done');
+      exportSuccess.hidden = false;
+      exportFoot.hidden = false;
+      exportProgress.setAttribute('aria-hidden', 'true');
+    });
   } else {
-    /* 失败 / 取消保留进度区与完整日志:这两态要回答"为什么没成",不能把证据收起来。 */
-    exportTitleText.textContent = kind === 'error' ? '导出失败' : '已取消导出';
-    exportCard.classList.remove('is-done', 'is-log-open');
+    /* 取消:保留进度区与完整日志(用户主动停的,不需要一个结果图标来宣布)。 */
+    exportTitleText.textContent = '已取消导出';
+    exportCard.classList.remove('is-done', 'is-failed', 'is-log-open');
     exportCard.style.transition = '';
     exportCard.style.height = '';
     exportCard.style.overflow = '';
@@ -10202,15 +10577,25 @@ btnExportOpenDir.addEventListener('click', () => {
 
 });
 
-/* 成功卡上的日志开关:默认收起,展开/收起都走同一次卡片高度过渡;
- * 用户在看日志期间不自动关闭浮层。 */
+/* 终态卡(成功 / 失败)上的日志开关:默认收起,展开/收起都走同一次卡片高度过渡;
+ * 用户在看日志期间不自动关闭浮层。失败态默认展开(要回答"为什么没成")。 */
 btnExportLog.addEventListener('click', () => {
-  if (!exportCard.classList.contains('is-done')) return;
+  if (!exportCard.classList.contains('is-done') && !exportCard.classList.contains('is-failed')) return;
   const open = !exportCard.classList.contains('is-log-open');
   animateExportCardHeight(() => exportCard.classList.toggle('is-log-open', open));
   btnExportLog.setAttribute('aria-expanded', open ? 'true' : 'false');
   btnExportLogText.textContent = open ? '收起渲染日志' : '查看渲染日志';
   pauseExportAutoClose();
+});
+
+/* 两个「复制渲染器日志」入口:日志标题栏(导出中就有)与结束后的出口按钮。
+ * 失败态是最需要它们的地方 —— 用户把这一段发过来,远好过口述"报了什么错"。 */
+btnRenderLogCopy.addEventListener('click', () => {
+  void copyRenderLog(btnRenderLogCopy, null, '复制');
+});
+btnExportLogCopy.addEventListener('click', () => {
+  pauseExportAutoClose();
+  void copyRenderLog(btnExportLogCopy, btnExportLogCopyText, '复制渲染日志');
 });
 
 /* 指针 / 焦点进入浮层 = 用户开始处理结果:停掉自动关闭(见 finishExportOverlay)。 */
@@ -10430,7 +10815,23 @@ const PROBE_MAX_COUNT = 40;
 /* 编码方案(plan)= codec string + 实际编码尺寸 + 帧率 + 码率。
  * 相比原来「只挑 codec string、尺寸固定为动画原始分辨率」,这里允许编码尺寸小于原始尺寸:
  * 手机的 H.264 硬编码器普遍不支持 4K(甚至只到 1080p),原来会直接报「不支持该配置」而整段导出失败。 */
-type H264Plan = { codec: string; width: number; height: number; fps: number; scale: number; bitrate: number };
+type VideoFamily = 'avc' | 'vp9';
+type H264Plan = {
+  codec: string;
+  /** 编码族:H.264(硬件编码,首选)或 VP9(软件编码,无 H.264 时的离线兜底) */
+  family: VideoFamily;
+  width: number;
+  height: number;
+  fps: number;
+  scale: number;
+  bitrate: number;
+};
+
+/* VP9 的 codec string 候选:profile 固定 0(8-bit 4:2:0),level 从低到高试。
+ * 为什么需要它:一部分安卓 WebView **没有可用的 H.264 编码器**,只能退回 MediaRecorder 实时录制
+ * —— 渲染慢就会帧率低、时长被拉长。而 Chromium 的 VP9 编码器是**软件实现**,不依赖系统组件,
+ * 用在离线逐帧编码上就能拿到「时长精确、不受渲染速度影响」的 MP4。 */
+const VP9_CODEC_CANDIDATES = ['vp09.00.10.08', 'vp09.00.31.08', 'vp09.00.41.08', 'vp09.00.50.08', 'vp09.00.51.08'];
 
 /* 分辨率降级阶梯:从用户选的档位(或 auto 推出来的档位)往下试。
  * 降档同时带来两个好处:硬编码器更可能接受,内存与编码耗时也成比例下降
@@ -10488,7 +10889,39 @@ async function resolveH264Plan(w: number, h: number, fps: number, reqScale = 1):
           const codec = 'avc1.' + prof + idc;
           const ok = await probeVideoConfig({ codec, width: cw, height: ch, bitrate, framerate: f });
           if (ok === TIMED_OUT) return null; // 探测器不响应:直接改走兼容路径,别再一轮轮试
-          if (ok) return { codec, width: cw, height: ch, fps: f, scale: cw / w, bitrate };
+          if (ok) return { codec, family: 'avc', width: cw, height: ch, fps: f, scale: cw / w, bitrate };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/* 选视频编码方案:**先 H.264(硬编,快),没有再试 VP9(软件编码,离线兜底)**。
+ * 为什么要有第二档:没有 H.264 的机型以前只能走 MediaRecorder 实时录制 —— 渲染慢就会
+ * 低帧率、时长被拉长(用户实测 3.95 秒动画变 58 秒/6 秒)。VP9 走 WebCodecs 离线逐帧编码,
+ * 再配 mp4-muxer 封装,时长与帧率都不再受渲染速度影响。VP9-in-MP4 在 Android 10+ 的原生播放器可播。
+ * 返回 null 才轮到实时录制。 */
+async function resolveVideoPlan(w: number, h: number, fps: number, reqScale = 1): Promise<H264Plan | null> {
+  const avc = await resolveH264Plan(w, h, fps, reqScale);
+  if (avc) return avc;
+  if (!WebVideoEncoder || !WebVideoFrame || !window.isSecureContext) return null;
+  const ladder = H264_SCALE_LADDER.filter((s) => s <= reqScale + 1e-6);
+  const fpsList = fps > 30 ? [fps, 30] : [fps];
+  const deadline = performance.now() + PROBE_BUDGET_MS;
+  let probes = 0;
+  for (const scale of (ladder.length ? ladder : [1])) {
+    const cw = evenDim(w * scale), ch = evenDim(h * scale);
+    const bitrate = bitrateFor(cw, ch, w, h);
+    for (const f of fpsList) {
+      for (const codec of VP9_CODEC_CANDIDATES) {
+        if (probes >= PROBE_MAX_COUNT || performance.now() > deadline) return null;
+        probes += 1;
+        const ok = await probeVideoConfig({ codec, width: cw, height: ch, bitrate, framerate: f });
+        if (ok === TIMED_OUT) return null;
+        if (ok) {
+          renderLogAppend('CODEC', '本机没有可用的 H.264 · 改用 VP9 离线编码(' + cw + '×' + ch + '@' + f + ')', 'warn');
+          return { codec, family: 'vp9', width: cw, height: ch, fps: f, scale: cw / w, bitrate };
         }
       }
     }
@@ -10517,6 +10950,48 @@ type MuxerLike = { addVideoChunk: (chunk: any, meta: any) => void; addAudioChunk
  * 前者可以自动降一档分辨率重试或改走兼容格式,后者只能如实报错。 */
 class EncoderConfigError extends Error {}
 
+/* ---------- 媒体编码期异常的归一 ----------
+ * WebCodecs / MediaRecorder 在「先答支持、真正 encode 时却拒绝」时抛的是 DOMException:
+ *   EncodingError / NotSupportedError / InvalidStateError / OperationError / AbortError / DataError。
+ * 这在老内核上非常常见(实测安卓 WebView 103 一类机型:isConfigSupported 回答 supported,
+ * 一喂帧编码器就关闭,用户看到的就是一句没有上下文的「EncodingError」→ 导出直接失败)。
+ * 这里统一判名字并转成上面两种可降级的错误,让既有降级链路(降档重试 → 兼容录制 / MJPEG)
+ * 真正有机会跑起来;渲染、取消等非编码异常原样抛出,不被误判。 */
+const MEDIA_CODEC_ERROR_NAMES = ['EncodingError', 'NotSupportedError', 'InvalidStateError', 'OperationError', 'AbortError', 'DataError'];
+function isMediaCodecError(e: unknown): boolean {
+  const name = (e as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && MEDIA_CODEC_ERROR_NAMES.includes(name);
+}
+/** 把编码期异常整理成「名字: 原因」的一句人话(日志与提示共用)。 */
+function mediaErrorText(e: unknown): string {
+  if (!e) return '未知错误';
+  const anyE = e as { name?: unknown; message?: unknown };
+  const name = typeof anyE.name === 'string' && anyE.name !== 'Error' ? anyE.name + ': ' : '';
+  const msg = typeof anyE.message === 'string' && anyE.message ? anyE.message : String(e);
+  return name + msg;
+}
+/** 视频编码失败 → EncoderConfigError(可降档重试 / 改走录制)。 */
+function asVideoEncoderError(e: unknown, context: string): Error {
+  if (e instanceof EncoderConfigError || e instanceof AudioCodecUnavailableError || e instanceof ExportCancelledError) {
+    return e as Error;
+  }
+  return new EncoderConfigError(context + ':' + mediaErrorText(e));
+}
+/** 音频编码失败 → AudioCodecUnavailableError(可换 Opus / 改走录制)。 */
+function asAudioEncoderError(e: unknown, context: string): Error {
+  if (e instanceof AudioCodecUnavailableError || e instanceof ExportCancelledError) return e as Error;
+  return new AudioCodecUnavailableError(context + ':' + mediaErrorText(e));
+}
+/** 导出失败提示:DOMException 的名字对用户毫无意义,换成「是什么 + 怎么办」,原信息附在后面。 */
+function readableExportError(e: unknown): string {
+  const name = (e as { name?: unknown } | null)?.name;
+  if (name === 'EncodingError' || name === 'NotSupportedError') {
+    return '本机的媒体编码器拒绝了这段内容(' + name + '),通常是系统 WebView 内核偏老,或该分辨率 / 编码格式不被支持。'
+      + '请把「分辨率」降到更低档再试,或在电脑上的 Chrome / Edge 导出。原始信息:' + mediaErrorText(e);
+  }
+  return (e as { message?: unknown } | null)?.message ? String((e as { message: unknown }).message) : String(e);
+}
+
 /* flush 的超时上限:编码器正常工作时 flush 只是把队列里剩下几帧吐出来(秒级);
  * 60s 不是性能预期,而是「已经不正常了」的判定线 —— 到了就报错,不要让用户对着 99% 干等。
  * 音频侧的队列短得多,给 20s。 */
@@ -10536,14 +11011,16 @@ async function runWebCodecsExport(
   muxer: MuxerLike, plan: H264Plan, totalFrames: number,
   onProgress: (p: number, detail?: string) => void,
   encodeFrame: (enc: any, i: number) => Promise<void>,
-  audio: { numCh: number; frames: number; config: AacConfig; sample: (planar: Float32Array, off: number, n: number) => void } | null,
+  audio: { numCh: number; frames: number; config: AudioConfig; sample: (planar: Float32Array, off: number, n: number) => void } | null,
 ): Promise<void> {
   const { codec, width: w, height: h, fps: fr, bitrate } = plan;
-  let encError: any = null;
-  const fail = (e: any) => { if (!encError) encError = e; };
+  /* 视频 / 音频的错误分开记:两条轨的降级方式完全不同(视频降档或改录制、音频换 Opus),
+   * 混在一个 encError 里就分不清该换哪条,只能整段失败。 */
+  let videoFail: any = null;
+  let audioFail: any = null;
   const videoEncoder = new WebVideoEncoder({
     output: (chunk: any, meta: any) => muxer.addVideoChunk(chunk, meta),
-    error: fail,
+    error: (e: any) => { if (!videoFail) videoFail = e; },
   });
   let audioEncoder: any = null;
   const audioSrc = audio && audio.numCh > 0 ? audio : null; // 局部引用,便于在闭包/循环里做非空收窄
@@ -10551,11 +11028,12 @@ async function runWebCodecsExport(
     try {
       audioEncoder = new WebAudioEncoder({
         output: (chunk: any, meta: any) => muxer.addAudioChunk(chunk, meta),
-        error: fail,
+        error: (e: any) => { if (!audioFail) audioFail = e; },
       });
     } catch (e) {
-      // 构造函数就抛错(个别 WebView 的 AudioEncoder 只是个空壳):按「编不了 AAC」上抛,交给兼容录制
-      throw new AudioCodecUnavailableError('AAC 编码器创建失败: ' + ((e as Error).message || e));
+      // 构造函数就抛错(个别 WebView 的 AudioEncoder 只是个空壳):按「这条音轨编不了」上抛,
+      // 由 exportVideoMp4 决定是换 Opus 再试,还是交给兼容录制
+      throw new AudioCodecUnavailableError(audioSrc.config.label + ' 编码器创建失败: ' + ((e as Error).message || e));
     }
   }
 
@@ -10572,54 +11050,71 @@ async function runWebCodecsExport(
     }
     try {
       videoEncoder.configure({ codec, width: w, height: h, bitrate, framerate: fr });
-      renderLogAppend('ENC', 'H.264 编码器已配置 · ' + avcProfileLevelName(codec) + ' · '
+      renderLogAppend('ENC', (plan.family === 'vp9' ? 'VP9' : 'H.264') + ' 编码器已配置 · '
+        + (plan.family === 'vp9' ? codec : avcProfileLevelName(codec)) + ' · '
         + w + '×' + h + ' · ' + (bitrate / 1e6).toFixed(1) + ' Mbps', 'info');
     } catch (e) {
       /* 少数浏览器会先答「支持」再在 configure 时拒绝(见 H.264 选级那段注释):
        * 归一到 EncoderConfigError,调用方据此自动降一档重试 / 改走兼容路径。 */
       throw new EncoderConfigError('H.264 编码器拒绝该配置(' + w + '×' + h + '): ' + ((e as Error).message || e));
     }
-    // AAC-LC(mp4a.40.2)+ 48kHz:采样率必须与 exportVideoMp4 的重采样目标、muxer 里 audio.sampleRate 完全一致,
-    // 对不上会出现音调偏移或时长漂移;192 kbps 对音效足够,声道数跟随素材(最多 2)。
+    // 采样率必须与 exportVideoMp4 的重采样目标、muxer 里 audio.sampleRate 完全一致,
+    // 对不上会出现音调偏移或时长漂移。AAC-LC 与 Opus 都按 48kHz 播音轨,链路只有一份。
     if (audioEncoder && audioSrc) {
       try {
         audioEncoder.configure(audioSrc.config);
-        renderLogAppend('ENC', 'AAC 编码器已配置 · ' + audioSrc.config.numberOfChannels + 'ch · '
+        renderLogAppend('ENC', audioSrc.config.label + ' 编码器已配置 · ' + audioSrc.config.numberOfChannels + 'ch · '
           + (audioSrc.config.bitrate / 1000) + ' kbps · 48 kHz', 'info');
       } catch (e) {
         /* 「isConfigSupported 说支持、configure 却拒绝」的硬编码器实测存在:
-         * 归一到同一个专用错误,让上层改走兼容录制(有声音),而不是整段导出失败或无声。 */
-        throw new AudioCodecUnavailableError('AAC 编码器拒绝了配置(' + audioSrc.config.numberOfChannels
+         * 归一到同一个专用错误,让 exportVideoMp4 换 Opus 再试 / 上层改走兼容录制,
+         * 而不是整段导出失败或无声。 */
+        throw new AudioCodecUnavailableError(audioSrc.config.label + ' 编码器拒绝了配置(' + audioSrc.config.numberOfChannels
           + 'ch / ' + audioSrc.config.bitrate + 'bps): ' + ((e as Error).message || e));
       }
     }
 
     if (audioEncoder && audioSrc) {
-      // AAC-LC 的帧长固定 1024 采样:WebCodecs AudioEncoder 每帧必须正好喂 1024 个采样,这里按此切分。
+      // 帧长跟着编码格式走(AudioConfig.frameSamples):AAC-LC 固定 1024,Opus 用 20ms = 960。
       // 时间戳单位是【微秒】,由采样偏移 off 换算(off / 48000 秒);planar 复用同一块缓冲区,
-      // 尾帧不足 1024 时由 sample 内部补零,多余内容不会被读取(numberOfFrames 只取 n)。
-      const AAC_FRAME = 1024;
-      const planar = new Float32Array(AAC_FRAME * audioSrc.numCh);
-      for (let off = 0; off < audioSrc.frames; off += AAC_FRAME) {
-        if (encError) throw encError;
-        const n = Math.min(AAC_FRAME, audioSrc.frames - off);
+      // 尾帧不足一帧时由 sample 内部补零,多余内容不会被读取(numberOfFrames 只取 n)。
+      const frameSamples = audioSrc.config.frameSamples;
+      const planar = new Float32Array(frameSamples * audioSrc.numCh);
+      for (let off = 0; off < audioSrc.frames; off += frameSamples) {
+        if (audioFail) throw asAudioEncoderError(audioFail, '音轨编码器出错');
+        const n = Math.min(frameSamples, audioSrc.frames - off);
         audioSrc.sample(planar, off, n); // 尾部不足一帧的部分由 sample 内部补零
         const audioData = new WebAudioData({
           format: 'f32-planar', sampleRate: 48000, numberOfChannels: audioSrc.numCh,
           numberOfFrames: n, timestamp: Math.round((off / 48000) * 1e6), data: planar,
         });
-        audioEncoder.encode(audioData);
+        try {
+          audioEncoder.encode(audioData);
+        } catch (e) {
+          audioData.close();
+          throw asAudioEncoderError(e, audioSrc.config.label + ' 音轨编码失败');
+        }
         audioData.close();
       }
-      renderLogAppend('AUDIO', 'AAC 喂入 ' + Math.ceil(audioSrc.frames / AAC_FRAME) + ' 帧 · '
+      renderLogAppend('AUDIO', audioSrc.config.label + ' 喂入 ' + Math.ceil(audioSrc.frames / frameSamples) + ' 帧 · '
         + (audioSrc.frames / 48000).toFixed(2) + 's', 'dim');
     }
 
     for (let i = 0; i < totalFrames; i++) {
       if (exportCancelRequested) throw new ExportCancelledError('导出已取消');
-      if (encError) throw encError; // 编码器已因错误关闭:抛出真实原因,而不是 closed codec
-      if (videoEncoder.state !== 'configured') throw encError || new Error('H.264 编码器已关闭(state=' + videoEncoder.state + ')');
-      await encodeFrame(videoEncoder, i);
+      // 编码器已因错误关闭:抛出归一后的可降级错误,而不是「closed codec」
+      if (videoFail) throw asVideoEncoderError(videoFail, 'H.264 编码器出错');
+      if (videoEncoder.state !== 'configured') {
+        throw asVideoEncoderError(videoFail || new Error('编码器状态 ' + videoEncoder.state), 'H.264 编码器已被关闭');
+      }
+      try {
+        await encodeFrame(videoEncoder, i);
+      } catch (e) {
+        /* encodeFrame 里既有渲染也有 encode/VideoFrame:只有媒体编码类的 DOMException 才当归一对象,
+         * 渲染失败(栅格化不出来等)按原样上抛,否则会被误判成「换台机器重试」的错误。 */
+        if (e instanceof ExportCancelledError || !isMediaCodecError(e)) throw e;
+        throw asVideoEncoderError(e, 'H.264 编码失败');
+      }
       /* 每 12 帧把编码器排队深度写进日志:queue 持续增长说明编码跟不上渲染,
        * 这时用户看到的"导出慢"瓶颈就在编码器,而不是渲染。 */
       if (i % 12 === 0) {
@@ -10638,9 +11133,9 @@ async function runWebCodecsExport(
     if (audioEncoder) {
       const __flushAudioT0 = performance.now();
       const af = await raceTimeout(audioEncoder.flush(), AUDIO_FLUSH_TIMEOUT_MS);
-      if (af === TIMED_OUT) throw new Error('音频编码器没有响应(AAC flush 超时):请重试,或在电脑上导出');
+      if (af === TIMED_OUT) throw new Error('音频编码器没有响应(' + (audioSrc ? audioSrc.config.label : '音轨') + ' flush 超时):请重试,或在电脑上导出');
       renderLogAppend('FLUSH', '音频编码器已排空 · ' + Math.round(performance.now() - __flushAudioT0) + 'ms', 'dim');
-      if (encError) throw encError;
+      if (audioFail) throw asAudioEncoderError(audioFail, '音轨编码器出错');
     }
     const __flushVideoT0 = performance.now();
     /* 尾部的 flush 是导出里最长的一段"没有新帧"的静默(实测可达 2 秒):每 300ms 写一行
@@ -10658,7 +11153,7 @@ async function runWebCodecsExport(
       throw new Error('H.264 编码器没有响应(flush 超时,' + w + '×' + h + '):本机硬编码器可能无法胜任该规格。'
         + '请把「分辨率」改成更低的档位,或在电脑上的 Chrome / Edge 导出。');
     }
-    if (encError) throw encError;
+    if (videoFail) throw asVideoEncoderError(videoFail, 'H.264 编码器出错');
     renderLogAppend('FLUSH', '视频编码器已排空 · ' + Math.round(performance.now() - __flushVideoT0) + 'ms', 'dim');
   } finally {
     try { videoEncoder.close(); } catch { /* ignore */ }
@@ -10762,26 +11257,69 @@ async function resampleTo(channels: Float32Array[], fromRate: number, toRate: nu
   }
 }
 
-/* MP4 音轨的 AAC 编码配置。
- * 原来只探测一种组合(192k / 原声道),探测失败就静默导出一段没有音轨的 MP4 ——
- * 这正是「部分机型导出没声音」的来源之一:有些硬编码器只支持较低码率或单声道,
- * 但 AAC 本身是能编的。这里按「码率 × 声道」逐个探测,选第一个真正受支持的组合,
- * 让这些机型仍然能出带声音的 MP4;全都探测不到才算「本机编不了 AAC」。
- * AVI 的音频走自包含的 PCM,完全不经过这里。探测同样限时,超时按「不支持」处理。 */
-type AacConfig = { codec: string; sampleRate: number; numberOfChannels: number; bitrate: number };
-async function resolveAacConfig(channels: number): Promise<AacConfig | null> {
-  if (!WebAudioEncoder || !WebAudioData) return null;
+/* 音轨编码配置。
+ *
+ * 这里不只有 AAC:一部分 Android WebView / 模拟器 / 定制 ROM 的系统媒体组件里**没有 AAC 编码器**。
+ * 以前这种情况只做两件事:探测失败 → 改走 MediaRecorder 兼容录制。可兼容录制的 MIME 里又优先写
+ * MP4 + mp4a,系统没有 AAC 时 MediaRecorder 要么起不来、要么悄悄把音轨丢掉,用户拿到的就是
+ * 一段没有声音的视频 —— 这正是「手机上没有 AAC 编码器 → 导出无声」的根因。
+ *
+ * 现在的策略是给 MP4 再留一条**不依赖系统 AAC** 的路:用 WebCodecs 的 Opus 编码器(Chromium 自带
+ * 软件实现,和硬件/系统组件无关)编音轨,再由 mp4-muxer 封装成 Opus-in-MP4。它和普通 MP4 一样
+ * 逐帧离线编码,不需要真实时间录制,也不会像兼容录制那样音画起点漂移。
+ * 只有 AAC 与 Opus 都不可用时才交给兼容录制 / 无声 MP4(见 exportVideoMp4 与 exportVideo)。 */
+type AudioConfig = {
+  /** WebCodecs 的 codec 字符串(mp4a.40.2 / opus) */
+  codec: string;
+  sampleRate: number;
+  numberOfChannels: number;
+  bitrate: number;
+  /** mp4-muxer 的 audio.codec:决定 MP4 里写 mp4a 还是 Opus 样本描述 */
+  muxerCodec: 'aac' | 'opus';
+  /** 每次喂给 AudioEncoder 的采样数:AAC-LC 固定 1024;Opus 用 20ms = 960 */
+  frameSamples: number;
+  /** 日志与提示里显示的名字 */
+  label: string;
+};
+
+/* 本次页面生命周期里是否已经确认「本机没有可用的 AAC 编码器」。
+ * 兼容录制用它避开带 mp4a 的 MIME(否则就是明知编不了还去试),后续导出也直接走 Opus。 */
+let aacEncoderUnavailable = false;
+
+async function resolveAacConfig(channels: number): Promise<AudioConfig | null> {
+  if (!WebAudioEncoder || !WebAudioData || aacEncoderUnavailable) return null;
   const chans = channels >= 2 ? [2, 1] : [1];
   for (const ch of chans) {
     for (const bitrate of [192000, 128000, 96000]) {
-      const cfg: AacConfig = { codec: 'mp4a.40.2', sampleRate: 48000, numberOfChannels: ch, bitrate };
+      const cfg = { codec: 'mp4a.40.2', sampleRate: 48000, numberOfChannels: ch, bitrate };
       try {
         const r = await raceTimeout(Promise.resolve(WebAudioEncoder.isConfigSupported(cfg)), ENCODER_PROBE_TIMEOUT_MS);
         // 探测器本身不响应:音频编码栈已经不可用,再试 5 组只会白等 7.5 秒
-        if (r === TIMED_OUT) return null;
-        if (r && r.supported) return cfg;
+        if (r === TIMED_OUT) { aacEncoderUnavailable = true; return null; }
+        if (r && r.supported) {
+          return { ...cfg, muxerCodec: 'aac', frameSamples: 1024, label: 'AAC-LC' };
+        }
       } catch { /* 这组不行,试下一组 */ }
     }
+  }
+  aacEncoderUnavailable = true;
+  return null;
+}
+
+/* Opus 音轨:不经过系统 AAC 编码器,Chromium 的软件 Opus 实现覆盖 Android WebView / 桌面 Chrome。
+ * 码率固定 128k(对游戏音效足够);帧长 20ms,和 Opus 的标准帧一致,时间戳也最好对齐。 */
+async function resolveOpusConfig(channels: number): Promise<AudioConfig | null> {
+  if (!WebAudioEncoder || !WebAudioData) return null;
+  const ch = channels >= 2 ? 2 : 1;
+  for (const bitrate of [128000, 96000, 64000]) {
+    const cfg = { codec: 'opus', sampleRate: 48000, numberOfChannels: ch, bitrate };
+    try {
+      const r = await raceTimeout(Promise.resolve(WebAudioEncoder.isConfigSupported(cfg)), ENCODER_PROBE_TIMEOUT_MS);
+      if (r === TIMED_OUT) return null;
+      if (r && r.supported) {
+        return { ...cfg, muxerCodec: 'opus', frameSamples: 960, label: 'Opus' };
+      }
+    } catch { /* 试下一档 */ }
   }
   return null;
 }
@@ -10861,7 +11399,9 @@ function downloadBlob(blob: Blob, filename: string) {
           }, 200);
         } else {
           /* 先让成功动效播完:100% -> 对勾大约需要 900ms,下载列表立刻弹出来会把这一眼完全盖住。
-           * 用户如果在这之前自己关了浮层,就不再弹列表(他的意图已经很明确)。 */
+           * 用户如果在这之前自己关了浮层,就不再弹列表(他的意图已经很明确)。
+           * 手机端没有下载列表(落点是系统相册),这里直接跳过,连定时器都不挂。 */
+          if (IS_MOBILE) return;
           window.clearTimeout(downloadsAfterExportTimer);
           downloadsAfterExportTimer = window.setTimeout(() => {
             if (!exportOverlay.hidden) void openDownloadsAfterExport(res.name);
@@ -10903,10 +11443,14 @@ function anchorDownload(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-/* MP4 导出(H.264 视频 + AAC 音频,由 mp4-muxer 封装)。
+/* MP4 导出(H.264 视频 + AAC / Opus 音频,由 mp4-muxer 封装)。
  * 取帧统一来自「合成画布」(背景 + 主动画 + 弹窗),画面由调用方传入的 renderFrame 负责画好。
- * 音频先解码音效再重采样到 48kHz(与 AAC 轨声明一致),然后按视频时长截断 / 补静音,
+ * 音频先解码音效再重采样到 48kHz(与音轨声明一致),然后按视频时长截断 / 补静音,
  * 保证音轨与视频严格等长,导入剪辑软件不会音画不同步。
+ *
+ * 音轨编码不是只有 AAC:系统没有 AAC 编码器时改用 Opus(mp4-muxer 支持 Opus-in-MP4),
+ * 两条路都逐帧离线编码,不需要 MediaRecorder 的真实时间录制。只有 AAC / Opus 都不可用时
+ * 才抛 AudioCodecUnavailableError 交给兼容录制,或在明确接受无声时导出无声 MP4。
  * animFrameOf 负责把输出帧序号 i 映射到动画帧号。 */
 async function exportVideoMp4(data: any, canvas: HTMLCanvasElement, renderFrame: (n: number) => void | Promise<void>, totalFrames: number, fr: number, onProgress: (p: number, detail?: string) => void, plan: H264Plan, animFrameOf: (i: number) => number = (i) => data.ip + i, opts: { allowSilentAudio?: boolean } = {}) {
   if (!WebVideoEncoder || !WebVideoFrame) throw new Error('当前浏览器不支持 WebCodecs 视频编码(请用 Chrome/Edge)');
@@ -10925,59 +11469,38 @@ async function exportVideoMp4(data: any, canvas: HTMLCanvasElement, renderFrame:
   } else if (audioUrl) {
     renderLogAppend('AUDIO', '音轨解码失败或超时 · 本次静音', 'warn');
   }
-  // 声道数上限 2:导出的 AAC 轨只声明立体声,多声道素材也只取前两路
-  let numCh = audioChannels ? Math.min(audioChannels.length, 2) : 0;
-  /* 先确认本机能编 AAC 再决定「要不要音轨」:mp4-muxer 的音轨是在构造时声明的,
+  // 声道数上限 2:导出的音轨只声明立体声,多声道素材也只取前两路
+  const srcCh = audioChannels ? Math.min(audioChannels.length, 2) : 0;
+  /* 先确认本机能编哪种音轨再决定「要不要音轨」:mp4-muxer 的音轨是在构造时声明的,
    * 声明了却没有帧喂进去会得到一个空的音频轨。
-   *   · 有音效、本机却没有任何可用的 AAC 配置 → 抛专用错误,让上层改走「兼容录制 + 音轨」;
+   *   · 有音效、本机有任何可用配置(AAC 或 Opus)→ 挂音轨;
+   *   · 两种都不可用 → 抛专用错误,让上层改走「兼容录制 + 音轨」;
    *     allowSilentAudio 为重试路径,明确接受无声时才继续;
    *   · 没有音效的动画(例如任务弹窗)照旧不挂音轨。 */
-  let aacConfig: AacConfig | null = null;
-  if (numCh > 0) {
-    aacConfig = await resolveAacConfig(numCh);
-    if (!aacConfig && !opts.allowSilentAudio) {
-      renderLogAppend('AUDIO', '本机没有可用 AAC 配置 · 交给兼容录制', 'warn');
-      throw new AudioCodecUnavailableError('本机没有可用的 AAC 音频编码器(' + encodeSupportSummary() + ')');
+  let audioConfig: AudioConfig | null = null;
+  /* 是否已经为「AAC 失败 → Opus」走过一次。这个分支只在 AAC 探测通过、真正 configure 却失败时
+   * 才会用到(少数硬编码器会先答支持再拒绝),保证最多重来一次。 */
+  let opusTried = false;
+  if (srcCh > 0) {
+    audioConfig = await resolveAacConfig(srcCh);
+    if (!audioConfig) {
+      renderLogAppend('AUDIO', '本机没有可用 AAC 配置 · 改用 Opus 音轨(不依赖系统 AAC)', 'warn');
+      audioConfig = await resolveOpusConfig(srcCh);
+      opusTried = true;
     }
-    numCh = aacConfig ? aacConfig.numberOfChannels : 0;
-    renderLogAppend('AUDIO', aacConfig
-      ? 'AAC ' + numCh + 'ch · ' + (aacConfig.bitrate / 1000) + 'kbps · 48kHz'
-      : 'AAC 不可用 · 本次导出无声', aacConfig ? 'dim' : 'warn');
+    if (!audioConfig && !opts.allowSilentAudio) {
+      renderLogAppend('AUDIO', 'AAC / Opus 都不可用 · 交给兼容录制', 'warn');
+      throw new AudioCodecUnavailableError('本机没有可用的音轨编码器(AAC / Opus 都不可用；' + encodeSupportSummary() + ')');
+    }
+    if (audioConfig) {
+      audioConfig = { ...audioConfig, numberOfChannels: Math.min(srcCh, audioConfig.numberOfChannels) };
+      renderLogAppend('AUDIO', audioConfig.label + ' · ' + audioConfig.numberOfChannels + 'ch · '
+        + (audioConfig.bitrate / 1000) + 'kbps · 48kHz', 'dim');
+    }
   }
   const videoSec = totalFrames / fr;
   // 音轨长度严格按视频时长(秒 × 48000)定:多出来的音频丢掉,不够的补静音
   const audioFrames = audioChannels ? Math.round(videoSec * 48000) : 0;
-
-  // fastStart:'in-memory' 把 moov 索引块写到文件头(代价是组装期间数据在内存里多留一份),
-  // 这样浏览器/播放器能边下边播,剪辑软件拖进度条也不必先扫完整个文件。
-  const muxer = new Muxer({
-    target: new ArrayBufferTarget(),
-    video: { codec: 'avc', width: w, height: h, frameRate: fr },
-    ...(numCh > 0 ? { audio: { codec: 'aac', numberOfChannels: numCh, sampleRate: 48000 } } : {}),
-    fastStart: 'in-memory',
-  });
-  renderLogAppend('MUX', 'MP4 fastStart=in-memory · ' + w + '×' + h + '@' + fr
-    + ' · ' + (numCh > 0 ? '视频 + AAC 音轨' : '仅视频'), 'dim');
-
-  /* 音频交给 runWebCodecsExport 统一按 AAC 帧喂给编码器 */
-  const audio = (numCh > 0 && audioChannels && aacConfig && WebAudioEncoder && WebAudioData)
-    ? {
-        numCh,
-        frames: audioFrames,
-        config: aacConfig,
-        sample: (planar: Float32Array, off: number, n: number) => {
-          // f32-planar 是「按通道连续」排布:第 c 通道第 i 个采样在 planar[c * n + i]
-          // (n = 本帧样本数,不是缓冲区容量 AAC_FRAME × numCh),写成交错布局会被解成噪声
-          for (let c = 0; c < numCh; c++) {
-            const ch = audioChannels[c];
-            for (let i = 0; i < n; i++) {
-              const s = off + i < ch.length ? ch[off + i] : 0;
-              planar[c * n + i] = s * AUDIO_VOLUME; // 超出音频长度补静音
-            }
-          }
-        },
-      }
-    : null;
 
   /* 编码尺寸小于合成画布(手机等自动降档)时,先把整帧缩到编码尺寸再交给编码器。
    * 一次 GPU 侧的 drawImage 代价远低于让硬编码器去拒绝一个它不支持的尺寸。 */
@@ -10991,28 +11514,105 @@ async function exportVideoMp4(data: any, canvas: HTMLCanvasElement, renderFrame:
     renderLogAppend('SCALE', '合成帧 ' + srcW + '×' + srcH + ' → 编码 ' + w + '×' + h, 'dim');
   }
 
-  await runWebCodecsExport(muxer, plan, totalFrames, onProgress, async (enc, i) => {
-    const animFrame = animFrameOf(i);
-    await ensureSeqDecoded(Math.round(animFrame));
-    await renderFrame(animFrame);
-    if (encCtx) encCtx.drawImage(canvas, 0, 0, w, h);
-    // VideoFrame 的 timestamp / duration 单位是【微秒】:第 i 帧时间戳 = i/fr 秒。
-    // 关键帧每 60 帧(约 1 秒)一个 —— 太稀会让播放与剪辑 seek 变慢,太密则白白增大文件。
-    const frame = new WebVideoFrame(encCanvas, { timestamp: Math.round((i * 1e6) / fr), duration: Math.round(1e6 / fr) });
-    enc.encode(frame, { keyFrame: i % 60 === 0 });
-    frame.close();
-  }, audio);
+  /* 每轮重试都要新建 muxer 并从第 0 帧重新编码:音轨在 muxer 里是构造时声明的,
+   * 半途换格式不可能。但重试只发生在「音轨 configure 阶段」——那一步在所有视频帧之前,
+   * 所以重来一次不会重复编码画面。 */
+  for (;;) {
+    const numCh = audioConfig ? Math.min(srcCh, audioConfig.numberOfChannels) : 0;
+    const hasAudio = numCh > 0 && !!audioChannels && !!audioConfig && !!WebAudioEncoder && !!WebAudioData;
 
-  // 编码阶段只报到 99%:最后的封装(finalize 要把整段数据在内存里搬一遍)与下载同样要占时间
-  onProgress(99, '帧编码完成,正在封装音视频…');
-  const __finalizeT0 = performance.now();
-  muxer.finalize();
-  const __mp4Bytes = muxer.target.buffer.byteLength;
-  renderLogAppend('MUX', 'finalize ' + Math.round(performance.now() - __finalizeT0) + 'ms · ' + fmtSize(__mp4Bytes), 'dim');
-  onProgress(100, '封装完成,正在下载…');
-  markExportFilename('mp4');
-  renderLogAppend('SAVE', '开始保存 · ' + fmtSize(__mp4Bytes), 'dim');
-  downloadBlob(new Blob([muxer.target.buffer], { type: 'video/mp4' }), 'animation.mp4');
+    // fastStart:'in-memory' 把 moov 索引块写到文件头(代价是组装期间数据在内存里多留一份),
+    // 这样浏览器/播放器能边下边播,剪辑软件拖进度条也不必先扫完整个文件。
+    const muxer = new Muxer({
+      target: new ArrayBufferTarget(),
+      video: { codec: plan.family === 'vp9' ? 'vp9' : 'avc', width: w, height: h, frameRate: fr },
+      ...(hasAudio && audioConfig ? { audio: { codec: audioConfig.muxerCodec, numberOfChannels: numCh, sampleRate: 48000 } } : {}),
+      fastStart: 'in-memory',
+    });
+    renderLogAppend('MUX', 'MP4 fastStart=in-memory · ' + w + '×' + h + '@' + fr
+      + ' · ' + (hasAudio && audioConfig ? '视频 + ' + audioConfig.label + ' 音轨' : '仅视频'), 'dim');
+
+    /* 音频交给 runWebCodecsExport 统一按帧喂给编码器(帧长由 AudioConfig.frameSamples 决定) */
+    const audio = (hasAudio && audioChannels && audioConfig)
+      ? {
+          numCh,
+          frames: audioFrames,
+          config: audioConfig,
+          sample: (planar: Float32Array, off: number, n: number) => {
+            // f32-planar 是「按通道连续」排布:第 c 通道第 i 个采样在 planar[c * n + i]
+            // (n = 本帧样本数,不是缓冲区容量),写成交错布局会被解成噪声
+            for (let c = 0; c < numCh; c++) {
+              const ch = audioChannels[c];
+              for (let i = 0; i < n; i++) {
+                const s = off + i < ch.length ? ch[off + i] : 0;
+                planar[c * n + i] = s * AUDIO_VOLUME; // 超出音频长度补静音
+              }
+            }
+          },
+        }
+      : null;
+
+    try {
+      await runWebCodecsExport(muxer, plan, totalFrames, onProgress, async (enc, i) => {
+        const animFrame = animFrameOf(i);
+        await ensureSeqDecoded(Math.round(animFrame));
+        await renderFrame(animFrame);
+        if (encCtx) encCtx.drawImage(canvas, 0, 0, w, h);
+        // VideoFrame 的 timestamp / duration 单位是【微秒】:第 i 帧时间戳 = i/fr 秒。
+        // 关键帧每 60 帧(约 1 秒)一个 —— 太稀会让播放与剪辑 seek 变慢,太密则白白增大文件。
+        const frame = new WebVideoFrame(encCanvas, { timestamp: Math.round((i * 1e6) / fr), duration: Math.round(1e6 / fr) });
+        /* encode 抛错时也必须 close:没关掉的 VideoFrame 会被 GC 时才回收,
+         * 控制台会留一条「garbage collected without being closed」,严重时还会把编码器拖停。 */
+        try {
+          enc.encode(frame, { keyFrame: i % 60 === 0 });
+        } finally {
+          frame.close();
+        }
+      }, audio);
+    } catch (e) {
+      /* 探测说支持、configure 却拒绝(手机上见过):先换 Opus 再来一次;
+       * 已经试过 Opus 或明确接受无声时,退回无声 MP4,而不是整段失败。 */
+      if (e instanceof AudioCodecUnavailableError) {
+        if (!opusTried && srcCh > 0) {
+          opusTried = true;
+          aacEncoderUnavailable = true;
+          renderLogAppend('AUDIO', (audioConfig ? audioConfig.label : 'AAC') + ' 实际不可用 · 改用 Opus 音轨', 'warn');
+          const opus = await resolveOpusConfig(srcCh);
+          if (opus) {
+            audioConfig = opus;
+            renderLogAppend('TARGET', '音轨编码改为 ' + opus.label + ' · 从头重跑', 'warn');
+            continue;
+          }
+        }
+        if (opts.allowSilentAudio) {
+          renderLogAppend('AUDIO', '音轨编码不可用 · 本次导出无声', 'warn');
+          audioConfig = null;
+          renderLogAppend('TARGET', '改导出无声 MP4 · 从头重跑', 'warn');
+          continue;
+        }
+      }
+      throw e;
+    }
+
+    // 编码阶段只报到 99%:最后的封装(finalize 要把整段数据在内存里搬一遍)与下载同样要占时间
+    onProgress(99, '帧编码完成,正在封装音视频…');
+    const __finalizeT0 = performance.now();
+    /* 封装本身也可能失败:老内核(或编码器只吐了一半数据时)mp4-muxer 会在 stsd 阶段
+     * 对着空的 sample description 抛 TypeError。这种情况同样值得降级,
+     * 所以归一成 EncoderConfigError —— 上层会改走兼容录制,而不是把整段编码成果扔掉。 */
+    try {
+      muxer.finalize();
+    } catch (e) {
+      throw new EncoderConfigError('MP4 封装失败:' + mediaErrorText(e));
+    }
+    const __mp4Bytes = muxer.target.buffer.byteLength;
+    renderLogAppend('MUX', 'finalize ' + Math.round(performance.now() - __finalizeT0) + 'ms · ' + fmtSize(__mp4Bytes), 'dim');
+    onProgress(100, '封装完成,正在下载…');
+    markExportFilename('mp4');
+    renderLogAppend('SAVE', '开始保存 · ' + fmtSize(__mp4Bytes), 'dim');
+    downloadBlob(new Blob([muxer.target.buffer], { type: 'video/mp4' }), 'animation.mp4');
+    return;
+  }
 }
 
 /* --- AVI 自封装(MJPEG + PCM / 无压缩 BGRA 透明 + PCM) --- */
@@ -11334,6 +11934,30 @@ function dibStrf(w: number, h: number): Uint8Array<ArrayBuffer> {
 
 /* BITMAPINFOHEADER + avcC:H.264(24bpp,biCompression='H264',
  * 附加 AVCDecoderConfigurationRecord,PotPlayer/VLC/剪映 可硬解播放) */
+/** 从 avcC 里拆出 SPS / PPS NAL(AVI 的关键帧要自己重放参数集,见 exportVideoAviH264)。 */
+function avcCParameterSets(avcC: Uint8Array): Uint8Array[] {
+  const out: Uint8Array[] = [];
+  try {
+    if (avcC.length < 7) return out;
+    let p = 5; // version(1) profile(1) compat(1) level(1) lengthSizeMinusOne(1)
+    const readSets = (count: number, begin: number): number => {
+      let q = begin;
+      for (let i = 0; i < count; i += 1) {
+        if (q + 2 > avcC.length) return q;
+        const len = (avcC[q] << 8) | avcC[q + 1];
+        q += 2;
+        if (len <= 0 || q + len > avcC.length) return q;
+        out.push(avcC.subarray(q, q + len));
+        q += len;
+      }
+      return q;
+    };
+    p = readSets(avcC[p] & 0x1f, p + 1);
+    if (p < avcC.length) readSets(avcC[p], p + 1);
+  } catch { /* 结构异常:返回已解析到的部分,调用方按 0 组处理也可以 */ }
+  return out;
+}
+
 function h264Strf(w: number, h: number, avcC: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
   const strf = new Uint8Array(40 + avcC.length);
   const df = new DataView(strf.buffer);
@@ -11540,6 +12164,34 @@ async function exportVideoAviH264(data: any, canvas: HTMLCanvasElement, renderFr
   if (!avcCLocal) throw new Error('未能获取 H.264 解码配置(avcC)');
 
   onProgress(99, '帧编码完成,正在组装 AVI(H.264)…');
+  /* AVI 没有「每帧样本描述」:播放器 seek 到某个关键帧时拿不到 SPS/PPS,就会报参数错误 / 花屏
+   * (用户反馈的「部分设备导出 AVI 后关键帧参数错误」)。这里给**每个关键帧**前面重放一遍参数集
+   * (AVCC 4 字节长度前缀格式,与帧数据同一套),关键帧因此可以独立解码,任意 seek 都安全。 */
+  const paramSets = avcCParameterSets(avcCLocal as Uint8Array);
+  if (paramSets.length) {
+    let extraBytes = 0;
+    let replayed = 0;
+    for (const f of frames) {
+      if (!f.key) continue;
+      let add = 0;
+      for (const ps of paramSets) add += 4 + ps.length;
+      const merged = new Uint8Array(f.data.length + add);
+      let off = 0;
+      for (const ps of paramSets) {
+        merged[off] = (ps.length >>> 24) & 0xff;
+        merged[off + 1] = (ps.length >>> 16) & 0xff;
+        merged[off + 2] = (ps.length >>> 8) & 0xff;
+        merged[off + 3] = ps.length & 0xff;
+        merged.set(ps, off + 4);
+        off += 4 + ps.length;
+      }
+      merged.set(f.data, off);
+      f.data = merged;
+      extraBytes += add;
+      replayed += 1;
+    }
+    renderLogAppend('AVI', '关键帧重放参数集 ' + paramSets.length + ' 组 · ' + replayed + ' 个关键帧 · +' + extraBytes + 'B', 'dim');
+  }
   /* 闭包内赋值让 TS 把 avcCLocal 收窄成 never(见上方注释),但这里运行期已经有值 —— 显式断言后再读长度。 */
   renderLogAppend('AVI', 'avcC ' + (avcCLocal as Uint8Array<ArrayBuffer>).byteLength + 'B · 组装 '
     + frames.length + ' 帧(含关键帧索引)', 'dim');
@@ -11566,6 +12218,18 @@ async function exportVideoAviH264(data: any, canvas: HTMLCanvasElement, renderFr
  * 所以录到的就是逐帧渲染的结果,不会掺入浏览器自己采样的中间态。 */
 /* 录制器 stop 之后等 onstop 的上限:超过就认为这个内核的录制能力不可用(见调用点注释) */
 const RECORDER_STOP_TIMEOUT_MS = 20000;
+
+/* 「录到的是一张静止画面」专用错误。
+ * 用户实测产物:23 秒、1920×1080、全程 1 种颜色 —— MediaRecorder 只抓到了开始那一刻的背景,
+ * 188 帧动画一帧都没进去。原因有两类,处理方式不同但都需要先识别出来:
+ *   ① 取帧方式在本机没生效(captureStream(0) 依赖 requestFrame);
+ *   ② 合成画布本身就没画出内容(光栅化在这台机器上产出空白)。
+ * 抛这个错误让调用方**换一种取帧方式重录一次**;两种都不行才如实报错,
+ * 绝不静默交付一段"只有背景颜色"的视频。 */
+class BlankCaptureError extends Error {}
+
+/** 录制取帧方式:manual = captureStream(0) + requestFrame 逐帧推;auto = captureStream(fps) 自动采样。 */
+type CaptureMode = 'manual' | 'auto';
 
 /* 兼容录制用的音轨:把动画音效按「总时长」铺成一段 AudioBuffer,经 WebAudio 推到
  * MediaStreamDestination,再和画布视频轨合成一条流交给 MediaRecorder。
@@ -11630,44 +12294,411 @@ async function buildRecorderAudioTrack(audioUrl: string | null, durationSec: num
   }
 }
 
-function pickRecorderMime(hasAudio: boolean): string | null {
+/* MediaRecorder 可接受的容器 / 编解码器候选,按「先保证有声音」排序。
+ *
+ * 关键点:本机已经确认没有 AAC 编码器时,绝不能再去试带 mp4a 的 MIME ——
+ * 那正是「兼容录制回退也没有声音」的根源:有的 WebView 的 isTypeSupported 会答支持,
+ * 真正 start() 时才失败,或者录完发现音轨被悄悄丢掉。这时优先 WebM + Opus
+ * (Chromium 的 Opus 是软件实现,不依赖系统 AAC 组件)。
+ * 带音轨时必须把音频编解码器写进 MIME:只写视频编解码器时,MediaRecorder 可能拒收带音轨的流。 */
+function recorderMimeCandidates(hasAudio: boolean, preferOpus = false): string[] {
   try {
     const MR = (window as any).MediaRecorder;
-    if (!MR || typeof MR.isTypeSupported !== 'function') return null;
-    /* 优先 MP4(Safari 与部分 Android 能直接录 MP4),否则退 WebM(Android/桌面 Chrome 都认)。
-     * 带音轨时必须把音频编解码器写进 MIME:只写视频编解码器时,MediaRecorder 可能拒收带音轨的流,
-     * 或者在部分 Android WebView 上悄悄丢掉音轨。 */
-    const cands = hasAudio
-      ? [
-          'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-          'video/mp4;codecs=avc1,mp4a.40.2',
-          /* 显式带音频编解码器的 WebM 排在「裸 video/mp4」之前:
-           * 后者可能只保证视频轨,部分 WebView 会悄悄把音轨丢掉 —— 有声音优先于容器偏好。 */
-          'video/webm;codecs=vp9,opus',
-          'video/webm;codecs=vp8,opus',
-          'video/mp4',
-          'video/webm',
-        ]
-      : [
-          'video/mp4;codecs=avc1.42E01E',
-          'video/mp4',
-          'video/webm;codecs=vp9',
-          'video/webm;codecs=vp8',
-          'video/webm',
-        ];
-    for (const m of cands) if (MR.isTypeSupported(m)) return m;
-  } catch { /* ignore */ }
-  return null;
+    if (!MR || typeof MR.isTypeSupported !== 'function') return [];
+    const aacMp4 = [
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4;codecs=avc1,mp4a.40.2',
+    ];
+    /* 显式带音频编解码器的 WebM 排在「裸容器」之前:
+     * 后者可能只保证视频轨,部分 WebView 会悄悄把音轨丢掉 —— 有声音优先于容器偏好。 */
+    const opusWebm = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=opus',
+    ];
+    let cands: string[];
+    if (hasAudio) {
+      /* preferOpus:本机没有 WebCodecs 音频编码器(无法确认 AAC 可用),或已经确认编不了 AAC。
+       * 这时先试 WebM + Opus —— Chromium 的 Opus 是软件实现,不依赖系统媒体组件;
+       * 带 mp4a 的 MP4 放在后面做「WebM 完全不被支持」时的兜底(iOS Safari 等)。 */
+      cands = preferOpus
+        ? [...opusWebm, ...aacMp4, 'video/webm', 'video/mp4']
+        : [...aacMp4, ...opusWebm, 'video/mp4', 'video/webm'];
+    } else {
+      cands = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+    }
+    return cands.filter((m) => MR.isTypeSupported(m));
+  } catch { return []; }
+}
+function pickRecorderMime(hasAudio: boolean, preferOpus = false): string | null {
+  return recorderMimeCandidates(hasAudio, preferOpus)[0] ?? null;
 }
 
-async function exportVideoRecorder(canvas: HTMLCanvasElement, renderFrame: (n: number) => void | Promise<void>, totalFrames: number, fr: number, onProgress: (p: number, detail?: string) => void, animFrameOf: (i: number) => number): Promise<{ mime: string; hasAudio: boolean }> {
-  const capture = (canvas as any).captureStream;
+/* 录完以后核对「音轨真的在文件里」。MediaRecorder 在个别 WebView 上会静默丢音频,
+ * 只在 ondataavailable 里看有数据并不能证明有声音;WebM/MP4 的音轨信息都是明文 ASCII,
+ * 在头部(WebM 的 Tracks)或尾部(MP4 的 moov)扫一下即可,不必把几十 MB 全读进内存。 */
+async function recordedBlobHasAudio(blob: Blob, mime: string): Promise<boolean> {
+  try {
+    const readLatin1 = async (part: Blob) => new Uint8Array(await part.arrayBuffer());
+    const hit = (bytes: Uint8Array, needles: string[]) => {
+      const text = new TextDecoder('latin1').decode(bytes);
+      return needles.some((n) => text.indexOf(n) !== -1);
+    };
+    if (!/webm/i.test(mime)) {
+      const head = await readLatin1(blob.slice(0, Math.min(blob.size, 1024 * 1024)));
+      if (hit(head, ['soun'])) return true;
+      if (blob.size > 1024 * 1024) {
+        const tail = await readLatin1(blob.slice(Math.max(0, blob.size - 4 * 1024 * 1024)));
+        return hit(tail, ['soun']);
+      }
+      return false;
+    }
+    const head = await readLatin1(blob.slice(0, Math.min(blob.size, 512 * 1024)));
+    return hit(head, ['A_OPUS', 'A_VORBIS', 'A_AAC', 'A_PCM']);
+  } catch {
+    /* 读不出来就不下结论:保持原来的 useAudio,避免把能播的成片误报成无声 */
+    return true;
+  }
+}
+
+/* ============================================================================
+ * 录制产物的容器时长补写(安卓相册里"0 秒"的根因)
+ * ----------------------------------------------------------------------------
+ * MediaRecorder 是**流式**写 WebM 的:Segment > Info 里根本没有 Duration 元素。
+ * 桌面播放器(ffmpeg/VLC/PotPlayer)会扫全文件自己推算时长,所以桌面看不出来;
+ * 安卓的相册 / 系统播放器只读容器元数据 → 显示 0:00,部分机型还会拒绝播放或无法拖动。
+ * 这正是 OPPO Reno6 / Redmi Note9 用户报的「导出的视频是 0 秒」——
+ * 兼容导出只解决了"能不能出片",没解决"文件里有没有时长"。
+ *
+ * 这里在落盘前把时长写进容器,两条路:
+ *   · WebM:在 Info 里补一个 Duration(0x4489, float64, 单位 = TimecodeScale ticks);
+ *   · MP4 :把 mvhd / tkhd / mdhd 的 duration 从 0 改成真实时长(碎片化 MP4 常见 0)。
+ * 任何结构不认识 / 长度改不动的情况都**原样返回**,绝不因为这一步让导出失败。
+ * ========================================================================== */
+/** 补时长的大小上限:再大就不再复制一份字节,手机内存比修复更值钱。 */
+const RECORDER_FIX_MAX_BYTES = 64 * 1024 * 1024;
+
+/** 一个已解析的 EBML 元素:记录它在原始字节里的四个边界,补时长时就地重建。 */
+type EbmlNode = { id: number; value: number; idStart: number; sizeStart: number; dataStart: number; dataEnd: number; sizeLen: number; unknown: boolean };
+
+/** 读一个 EBML 变长整数(EBML VINT)。isId=true 时按元素 ID 解析(不做掩码剥离)。 */
+function ebmlReadVint(b: Uint8Array, p: number, isId: boolean): { len: number; value: number; unknown: boolean } | null {
+  if (p < 0 || p >= b.length) return null;
+  const first = b[p] as number;
+  let len = 1;
+  let mask = 0x80;
+  while (len <= 8 && (first & mask) === 0) { mask >>= 1; len += 1; }
+  if (len > 8) return null;
+  let value = isId ? first : first & (mask - 1);
+  for (let i = 1; i < len; i += 1) value = value * 256 + ((b[p + i] as number) || 0);
+  // 长度字段全 1 表示"未知长度"(只有 Segment 这类流式容器会用)
+  const unknown = !isId && value === Math.pow(2, len * 7) - 1;
+  return { len, value, unknown };
+}
+
+/** 把长度编码成 EBML VINT(取最短表示)。 */
+function ebmlWriteSize(value: number): Uint8Array<ArrayBuffer> {
+  for (let len = 1; len <= 8; len += 1) {
+    if (value < Math.pow(2, len * 7) - 1) {
+      const out = new Uint8Array(len);
+      let v = value;
+      for (let i = len - 1; i >= 0; i -= 1) { out[i] = v % 256; v = Math.floor(v / 256); }
+      out[0] = (out[0] as number) | (1 << (8 - len));
+      return out;
+    }
+  }
+  throw new Error('EBML 长度超出 8 字节');
+}
+
+/** 顺序列出 [start,end) 区间内的所有 EBML 元素(只到第一层)。 */
+function ebmlChildren(b: Uint8Array, start: number, end: number): EbmlNode[] {
+  const out: EbmlNode[] = [];
+  let p = start;
+  while (p + 2 <= end) {
+    const id = ebmlReadVint(b, p, true);
+    if (!id) break;
+    const sz = ebmlReadVint(b, p + id.len, false);
+    if (!sz) break;
+    const dataStart = p + id.len + sz.len;
+    const dataEnd = sz.unknown ? end : Math.min(end, dataStart + sz.value);
+    out.push({ id: id.value, value: sz.unknown ? 0 : sz.value, idStart: p, sizeStart: p + id.len, dataStart, dataEnd, sizeLen: sz.len, unknown: sz.unknown });
+    if (sz.unknown) break; // 未知长度的元素后面没法顺序解析(只可能出现在 Segment)
+    p = dataEnd;
+  }
+  return out;
+}
+
+/** 拼接若干 Uint8Array。 */
+function concatBytes(parts: Uint8Array<ArrayBuffer>[]): Uint8Array<ArrayBuffer> {
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { out.set(p, off); off += p.length; }
+  return out;
+}
+
+/** 给 WebM 补 Segment > Info > Duration。结构不认识(或含 Cues)时返回 null。 */
+function patchWebmDuration(src: Uint8Array<ArrayBuffer>, durationMs: number): Uint8Array<ArrayBuffer> | null {
+  if (src.length < 32) return null;
+  if (src[0] !== 0x1a || src[1] !== 0x45 || src[2] !== 0xdf || src[3] !== 0xa3) return null;
+  const top = ebmlChildren(src, 0, src.length);
+  const seg = top.find((n) => n.id === 0x18538067);
+  if (!seg) return null;
+  const kids = ebmlChildren(src, seg.dataStart, seg.dataEnd);
+  const info = kids.find((n) => n.id === 0x1549a966);
+  if (!info) return null;
+  /* Cues 里存的是各 Cluster 的**文件偏移**:Info 一变长,后面的偏移就全错。
+   * MediaRecorder 从不写 Cues,真遇到了宁可放弃补时长,也不要把可跳转的文件改坏。 */
+  if (kids.some((n) => n.id === 0x1c53bb6b)) return null;
+  const infoKids = ebmlChildren(src, info.dataStart, info.dataEnd);
+  // TimecodeScale 默认 1e6ns(1ms);Duration 的单位就是它
+  const tscNode = infoKids.find((n) => n.id === 0x2ad7b1);
+  let timecodeScale = 1_000_000;
+  if (tscNode) {
+    let v = 0;
+    for (let i = tscNode.dataStart; i < tscNode.dataEnd; i += 1) v = v * 256 + ((src[i] as number) || 0);
+    if (v > 0) timecodeScale = v;
+  }
+  const ticks = (durationMs * 1e6) / timecodeScale;
+  // Duration 元素:ID 44 89 + 长度 88(=8 字节)+ float64(BE)
+  const dur = new Uint8Array(11);
+  dur[0] = 0x44; dur[1] = 0x89; dur[2] = 0x88;
+  new DataView(dur.buffer).setFloat64(3, ticks, false);
+  /* 原内容里若已有 Duration 先剔掉(重复写会让解析器按第一个取,可能还是错的),
+   * 其余字节原样保留 —— 包括 TimecodeScale / MuxingApp 等。 */
+  const keep: Uint8Array<ArrayBuffer>[] = [];
+  let cursor = info.dataStart;
+  for (const k of infoKids) {
+    if (k.id !== 0x4489) continue;
+    if (k.idStart > cursor) keep.push(src.subarray(cursor, k.idStart) as Uint8Array<ArrayBuffer>);
+    cursor = Math.max(cursor, k.dataEnd);
+  }
+  keep.push(src.subarray(cursor, info.dataEnd) as Uint8Array<ArrayBuffer>);
+  let contentLen = dur.length;
+  for (const p of keep) contentLen += p.length;
+  const newSize = ebmlWriteSize(contentLen);
+  const parts: Uint8Array<ArrayBuffer>[] = [
+    src.subarray(0, info.idStart) as Uint8Array<ArrayBuffer>,             // Segment 头 + 之前的所有内容
+    src.subarray(info.idStart, info.sizeStart) as Uint8Array<ArrayBuffer>, // Info 的元素 ID
+    newSize,
+    ...keep,
+    dur,
+    src.subarray(info.dataEnd) as Uint8Array<ArrayBuffer>,                // Info 之后的全部内容
+  ];
+  let out = concatBytes(parts);
+  /* Segment 若是"已知长度"(非流式写法),长度字段也要跟着改。MediaRecorder 一般写未知长度,
+   * 这里仍然处理:长度字段字节数不变才能原地改,否则放弃。 */
+  if (!seg.unknown) {
+    const delta = out.length - src.length;
+    const newSegSize = ebmlWriteSize(seg.value + delta);
+    if (newSegSize.length !== seg.sizeLen) return null;
+    out = concatBytes([
+      out.subarray(0, seg.sizeStart) as Uint8Array<ArrayBuffer>,
+      newSegSize,
+      out.subarray(seg.sizeStart + seg.sizeLen) as Uint8Array<ArrayBuffer>,
+    ]);
+  }
+  return out;
+}
+
+/** 顶层 / 内层 MP4 盒子遍历。 */
+function mp4Boxes(src: Uint8Array, start: number, end: number): { type: string; at: number; size: number }[] {
+  const out: { type: string; at: number; size: number }[] = [];
+  const dv = new DataView(src.buffer, src.byteOffset, src.byteLength);
+  let p = start;
+  while (p + 8 <= end) {
+    let size = dv.getUint32(p);
+    const type = String.fromCharCode(src[p + 4] as number, src[p + 5] as number, src[p + 6] as number, src[p + 7] as number);
+    let head = 8;
+    if (size === 1) { size = Number(dv.getBigUint64(p + 8)); head = 16; }
+    else if (size === 0) { size = end - p; }
+    if (size < head || p + size > end) break;
+    out.push({ type, at: p, size });
+    p += size;
+  }
+  return out;
+}
+
+/** 给 MP4(含碎片化 MP4)补 mvhd / tkhd / mdhd 的时长。只在原值为 0 时改写。 */
+function patchMp4Duration(src: Uint8Array<ArrayBuffer>, durationMs: number): Uint8Array<ArrayBuffer> | null {
+  if (src.length < 64) return null;
+  const top = mp4Boxes(src, 0, src.length);
+  const moov = top.find((b) => b.type === 'moov');
+  if (!moov) return null;
+  const out = src.slice();
+  const dv = new DataView(out.buffer);
+  let patched = 0;
+  const ticksOf = (ms: number, scale: number) => Math.round((ms * scale) / 1000);
+  const kids = mp4Boxes(src, moov.at + 8, moov.at + moov.size);
+  const mvhd = kids.find((b) => b.type === 'mvhd');
+  let movieTimescale = 1000;
+  if (mvhd) {
+    const version = out[mvhd.at + 8] as number;
+    if (version === 0) {
+      movieTimescale = dv.getUint32(mvhd.at + 20) || 1000;
+      if (dv.getUint32(mvhd.at + 24) === 0) { dv.setUint32(mvhd.at + 24, ticksOf(durationMs, movieTimescale)); patched += 1; }
+    } else {
+      movieTimescale = dv.getUint32(mvhd.at + 28) || 1000;
+      if (dv.getBigUint64(mvhd.at + 32) === 0n) { dv.setBigUint64(mvhd.at + 32, BigInt(ticksOf(durationMs, movieTimescale))); patched += 1; }
+    }
+  }
+  for (const trak of kids.filter((b) => b.type === 'trak')) {
+    for (const sub of mp4Boxes(src, trak.at + 8, trak.at + trak.size)) {
+      // tkhd 的时长单位是"电影时间刻度",mdhd 用自己盒子里的时间刻度
+      if (sub.type === 'tkhd') {
+        const version = out[sub.at + 8] as number;
+        if (version === 0) {
+          if (dv.getUint32(sub.at + 28) === 0) { dv.setUint32(sub.at + 28, ticksOf(durationMs, movieTimescale)); patched += 1; }
+        } else if (dv.getBigUint64(sub.at + 36) === 0n) {
+          dv.setBigUint64(sub.at + 36, BigInt(ticksOf(durationMs, movieTimescale))); patched += 1;
+        }
+      } else if (sub.type === 'mdia') {
+        for (const mdiaKid of mp4Boxes(src, sub.at + 8, sub.at + sub.size)) {
+          if (mdiaKid.type !== 'mdhd') continue;
+          const version = out[mdiaKid.at + 8] as number;
+          if (version === 0) {
+            const scale = dv.getUint32(mdiaKid.at + 20) || movieTimescale;
+            if (dv.getUint32(mdiaKid.at + 24) === 0) { dv.setUint32(mdiaKid.at + 24, ticksOf(durationMs, scale)); patched += 1; }
+          } else {
+            const scale = dv.getUint32(mdiaKid.at + 28) || movieTimescale;
+            if (dv.getBigUint64(mdiaKid.at + 32) === 0n) { dv.setBigUint64(mdiaKid.at + 32, BigInt(ticksOf(durationMs, scale))); patched += 1; }
+          }
+        }
+      }
+    }
+  }
+  return patched > 0 ? out : null;
+}
+
+/** 用 <video> 读一遍容器时长:Infinity / NaN 都是"播放器算不出时长",与安卓相册看到 0:00 等价。 */
+async function probeContainerDuration(blob: Blob): Promise<number | null> {
+  let url = '';
+  try { url = URL.createObjectURL(blob); } catch { return null; }
+  return new Promise<number | null>((resolve) => {
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.muted = true;
+    let done = false;
+    const finish = (val: number | null) => {
+      if (done) return;
+      done = true;
+      try { v.removeAttribute('src'); v.load(); } catch { /* ignore */ }
+      try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+      resolve(val);
+    };
+    const timer = window.setTimeout(() => finish(null), 4000);
+    v.onloadedmetadata = () => {
+      window.clearTimeout(timer);
+      const d = v.duration;
+      finish(Number.isFinite(d) && d > 0 ? d : null);
+    };
+    v.onerror = () => { window.clearTimeout(timer); finish(null); };
+    v.src = url;
+  });
+}
+
+/** 读容器里视频轨的真实像素尺寸:录制产物被编码器缩放/裁切时,这是第一手证据。
+ *  WebM 走 Tracks > TrackEntry > Video > PixelWidth/Height;MP4 读 tkhd 末尾两个 32 位定点数。 */
+function readContainerVideoSize(bytes: Uint8Array): { w: number; h: number } | null {
+  try {
+    if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+      const top = ebmlChildren(bytes, 0, bytes.length);
+      const seg = top.find((n) => n.id === 0x18538067);
+      if (!seg) return null;
+      const tracks = ebmlChildren(bytes, seg.dataStart, seg.dataEnd).find((n) => n.id === 0x1654ae6b);
+      if (!tracks) return null;
+      for (const entry of ebmlChildren(bytes, tracks.dataStart, tracks.dataEnd)) {
+        if (entry.id !== 0xae) continue;
+        const video = ebmlChildren(bytes, entry.dataStart, entry.dataEnd).find((n) => n.id === 0xe0);
+        if (!video) continue;
+        let w = 0, h = 0;
+        for (const k of ebmlChildren(bytes, video.dataStart, video.dataEnd)) {
+          let v = 0;
+          for (let i = k.dataStart; i < k.dataEnd; i += 1) v = v * 256 + ((bytes[i] as number) || 0);
+          if (k.id === 0xb0) w = v;
+          if (k.id === 0xba) h = v;
+        }
+        if (w > 0 && h > 0) return { w, h };
+      }
+      return null;
+    }
+    // MP4:tkhd 的最后两个 32 位字段就是 width / height(16.16 定点)
+    const boxes = mp4Boxes(bytes, 0, bytes.length);
+    const moov = boxes.find((b) => b.type === 'moov');
+    if (!moov) return null;
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (const trak of mp4Boxes(bytes, moov.at + 8, moov.at + moov.size)) {
+      if (trak.type !== 'trak') continue;
+      const tkhd = mp4Boxes(bytes, trak.at + 8, trak.at + trak.size).find((b) => b.type === 'tkhd');
+      if (!tkhd) continue;
+      const w = dv.getUint32(tkhd.at + tkhd.size - 8) / 65536;
+      const h = dv.getUint32(tkhd.at + tkhd.size - 4) / 65536;
+      if (w > 0 && h > 0) return { w: Math.round(w), h: Math.round(h) };
+    }
+    return null;
+  } catch { return null; }
+}
+
+/** 落盘前修一次容器时长;返回修好的 blob 与一句可写进日志的说明。 */
+async function fixRecordedContainer(blob: Blob, mime: string, durationMs: number, srcW = 0, srcH = 0): Promise<{ blob: Blob; note: string }> {
+  if (!(durationMs > 0) || !blob.size) return { blob, note: '' };
+  if (blob.size > RECORDER_FIX_MAX_BYTES) return { blob, note: '文件超过 ' + fmtSize(RECORDER_FIX_MAX_BYTES) + ',跳过时长补写' };
+  try {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const isWebm = bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3;
+    /* 先量一遍成片画面尺寸:编码器把画布缩了/裁了的话,画面里的字与图形都会被重新缩放
+     * (用户描述往往是"字看着比预览大"),但形状比例未必明显,所以这里明确记一行。 */
+    const vs = readContainerVideoSize(bytes);
+    if (vs && srcW > 0 && srcH > 0) {
+      const srcRatio = srcW / srcH, outRatio = vs.w / vs.h;
+      const sameShape = Math.abs(outRatio - srcRatio) / srcRatio < 0.02;
+      renderLogAppend('REC', '成片画面 ' + vs.w + '×' + vs.h + '(合成 ' + srcW + '×' + srcH
+        + ' · 比例 ' + outRatio.toFixed(3) + ' / ' + srcRatio.toFixed(3) + ')', sameShape ? 'dim' : 'warn');
+    }
+    const fixed = isWebm ? patchWebmDuration(bytes, durationMs) : patchMp4Duration(bytes, durationMs);
+    if (!fixed) return { blob, note: '容器时长补写未生效(结构不认识)' };
+    return {
+      blob: new Blob([fixed], { type: blob.type || mime }),
+      note: (isWebm ? 'WebM' : 'MP4') + ' 已写入时长 ' + (durationMs / 1000).toFixed(2) + 's',
+    };
+  } catch (e) {
+    return { blob, note: '容器时长补写失败:' + ((e as Error)?.message || String(e)) };
+  }
+}
+
+async function exportVideoRecorder(canvas: HTMLCanvasElement, renderFrame: (n: number) => void | Promise<void>, totalFrames: number, fr: number, onProgress: (p: number, detail?: string) => void, animFrameOf: (i: number) => number, captureTarget?: { width: number; height: number }, captureMode: CaptureMode = 'manual'): Promise<{ mime: string; hasAudio: boolean; slowNote?: string; outputFps?: number }> {
+  /* 录制分辨率:手机上直接录 4K 宽的合成画布既吃内存,也常被硬编码器拒掉 / 录成坏文件
+   * (位置暴露动画的合成是 3840×1080)。调用方在移动端会传一个 1080p 级的目标尺寸;
+   * 桌面端不传,和以前逐字节一致。 */
+  let recCanvas: HTMLCanvasElement = canvas;
+  let recCtx: CanvasRenderingContext2D | null = null;
+  if (captureTarget && (captureTarget.width !== canvas.width || captureTarget.height !== canvas.height)) {
+    const scaled = document.createElement('canvas');
+    scaled.width = captureTarget.width;
+    scaled.height = captureTarget.height;
+    const sctx = scaled.getContext('2d');
+    if (sctx) { recCanvas = scaled; recCtx = sctx; }
+  }
+  const capture = (recCanvas as any).captureStream;
   const durationSec = totalFrames / fr;
   /* 音轨先建好:它的长度按视频总时长定,与后面录制的墙钟时长对齐。
    * 建不出来(没有音效、解码失败、音频上下文没解锁)就按无声录制走。 */
   const audio = await buildRecorderAudioTrack(findAudioAsset(), durationSec);
   let useAudio = !!audio;
-  let mime = pickRecorderMime(useAudio);
+  /* 走到兼容录制说明视频编码器已经不可用,但音轨还在:挑容器之前先确认 AAC 能不能编。
+   * 为什么必须单独探一次:这条路径以前从没碰过音频能力,若本机没有 AAC,它会先挑
+   * MP4 + mp4a(看起来支持、start 时才失败或悄悄丢音轨),用户拿到的就是无声视频。
+   * 探测很便宜(限时,失败即按不支持处理),确认编不了就优先 WebM + Opus。 */
+  if (useAudio && !aacEncoderUnavailable && WebAudioEncoder && WebAudioData) {
+    const aac = await resolveAacConfig(2);
+    if (!aac) renderLogAppend('AUDIO', '兼容录制:本机没有 AAC · 优先 WebM + Opus 音轨', 'warn');
+  }
+  /* 没有 WebCodecs 音频编码器时无法确认 AAC 可用,兼容录制优先 WebM + Opus;
+   * 已经确认编不了 AAC 时同理。两者都不成立才按 MP4 + AAC 优先(iOS Safari 等)。
+   * 另:本机已确认没有 AAC 时不允许再挑带 mp4a 的 MIME(见 recorderMimeCandidates)。 */
+  const preferOpusRecorder = !WebAudioEncoder || aacEncoderUnavailable;
+  let mime = pickRecorderMime(useAudio, preferOpusRecorder);
   if (!mime && useAudio) {
     // 带音轨的 MIME 一个都不支持:退回无声录制,别让整个导出失败
     useAudio = false;
@@ -11678,88 +12709,202 @@ async function exportVideoRecorder(canvas: HTMLCanvasElement, renderFrame: (n: n
     throw new Error('本机既没有可用的 H.264 编码器,也不支持画布录制(' + encodeSupportSummary()
       + ')。请改用电脑上的 Chrome / Edge 导出,或在该浏览器里勾选「透明背景」导出 AVI。');
   }
-  const stream: MediaStream = capture.call(canvas, 0) as MediaStream;
-  /* 文件名在这里就定下来:录制要按真实时间走(约等于动画时长),等到下载那一刻再取名
-   * 会让文件名里的时间戳比实际导出开始晚一大截。扩展名按已选定的 MIME 预判。 */
-  markExportFilename(/mp4/i.test(mime) ? 'mp4' : 'webm');
+  /* 取帧方式:callsite 指定(mobile 默认 auto,桌面默认 manual),这里再兜一层能力检查。
+   * captureStream(0) = 关闭自动采样、只认 requestFrame():这在部分安卓 WebView 上**形同无效**,
+   * 整段录制只留下开始那一刻的背景(用户实测:23 秒、全程 1 种颜色)。所以:
+   *   · auto  —— captureStream(fps) 自动采样,画面一变就被采,不依赖 requestFrame;
+   *   · manual —— captureStream(0) + requestFrame,帧间绝不会掺入中间态(桌面默认,行为不变);
+   * 指定 manual 但本机没有 requestFrame 时自动降级成 auto,并如实写进日志。 */
+  const trackHasRequestFrame = (stream0: MediaStream): boolean => {
+    const t: any = stream0.getVideoTracks()[0];
+    return !!t && typeof t.requestFrame === 'function';
+  };
+  /* ---------- 自适应降帧 ----------
+   * 录制走的是墙钟:每帧渲染只要超过 1/fps,成片就会被等比例拉长(3.95s 的动画可能变成 6.35s),
+   * 而且帧间距变得不均匀 —— 看起来就是"卡"。渲染速度是硬件+内核决定的,改不了;
+   * 但可以**按跟得上的帧率输出**:先空跑两帧量出每帧成本,再决定每输出一帧要跨过几个动画帧。
+   * 这样成片时长回到动画真实时长,帧间距也均匀(只是帧率降到 30/20/15),比"拉长 + 卡顿"好得多。
+   * 上限 4 倍(15fps):再低就不如直接告诉用户换机器导出了。 */
+  const __probeCost = await (async () => {
+    try {
+      const t = performance.now();
+      await renderFrame(animFrameOf(0));
+      const mid = Math.max(1, Math.floor(totalFrames / 2));
+      await renderFrame(animFrameOf(mid));
+      return (performance.now() - t) / 2;
+    } catch { return 0; }
+  })();
+  const __frameBudgetMs = 1000 / fr;
+  /* 上限 8(约 7.5fps):机器再慢也要保证**时长正确**,宁可帧率低也不要出一段被拉长的慢放。
+   * 渲染成本真的高到这个程度时,完成提示会明确建议改用 AVI(离线编码)或在电脑导出。 */
+  const outputStep = __probeCost > __frameBudgetMs * 1.15
+    ? Math.max(1, Math.min(8, Math.round(__probeCost / __frameBudgetMs)))
+    : 1;
+  const outputFrames = Math.max(1, Math.ceil(totalFrames / outputStep));
+  if (outputStep > 1) {
+    renderLogAppend('REC', '自适应降帧 · 每帧约 ' + Math.round(__probeCost) + 'ms(预算 ' + Math.round(__frameBudgetMs)
+      + 'ms)→ 按 ' + Math.round(fr / outputStep) + 'fps 输出 ' + outputFrames + ' 帧(时长保持 '
+      + durationSec.toFixed(2) + 's)', 'warn');
+  }
+  let mode: CaptureMode = captureMode;
+  let stream: MediaStream = capture.call(recCanvas, mode === 'auto' ? Math.max(1, Math.round(fr / outputStep)) : 0) as MediaStream;
+  let hasRequestFrame = trackHasRequestFrame(stream);
+  if (mode === 'manual' && !hasRequestFrame) {
+    try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+    mode = 'auto';
+    stream = capture.call(recCanvas, Math.max(1, Math.round(fr / outputStep))) as MediaStream;
+    hasRequestFrame = trackHasRequestFrame(stream);
+    renderLogAppend('REC', '本机画布不支持 requestFrame · 改用自动采样(' + Math.max(1, Math.round(fr)) + 'fps)', 'warn');
+  }
+  renderLogAppend('REC', '取帧方式 · ' + (mode === 'auto'
+    ? '自动采样 ' + Math.max(1, Math.round(fr)) + 'fps'
+    : '逐帧 requestFrame'), 'dim');
+  if (recCtx) {
+    renderLogAppend('SCALE', '合成画布 ' + canvas.width + '×' + canvas.height + ' → 录制 ' + recCanvas.width + '×' + recCanvas.height, 'dim');
+  }
   const track: any = stream.getVideoTracks()[0];
   if (!track) throw new Error('画布录制失败:没有取到视频轨');
-  const hasRequestFrame = typeof track.requestFrame === 'function';
 
   let rec: MediaRecorder | null = null;
+  let recFailure = '';
   const chunks: BlobPart[] = [];
   let resolveStopped: (() => void) | null = null;
   const stopped = new Promise<void>((resolve) => { resolveStopped = resolve; });
-  const startRec = (withAudio: boolean): MediaRecorder => {
+  const startRec = (withAudio: boolean, mimeType: string): MediaRecorder => {
     const combined = withAudio && audio ? new MediaStream([track, audio.track]) : stream;
     const r = new MediaRecorder(combined, {
-      mimeType: mime as string,
+      mimeType,
       videoBitsPerSecond: 20_000_000,
       ...(withAudio ? { audioBitsPerSecond: 128_000 } : {}),
     });
     r.ondataavailable = (ev: BlobEvent) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
     r.onstop = () => resolveStopped?.();
-    r.start();
+    /* 有的内核会在录制中途报错(系统掐掉录制 / 编码器不可用):记下来,
+     * 收尾时如实写进日志,而不是只留下一个「成功但没有声音」的文件。 */
+    r.onerror = (ev: any) => { recFailure = (ev && ev.error && ev.error.message) || '未知录制错误'; };
+    // timeslice:每秒切一块,长录制不会把所有数据都押在最后一次 ondataavailable 上
+    r.start(1000);
     return r;
   };
 
   onProgress(0, '正在兼容录制' + (useAudio ? '(含音轨)' : '') + ',按真实速度,约 ' + Math.ceil(durationSec) + ' 秒…');
-  try {
-    rec = startRec(useAudio);
-  } catch (e) {
-    /* 有的机型虽然答「支持」,start() 仍会拒绝带音轨的流:丢掉音轨用纯视频流重来,
-     * 总好过整次导出失败(完成提示里会写明没有音轨)。 */
-    if (useAudio) {
-      useAudio = false;
-      renderLogAppend('REC', '带音轨启动失败 · 退回无声录制', 'warn');
-      try { audio?.stop(); } catch { /* ignore */ }
-      const videoMime = pickRecorderMime(false);
-      if (videoMime) {
-        mime = videoMime;
-        markExportFilename(/mp4/i.test(mime) ? 'mp4' : 'webm');
-        try { rec = startRec(false); } catch (e2) {
-          try { track.stop(); } catch { /* ignore */ }
-          throw new Error('无法开始画布录制(MediaRecorder.start 失败):' + ((e2 as Error).message || e2));
-        }
-      } else {
-        try { track.stop(); } catch { /* ignore */ }
-        throw new Error('无法开始画布录制(MediaRecorder.start 失败):' + ((e as Error).message || e));
+  /* 带音轨的候选逐个试:isTypeSupported 只是"看起来支持",真正能 start 的才算数。
+   * 尤其是本机没有 AAC 时,第一个带 mp4a 的候选很可能就是在这里失败 —— 换 WebM + Opus 继续。 */
+  let startError: any = null;
+  if (useAudio) {
+    for (const cand of recorderMimeCandidates(true, preferOpusRecorder)) {
+      try {
+        chunks.length = 0;
+        rec = startRec(true, cand);
+        mime = cand;
+        break;
+      } catch (e) {
+        startError = e;
+        renderLogAppend('REC', '带音轨启动失败 · ' + cand + ' · 试下一个', 'warn');
+        rec = null;
       }
-    } else {
-      try { track.stop(); } catch { /* ignore */ }
-      throw new Error('无法开始画布录制(MediaRecorder.start 失败):' + ((e as Error).message || e));
+    }
+    if (!rec) {
+      useAudio = false;
+      try { audio?.stop(); } catch { /* ignore */ }
+      renderLogAppend('REC', '带音轨的 MIME 都启动失败 · 退回无声录制', 'warn');
     }
   }
+  if (!rec) {
+    for (const cand of recorderMimeCandidates(false)) {
+      try {
+        chunks.length = 0;
+        rec = startRec(false, cand);
+        mime = cand;
+        break;
+      } catch (e) {
+        startError = e;
+        rec = null;
+      }
+    }
+  }
+  if (!rec) {
+    try { track.stop(); } catch { /* ignore */ }
+    throw new Error('无法开始画布录制(MediaRecorder.start 失败):' + ((startError as Error)?.message || startError || '未知原因'));
+  }
+  /* 文件名在这里就定下来:录制要按真实时间走(约等于动画时长),等到下载那一刻再取名
+   * 会让文件名里的时间戳比实际导出开始晚一大截。扩展名按最终选中的 MIME 定。 */
+  markExportFilename(/mp4/i.test(mime) ? 'mp4' : 'webm');
   renderLogAppend('REC', '兼容录制 · ' + mime + (useAudio ? ' · 含音轨' : ' · 无音轨')
     + ' · 按真实时间 ' + Math.ceil(durationSec) + 's', 'info');
-  const frameMs = 1000 / fr;
+  /* 输出帧间隔:降帧后每输出一帧要跨过 outputStep 个动画帧,时间也按同样比例拉长。 */
+  const frameMs = (1000 / fr) * outputStep;
+  /* 静止画面自检用的低分辨率画布 + 计数器(见循环里的注释)。 */
+  const probeCanvas = document.createElement('canvas');
+  probeCanvas.width = 160; probeCanvas.height = 90;
+  const probeCtx = probeCanvas.getContext('2d', { willReadFrequently: true });
+  const frameSignatures = new Set<number>();
+  let sampledFrames = 0;
   const t0 = performance.now();
   try {
-    for (let i = 0; i < totalFrames; i++) {
+    for (let i = 0; i < outputFrames; i++) {
       if (exportCancelRequested) throw new ExportCancelledError('导出已取消');
-      const animFrame = animFrameOf(i);
+      // 降帧后每输出一帧跨过 outputStep 个动画帧:帧率降了,但时长与时间轴保持正确
+      const animFrame = animFrameOf(i * outputStep);
       await ensureSeqDecoded(Math.round(animFrame));
       await renderFrame(animFrame);
+      // 缩到录制尺寸(桌面/未超限时 recCtx 为空,这一步不存在)
+      if (recCtx) recCtx.drawImage(canvas, 0, 0, recCanvas.width, recCanvas.height);
       /* 音轨在这一刻才起播:录制器的时间轴从 rec.start() 开始,而第一帧要等渲染完才推,
        * 若一开始就放音频,成片里声音会比画面早一段(带光栅化的动画首帧可达几百毫秒)。
        * 先起音源、再推首帧,两条轨的起点基本对齐。 */
       if (i === 0 && useAudio) audio?.start();
+      /* 静止画面自检:每 8 帧把合成画布缩到 160×90 取一个指纹。
+       * 整段只有 1~2 个指纹 = 录制器根本没拿到变化(用户实测的 23 秒纯色视频)。
+       * 代价只有每次几百微秒,手机上也不心疼;它换来的是「不静默交付一个废片」。 */
+      if (i % 8 === 0 && probeCtx) {
+        probeCtx.clearRect(0, 0, 160, 90);
+        probeCtx.drawImage(canvas, 0, 0, 160, 90);
+        const pd = probeCtx.getImageData(0, 0, 160, 90).data;
+        let ph = 2166136261 >>> 0;
+        for (let k = 0; k < pd.length; k += 4) {
+          ph ^= pd[k]; ph = Math.imul(ph, 16777619) >>> 0;
+          ph ^= pd[k + 1]; ph = Math.imul(ph, 16777619) >>> 0;
+          ph ^= pd[k + 2]; ph = Math.imul(ph, 16777619) >>> 0;
+        }
+        if (frameSignatures.size < 64) frameSignatures.add(ph);
+        sampledFrames += 1;
+      }
       // 推帧:requestFrame 不可用时(Microsoft 系旧实现)只能靠 captureStream 的自动采样,
       // 此时录制时间轴仍由下面的等时逻辑对齐
-      if (hasRequestFrame) track.requestFrame();
+      if (mode === 'manual' && hasRequestFrame) track.requestFrame();
       /* 录制器的时间轴是「墙钟」:推帧必须按 1/fr 秒的节奏走,推太快会把 10 秒的动画录成几秒。
        * 渲染本身比 16ms 慢时(手机上常见)不做补偿 —— 那只会让录制时间更长,不影响画面正确性。 */
       const wait = t0 + (i + 1) * frameMs - performance.now();
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       // 前两帧也回报一次:第一帧之前可能有一段"什么都没发生"的空窗,先给出反馈
-      if (i < 2 || i % 12 === 0) onProgress(Math.round((i / totalFrames) * 100), '正在兼容录制帧 ' + (i + 1) + ' / ' + totalFrames);
+      if (i < 2 || i % 12 === 0) onProgress(Math.round((i / outputFrames) * 100), '正在兼容录制帧 ' + (i + 1) + ' / ' + outputFrames);
     }
   } finally {
     try { if (rec && rec.state !== 'inactive') rec.stop(); } catch { /* ignore */ }
     track.stop();
     if (useAudio) audio?.stop();
   }
-  renderLogAppend('REC', '推帧完成 · ' + totalFrames + ' 帧 · ' + ((performance.now() - t0) / 1000).toFixed(1) + 's', 'dim');
+  const __recElapsedSec = (performance.now() - t0) / 1000;
+  renderLogAppend('REC', '推帧完成 · ' + outputFrames + ' 帧 · ' + __recElapsedSec.toFixed(1) + 's'
+    + '(动画 ' + durationSec.toFixed(2) + 's' + (outputStep > 1 ? ' · 降帧 ' + (fr / outputStep) + 'fps' : '') + ')', 'dim');
+  /* 录制按墙钟走:渲染每帧超过 1/fps 时,成片会被等比例拉长(3.95 秒的动画可能变成 58 秒),
+   * 看起来就是「很卡」。这里如实写进日志与完成提示,否则用户只看到一段莫名其妙的长片。 */
+  let slowNote: string | undefined;
+  /* 渲染成本远超预算(降帧也压不住)时:如实说明 + 给出更好的出路。
+   * 这不是编码问题,是这台机器的渲染速度上限;AVI(MJPEG)走离线编码,时长与流畅度都不受它影响。 */
+  if (__probeCost > __frameBudgetMs * 8) {
+    slowNote = (slowNote ? slowNote + ' · ' : ' · ') + '本机渲染每帧约 ' + Math.round(__probeCost)
+      + 'ms,MP4 只能实时录制,因此帧率约 ' + Math.round(fr / outputStep)
+      + 'fps;想要更流畅可改选 AVI(MJPEG 离线编码,时长不受渲染速度影响)或在电脑上导出 MP4';
+  }
+  if (__recElapsedSec > durationSec * 1.3 + 0.3) {
+    const perFrame = Math.round((__recElapsedSec * 1000) / Math.max(1, outputFrames));
+    slowNote = (slowNote ? slowNote + ' · ' : ' · ') + '本机渲染每帧约 ' + perFrame + 'ms(高于 16.7ms),成片被拉长到 '
+      + __recElapsedSec.toFixed(1) + 's,看起来会比预览卡';
+    renderLogAppend('REC', '渲染跟不上 60fps:每帧约 ' + perFrame + 'ms · 成片 ' + __recElapsedSec.toFixed(1)
+      + 's(动画本身 ' + durationSec.toFixed(2) + 's)· 这是渲染速度限制,不是丢帧', 'warn');
+  }
   /* 录制器的 onstop 在个别内核上不会回调(录制被系统静默掐断时):
    * 不设上限就会永远停在这一步,所以超时后如实报错,并给出可用的替代路径。 */
   const stoppedOk = await raceTimeout(stopped, RECORDER_STOP_TIMEOUT_MS);
@@ -11767,14 +12912,45 @@ async function exportVideoRecorder(canvas: HTMLCanvasElement, renderFrame: (n: n
     throw new Error('兼容录制结束时浏览器没有回调(MediaRecorder.stop 超时):本机录制能力不稳定,'
       + '请改用电脑上的 Chrome / Edge 导出,或勾选「透明背景」导出 AVI。');
   }
+  if (recFailure) renderLogAppend('REC', '录制器报告错误 · ' + recFailure, 'warn');
+  /* ★ 静止画面判定:采样点里只有 1~2 个不同画面,说明录进去的是一张静止图。
+   * 这时**绝不能**继续落盘——用户会拿到一段 20 多秒的纯色视频却显示"导出成功"。
+   * 抛专用错误,由调用方换另一种取帧方式重录;两种都不行才给出可读失败原因。 */
+  renderLogAppend('REC', '画面自检 · 采样 ' + sampledFrames + ' 帧 / 不同画面 ' + frameSignatures.size + ' 个', 'dim');
+  if (totalFrames >= 20 && sampledFrames >= 3 && frameSignatures.size <= 2) {
+    throw new BlankCaptureError('兼容录制只拿到了静止画面(采样 ' + sampledFrames + ' 帧,只有 '
+      + frameSignatures.size + ' 个不同画面)。取帧方式:' + mode + '。');
+  }
+  if (sampledFrames >= 8 && frameSignatures.size / sampledFrames < 0.1) {
+    renderLogAppend('REC', '画面变化很少(' + frameSignatures.size + '/' + sampledFrames
+      + ')· 动画本身静止段较长时正常,否则可能是本机渲染跟不上', 'warn');
+  }
   const isMp4 = mime.indexOf('mp4') !== -1;
-  const blob = new Blob(chunks, { type: isMp4 ? 'video/mp4' : 'video/webm' });
+  let blob = new Blob(chunks, { type: isMp4 ? 'video/mp4' : 'video/webm' });
   if (!blob.size) throw new Error('兼容录制没有产生任何数据(浏览器可能禁用了画布录制)');
-  renderLogAppend('REC', '录制数据 ' + fmtSize(blob.size), 'dim');
+  /* 录制时长(毫秒):MediaRecorder 的时间轴是**墙钟**,所以按实际耗时算,
+   * 而不是按 totalFrames/fr —— 手机上渲染比 1/fr 慢时,成片本来就比理论时长长。 */
+  const recDurationMs = Math.max(1, performance.now() - t0 + 1000 / fr);
+  /* 补时长之前先用 <video> 读一次:这一步是给日志留"补写前是什么样"的证据。
+   * 安卓相册之所以显示 0:00,就是因为播放器在这里读到 Infinity / 0。 */
+  const beforeSec = await probeContainerDuration(blob);
+  const fixed = await fixRecordedContainer(blob, mime, recDurationMs, recCanvas.width, recCanvas.height);
+  const afterSec = await probeContainerDuration(fixed.blob);
+  if (fixed.blob !== blob) blob = fixed.blob;
+  renderLogAppend('REC', '容器时长 · 补写前 ' + (beforeSec == null ? '未知/0:00' : beforeSec.toFixed(2) + 's')
+    + ' → 补写后 ' + (afterSec == null ? '仍未知' : afterSec.toFixed(2) + 's')
+    + (fixed.note ? ' · ' + fixed.note : ''), afterSec == null ? 'warn' : 'info');
+  /* 录完再核对一次音轨:有的 WebView 明明用带音轨的流启动成功,产出的文件里却只有视频轨。
+   * 这里如实回报 hasAudio,完成提示才不会写着「含音轨」而用户听不到声音。 */
+  const hasAudio = useAudio ? await recordedBlobHasAudio(blob, mime) : false;
+  if (useAudio && !hasAudio) {
+    renderLogAppend('REC', '录制结果里没有音轨 · 本机录制器丢弃了音频', 'warn');
+  }
+  renderLogAppend('REC', '录制数据 ' + fmtSize(blob.size) + (hasAudio ? ' · 含音轨' : ''), 'dim');
   onProgress(100, '录制完成,正在保存…');
   renderLogAppend('SAVE', '开始保存 · ' + fmtSize(blob.size), 'dim');
   downloadBlob(blob, 'animation.' + (isMp4 ? 'mp4' : 'webm'));
-  return { mime, hasAudio: useAudio };
+  return { mime, hasAudio, slowNote, outputFps: Math.round(fr / outputStep) };
 }
 
 /* 导出实例的「每帧状态同步」:导出直接调 renderer.renderFrame() 逐帧渲染,
@@ -11872,6 +13048,60 @@ function needsSvgRasterExport(data: any): boolean {
   return tt > td || hasLumaMatte(data);
 }
 
+
+/* 改字之后到底要不要逐帧光栅化?这条判断以前是"一律光栅化"
+ * ——代价极大:手机上每帧要序列化整份 SVG 再让 <img> 解码,实测 1920×1080 约 245ms/帧,
+ * 而录制走墙钟,于是 3.9 秒的动画被拉成 58 秒、看起来只有 4fps(用户反馈的"导出很卡")。
+ *
+ * 实测:Canvas 渲染器的文字兜底(patchCanvasTextElement)已经能把改过的字画对,
+ * 同一个动画 Canvas 每帧只要几毫秒。所以改成"先探一帧":在一次性 Canvas 实例上渲染
+ * 动画中段,若画面确实有内容就用 Canvas;只有真的画不出来(整帧接近纯背景)才回退光栅化。
+ * 探测成本 ≈ 一次 lottie 加载 + 一帧渲染,几十毫秒,换掉的却是几十秒/几十秒的导出。 */
+async function probeCanvasHasInk(data: any, w: number, h: number): Promise<boolean> {
+  let host: HTMLDivElement | null = null;
+  let inst: AnimationItem | null = null;
+  try {
+    host = document.createElement('div');
+    host.style.cssText = 'position:fixed;left:-10000px;top:0;width:' + w + 'px;height:' + h + 'px;';
+    document.body.appendChild(host);
+    inst = lottie.loadAnimation({
+      container: host, renderer: 'canvas', rendererSettings: { dpr: 1 },
+      loop: false, autoplay: false, animationData: data, audioFactory,
+    });
+    patchExportCanvasRenderer((inst as any).renderer);
+    const src = host.querySelector('canvas') as HTMLCanvasElement | null;
+    if (!src) return false;
+    const probe = document.createElement('canvas');
+    probe.width = 160; probe.height = 90;
+    const pctx = probe.getContext('2d', { willReadFrequently: true });
+    if (!pctx) return false;
+    /* 取动画中段:开头可能是纯背景/淡入,中段才有主体。多取两个点,任意一个有内容就算可用。 */
+    const ip = Number(data?.ip) || 0;
+    const op = Number(data?.op) || ip + 60;
+    for (const frac of [0.5, 0.75, 0.25]) {
+      const frame = Math.round(ip + (op - ip) * frac);
+      syncAnimFrameForExport(inst, frame);
+      (inst as any).renderer.renderFrame(frame, true);
+      pctx.clearRect(0, 0, 160, 90);
+      pctx.drawImage(src, 0, 0, 160, 90);
+      const d = pctx.getImageData(0, 0, 160, 90).data;
+      // 以左上角像素为背景基准,统计明显不同的像素
+      const br = d[0], bg2 = d[1], bb = d[2];
+      let diff = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (Math.abs(d[i] - br) + Math.abs(d[i + 1] - bg2) + Math.abs(d[i + 2] - bb) > 24) diff += 1;
+      }
+      if (diff > 40) return true; // 14400 个采样点里 >40 个不同 = 有画面
+    }
+    return false;
+  } catch {
+    return false;
+  } finally {
+    if (inst) { try { (inst as any).destroy(); } catch { /* ignore */ } }
+    if (host) host.remove();
+  }
+}
+
 /* 改过字之后,canvas 渲染器已经画不出这套文字了 —— 导出必须改走 SVG 逐帧光栅化。
  *
  * 现象:地图标题动画把「地图地点」改成表外字(或任何一套带 chars 的动画改字)之后导出透明 AVI,
@@ -11935,38 +13165,55 @@ function base64ToBytes(b64: string): Uint8Array | null {
  * 只有 data: 字体才进得去。真正的字体保证是上面「文字→位图」(replaceSvgTextWithGlyphImages):
  * 能被换掉的文字都不再依赖字体,剩下的极少数(渐变填充等)才落到这份 CSS。 */
 const FONT_FETCH_TIMEOUT_MS = 10000;
-async function buildSvgRasterFontCss(list: any[]): Promise<string> {
-  let css = '';
+type RasterFontCss = { blob: string; inline: string };
+async function buildSvgRasterFontCss(list: any[]): Promise<RasterFontCss> {
+  /* 两套 CSS,差别只在字体地址:
+   *   · blob —— 便宜(每帧只多几十字节),但 <img> 里的 SVG 是隔离文档,blob:/http(s) 字体一律被丢弃;
+   *   · inline(data:) —— 体积大(字体本身 base64 进每一帧),但那是隔离文档里**唯一**能生效的字体来源。
+   * 默认用 blob 版;哪一帧发现「还有文字没能转成位图」,再切换成 inline 版(见 rasterizeSvgFrameToCtx)。
+   * 这条切换是"导出视频里只有字变大"的根治点:没转成位图的 <text> 在没有字体的隔离文档里
+   * 会回退系统字体 —— 桌面装了同名字体看不出来,手机上是另一套字形(更宽更高)。 */
+  let blobCss = '';
+  let inlineCss = '';
   const seen = new Set<string>();
   for (const fdef of list ?? []) {
     const fam = fdef?.fFamily || fdef?.fName;
     if (!fam || seen.has(fam)) continue;
     seen.add(fam);
-    // 字体来源分两种:fPath 是 data URI 时直接转成 blob URL;
+    // 字体来源分两种:fPath 是 data URI 时直接用它的字节;
     // 否则按 fFamily/fName 解析到打包好的 WOFF2(优先,逐帧解析成本约减半)或 TTF,并校验文件头再使用。
-    let uri = '';
+    let bytes: Uint8Array | null = null;
+    let mime = 'font/ttf';
     const fPath = typeof fdef?.fPath === 'string' ? fdef.fPath : '';
     if (fPath.startsWith('data:')) {
       const comma = fPath.indexOf(',');
       const meta = comma > 0 ? fPath.slice(0, comma) : '';
-      const bytes = comma > 0 ? base64ToBytes(fPath.slice(comma + 1)) : null;
+      bytes = comma > 0 ? base64ToBytes(fPath.slice(comma + 1)) : null;
       if (!bytes) continue;
-      const mime = /woff2/.test(meta) ? 'font/woff2' : /woff/.test(meta) ? 'font/woff' : 'font/ttf';
-      uri = fontBytesToBlobUrl(bytes.buffer as ArrayBuffer, mime);
+      mime = /woff2/.test(meta) ? 'font/woff2' : /woff/.test(meta) ? 'font/woff' : 'font/ttf';
     } else {
-      // 优先 WOFF2(体积约为 TTF 的一半,逐帧解析成本直接减半);没有再退回 TTF
-      const woff2Url = resolveFontWoff2Url(fdef.fFamily, fdef.fName);
-      const ttfUrl = resolveFontUrl(fdef.fFamily, fdef.fName);
-      const url = woff2Url || ttfUrl;
+      const url = resolveFontWoff2Url(fdef.fFamily, fdef.fName) || resolveFontUrl(fdef.fFamily, fdef.fName);
       if (!url) continue;
       const buf = await raceTimeout(fetchFontBinary(url), FONT_FETCH_TIMEOUT_MS);
       if (buf === TIMED_OUT || !buf || !looksLikeFontBuffer(buf)) continue;
-      const mime = /woff2/.test(url) ? 'font/woff2' : 'font/ttf';
-      uri = fontBytesToBlobUrl(buf, mime);
+      bytes = new Uint8Array(buf);
+      mime = /woff2/.test(url) ? 'font/woff2' : 'font/ttf';
     }
-    css += '@font-face{font-family:"' + fam + '";src:url("' + uri + '");}';
+    blobCss += '@font-face{font-family:"' + fam + '";src:url("' + fontBytesToBlobUrl(bytes.buffer as ArrayBuffer, mime) + '");}';
+    inlineCss += '@font-face{font-family:"' + fam + '";src:url("data:' + mime + ';base64,' + bytesToBase64(bytes) + '");}';
   }
-  return css;
+  return { blob: blobCss, inline: inlineCss };
+}
+
+/* 字节 → base64。分批喂 String.fromCharCode:一次性 apply 整个数组会因参数过多爆栈
+ * (与桥接层 dfae-bridge.js 的 toBase64 同一写法,32KB 一片是安全值)。 */
+function bytesToBase64(bytes: Uint8Array): string {
+  let s = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)));
+  }
+  return btoa(s);
 }
 
 /* 把字体 CSS 包成 <style> 标签字符串:逐帧复用同一份字符串,序列化时只做一次字符串插入,
@@ -12042,6 +13289,9 @@ const XLINK_NS = 'http://www.w3.org/1999/xlink';
 const RASTER_GLYPH_PAD = 2;
 /* 位图倍率上限:文字在合成里被放大到 5× 时按 5× 渲染,导出画面才不会糊 */
 const RASTER_GLYPH_MAX_SCALE = 6;
+/* 「字号被 CSS 改动」只记一次:同一段导出里每帧都会走到这里,不设闸门会刷屏。 */
+let svgFontSizeWarned = false;
+
 /* 键 → PNG data URI。只缓存「字形本身」,与每帧的位移/旋转无关。 */
 const svgRasterGlyphCache = new Map<string, string>();
 
@@ -12081,7 +13331,35 @@ function svgTextToGlyphImage(el: SVGTextElement): SVGImageElement | null {
    * <text> 再放大几十倍)把一张位图做到几千万像素、直接把手机内存打满。 */
   const longest = Math.max(b.width, b.height);
   if (longest * S > 4096) S = Math.max(1, Math.floor(4096 / longest));
-  const font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+  /* 字号来源:优先用 lottie 写在祖先上的 font-size **属性值**,而不是 computed style。
+   * 原因:SVG 的 font-size 可被 CSS 继承覆盖 —— 一旦样式表给 svg / g / text 定了别的字号,
+   * <text> 的 computed font-size 就不再等于 lottie 声明的设计字号,文字位图会按被放大的字号去画,
+   * 成片里的字就"比预览大一圈",而形状与布局完全正常(正是工程师最难猜的那种症状)。
+   * 属性拿不到(手写 SVG / 其它导出器)才回退 computed。 */
+  let fontSizeText = cs.fontSize;
+  let fontFromAttr = false;
+  {
+    let node: Element | null = el;
+    for (let i = 0; i < 6 && node; i += 1) {
+      const attr = node.getAttribute('font-size');
+      if (attr && /^[0-9.+-]+$/.test(attr.trim())) {
+        fontSizeText = attr.trim() + 'px';
+        fontFromAttr = true;
+        break;
+      }
+      node = node.parentElement;
+    }
+  }
+  /* 属性与 computed 不一致 = CSS 确实介入了排版:记一条(每个导出只记一次),这正是排障要的证据。 */
+  if (fontFromAttr && !svgFontSizeWarned) {
+    const a = parseFloat(fontSizeText);
+    const b = parseFloat(cs.fontSize);
+    if (isFinite(a) && isFinite(b) && Math.abs(a - b) > 0.5) {
+      svgFontSizeWarned = true;
+      renderLogAppend('FONT', '文字字号被 CSS 改动 · 设计 ' + a + 'px / computed ' + b + 'px · 已按设计值绘制', 'warn');
+    }
+  }
+  const font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + fontSizeText + ' ' + cs.fontFamily;
   /* lottie 的 SVG 文字不用 x/y 定位(位置全在 transform 里),但手写/其它导出器可能用:
      有就按它画 —— getBBox 的坐标是含 x/y 的,两者一起才对得上。 */
   const tx = parseFloat(el.getAttribute('x') || '') || 0;
@@ -12164,13 +13442,17 @@ function replaceSvgTextWithGlyphImages(liveSvg: SVGSVGElement, clone: SVGSVGElem
   }
 }
 
+/* 一次导出里字体 <style> 的两种形态与当前选择(见 buildSvgRasterFontCss 的注释):
+ * 默认用便宜的 blob 版;一旦发现某帧仍有没能转成位图的 <text>,就切到内嵌 data: 版。 */
+type RasterStyleState = { tag: string; inlineTag: string; usingInline: boolean; warned: boolean };
+
 /* 把当前已渲染到 DOM 的一帧 SVG 光栅化并画到目标画布 */
 async function rasterizeSvgFrameToCtx(
   svgEl: SVGSVGElement,
   octx: CanvasRenderingContext2D,
   w: number,
   h: number,
-  styleTag: string,
+  style: RasterStyleState | null,
 ): Promise<boolean> {
   const clone = svgEl.cloneNode(true) as SVGSVGElement;
   /* 剔除 lottie 的图片预载元素与字体 <style>。
@@ -12184,6 +13466,21 @@ async function rasterizeSvgFrameToCtx(
    *     先换就会被 defs > image 那条当成预载图删掉;
    *   · 必须在下面的剪枝**之前** —— 映射按文档顺序一一对应,剪枝删节点后就对不上了。 */
   replaceSvgTextWithGlyphImages(svgEl, clone);
+  /* 还有真实 <text>(带子元素 / 渐变填充 / 无墨迹但可见等,无法转位图)时,它们只能靠字体排版;
+   * 而 <img> 里的 SVG 看不到主文档的 FontFace,blob: 字体也会被丢弃 —— 只有 data: 字体进得去。
+   * 于是这里把 <style> 换成内嵌 data: 版,让剩下的字仍然用设计字体(否则手机上是系统字体 = 字变大)。 */
+  if (style && !style.usingInline && style.inlineTag) {
+    let leftover = 0;
+    clone.querySelectorAll('text').forEach((t) => { if ((t.textContent || '').trim().length) leftover += 1; });
+    if (leftover > 0) {
+      style.usingInline = true;
+      style.tag = style.inlineTag;
+      if (!style.warned) {
+        style.warned = true;
+        renderLogAppend('FONT', '本帧仍有 ' + leftover + ' 处文字无法转位图 · 改用内嵌 data: 字体排版(隔离文档里唯一生效的字体来源,之后每帧会略慢)', 'warn');
+      }
+    }
+  }
   // 强制按导出尺寸重建视口:clone 沿用了 lottie 写在 <svg> 上的尺寸属性,
   // 不覆盖的话 <img> 会按原尺寸呈现,合成到输出画布上位置和大小都会错位。
   clone.setAttribute('width', String(w));
@@ -12242,6 +13539,7 @@ async function rasterizeSvgFrameToCtx(
   }
   let serialized = new XMLSerializer().serializeToString(clone);
   // 字体 <style> 只做一次字符串插入(在 <svg ...> 开标签之后)
+  const styleTag = style ? style.tag : '';
   if (styleTag) serialized = serialized.replace(/<svg[^>]*>/, (m) => m + styleTag);
   // 与上一帧完全相同(静止段):直接复用上一帧的图片,跳过整段 SVG 解析
   if (svgRasterLastImg && svgRasterLastKey === serialized) {
@@ -12304,18 +13602,43 @@ async function exportVideo() {
   const popupTag = withPopup ? ' · 含弹窗' : '';
   // 无压缩透明 AVI 的体积 ≈ 宽 × 高 × 4 字节(BGRA)× 帧数,不含音频与封装开销
   const dibBytes = w * h * 4 * totalFrames;
-  const formatLabel = (format === 'avi'
+  /* MP4 的编码族要等探测完才知道(H.264 优先,没有则 VP9),所以这里是 let,方案定下来再改标签。 */
+  let formatLabel = (format === 'avi'
     ? (wantTransparent ? 'AVI · 无压缩透明' : 'AVI · H.264')
     : 'MP4 · H.264') + ' · ' + fr + 'fps' + (fr !== srcFps ? '(插值)' : '') + popupTag;
+  /** 方案的可读编码名(日志 / 浮层标题共用)。 */
+  const planCodecLabel = (p: H264Plan | null): string => {
+    if (!p) return '无编码器';
+    return p.family === 'vp9' ? 'VP9 ' + p.codec : 'H.264 ' + avcProfileLevelName(p.codec);
+  };
   /* 兼容导出:两种动画必须改用 SVG 渲染器逐帧光栅化 ——
    *   ① 遮罩源被共用的动画(canvas 渲染器遮罩合成不正确);
    *   ② 改过字、字形表已被丢掉的动画(canvas 渲染器一个字都画不出来,还会把整帧带成空白,
    *      详见 needsSvgRasterForEditedText)。
    * 这个判定放在打开浮层之前 —— 手机上它决定"要不要提前告诉用户这段会慢",而不是让人对着
    * 「正在初始化渲染器」猜。 */
-  const rasterByText = needsSvgRasterForEditedText(data);
-  const useRaster = rasterByText || needsSvgRasterExport(data);
-  const rasterWhy = rasterByText ? '改字后文字要靠浏览器文本引擎排版' : '该动画含共用轨道遮罩';
+  /* 渲染器选择:
+   *   · 共用轨道遮罩 / 亮度遮罩 —— Canvas 会画错或构建不出来,必须光栅化(不变);
+   *   · 只是"改过字"         —— 先探一帧:Canvas 能画出内容就用 Canvas(快一个数量级),
+   *                             画不出来才回退光栅化。探测只需要一次加载 + 一帧渲染。 */
+  const rasterByMatte = needsSvgRasterExport(data);
+  const rasterByTextWanted = needsSvgRasterForEditedText(data);
+  let rasterByText = rasterByTextWanted;
+  let rasterProbeNote = '';
+  if (rasterByTextWanted && !rasterByMatte) {
+    const __probeT0 = performance.now();
+    const canCanvas = await probeCanvasHasInk(data, w, h);
+    rasterByText = !canCanvas;
+    const __probeMs = Math.round(performance.now() - __probeT0);
+    logs.info('导出', '改字动画渲染器探测 · Canvas ' + (canCanvas ? '可用' : '不可用') + ' · ' + __probeMs + 'ms');
+    rasterProbeNote = canCanvas
+      ? '改字动画 · Canvas 可用(探测 ' + __probeMs + 'ms)· 已跳过逐帧光栅化'
+      : '改字动画 · Canvas 帧为空(探测 ' + __probeMs + 'ms)· 回退逐帧光栅化';
+  }
+  const useRaster = rasterByMatte || rasterByText;
+  const rasterWhy = rasterByText
+    ? (rasterByTextWanted ? '改字后 Canvas 画不出内容' : '该动画含共用轨道遮罩')
+    : '该动画含共用轨道遮罩';
   const rasterMobileWarn = useRaster && IS_MOBILE
     ? rasterWhy + ',手机上导出需要逐帧光栅化(每帧先把 SVG 转成位图),比桌面慢很多,可能要几分钟。'
       + '进度会持续更新,请让页面保持在前台、不要锁屏(已申请屏幕常亮)。'
@@ -12375,11 +13698,15 @@ async function exportVideo() {
   }, 1000);
   let plan: H264Plan | null = null;
   try {
-    plan = wantTransparent ? null : await resolveH264Plan(w, h, fr, reqScale);
+    plan = wantTransparent ? null : await resolveVideoPlan(w, h, fr, reqScale);
   } finally {
     window.clearInterval(__probeBeat);
   }
   const __probeMs = Math.round(performance.now() - __probeT0);
+  // 方案定了再定标签:没有 H.264 时走 VP9 离线编码,标签要如实写 MP4 · VP9
+  if (format !== 'avi' && plan && plan.family === 'vp9') {
+    formatLabel = formatLabel.replace('MP4 · H.264', 'MP4 · VP9');
+  }
   /* 编码帧数 / 帧率:方案若把帧率降到 30,就按整帧步进取帧(帧数减半、时间戳按新帧率写),
    * 成片时长不变。没有方案(透明 AVI、MJPEG 回退、兼容录制)时按原始 60fps 走。 */
   const stepOfPlan = (p: H264Plan) => Math.max(1, Math.round(fr / p.fps));
@@ -12400,6 +13727,14 @@ async function exportVideo() {
     const file = audioUrl.split('/').pop() || audioUrl;
     try { return decodeURIComponent(file); } catch { return file; }
   })();
+  /* 字体自检:手机上内嵌字体没注册成功时,文字会整段回退系统字体 ——
+   * 用户看到的就是"导出视频里字大了一圈"。这一步把结论写进日志(缺字体会是 warn),
+   * 并顺带重试一次注册;失败不阻断导出(字形回退 < 没有成片)。 */
+  const fontReport = await ensureExportFonts(withPopup ? [data, popupData] : [data]);
+  const fontNote = fontReport.missing.length
+    ? '字体缺失 ' + fontReport.missing.join(' / ') + '(文字回退系统字体)'
+    : '字体 ' + fontReport.ok.length + '/' + (fontReport.ok.length + fontReport.missing.length) + ' 已生效'
+      + (fontReport.retried.length ? ' · 重试后恢复 ' + fontReport.retried.length : '');
   startRenderLog({
     format: formatLabel,
     renderer: useRaster ? 'SVG 逐帧光栅化' : 'Canvas',
@@ -12412,16 +13747,27 @@ async function exportVideo() {
       '背景 ' + (wantTransparent ? '透明(保留 alpha)' : bgColor.value) + ' · 弹窗叠加 ' + (withPopup ? '开' : '关'),
       '音轨 ' + (audioName ? audioName : '无(静音导出)'),
       useRaster ? '光栅化原因 ' + rasterWhy : '渲染器 Canvas(与预览同一套补丁)',
+      ...(rasterProbeNote ? [rasterProbeNote] : []),
+      fontNote,
     ],
   });
+  if (fontReport.missing.length) {
+    renderLogAppend('FONT', '内嵌字体没有生效 · ' + fontReport.missing.join(' / ')
+      + ' · 重试一次仍失败,本次文字回退系统字体(字宽/字高会与预览不同)', 'warn');
+    logs.warn('导出', '内嵌字体未生效:' + fontReport.missing.join(' / ') + ',文字可能回退系统字体');
+  } else if (fontReport.retried.length) {
+    renderLogAppend('FONT', '字体自检发现未生效,重试注册后恢复 ' + fontReport.retried.length + ' 个族', 'warn');
+  } else {
+    renderLogAppend('FONT', fontNote, 'dim');
+  }
   /* 编码探测是本段导出里第一条"有信息量"的耗时:把最终方案与耗时一起写进日志。
    * plan 为空不代表失败:透明 AVI 本来就不经过 H.264,其余情况稍后会回退到 MJPEG / 兼容录制。 */
   renderLogAppend(
     'CODEC',
     plan
-      ? 'H.264 ' + avcProfileLevelName(plan.codec) + ' · ' + plan.width + '×' + plan.height + '@' + plan.fps
+      ? planCodecLabel(plan) + ' · ' + plan.width + '×' + plan.height + '@' + plan.fps
         + ' · ' + (plan.bitrate / 1e6).toFixed(1) + ' Mbps · 探测 ' + __probeMs + 'ms'
-      : (wantTransparent ? '透明 AVI · 不经过 H.264 编码器' : '无可用 H.264 · 稍后回退 · 探测 ' + __probeMs + 'ms'),
+      : (wantTransparent ? '透明 AVI · 不经过编码器' : '无可用编码器(H.264/VP9)· 稍后回退 · 探测 ' + __probeMs + 'ms'),
     plan ? 'info' : 'warn',
   );
   let container: HTMLDivElement | null = null;
@@ -12489,12 +13835,21 @@ async function exportVideo() {
     // 整段构建也限时:字体只是画面细节,取不回来就用系统字体渲染,不能让导出等它
     const rasterFontCss = useRaster
       ? await raceTimeout(buildSvgRasterFontCss([...(data?.fonts?.list ?? []), ...(withPopup ? popupData?.fonts?.list ?? [] : [])]), FONT_FETCH_TIMEOUT_MS * 2)
-      : '';
-    const rasterStyleTag = typeof rasterFontCss === 'string' ? svgRasterStyleTag(rasterFontCss) : '';
+      : null;
+    const rasterFontOk = !!rasterFontCss && rasterFontCss !== TIMED_OUT;
+    /* 默认用便宜的 blob 版字体样式;发现有文字没能转成位图时,rasterizeSvgFrameToCtx 会自己切到
+     * inlineTag(内嵌 data:)—— 那份才是隔离文档里能生效的。两份都只构建一次。 */
+    const rasterStyle: RasterStyleState = {
+      tag: rasterFontOk ? svgRasterStyleTag((rasterFontCss as RasterFontCss).blob) : '',
+      inlineTag: rasterFontOk ? svgRasterStyleTag((rasterFontCss as RasterFontCss).inline) : '',
+      usingInline: false,
+      warned: false,
+    };
     if (useRaster) {
-      renderLogAppend('FONT', typeof rasterFontCss === 'string'
-        ? '内联字体 ' + (rasterFontCss.length / 1024).toFixed(1) + 'KB · 每帧随 SVG 排版'
-        : '字体获取超时 · 本次用系统字体', typeof rasterFontCss === 'string' ? 'dim' : 'warn');
+      renderLogAppend('FONT', rasterFontOk
+        ? '字体样式就绪 · blob ' + ((rasterFontCss as RasterFontCss).blob.length / 1024).toFixed(1) + 'KB'
+          + ' · 备用内嵌 ' + ((rasterFontCss as RasterFontCss).inline.length / 1024).toFixed(1) + 'KB'
+        : '字体获取超时 · 本次用系统字体', rasterFontOk ? 'dim' : 'warn');
     }
     // 弹窗合成:导出时若开启弹窗,用同一帧号驱动弹窗渲染器,叠加到主动画之上
     if (withPopup) {
@@ -12599,7 +13954,7 @@ async function exportVideo() {
         // 兼容导出:把主/弹窗这一帧的 SVG 各自光栅化后叠加(与 SVG 预览完全一致)
         const __rasterT0 = performance.now();
         const mainSvg = (renderAnim as any).renderer?.svgElement as SVGSVGElement | null;
-        const mainOk = mainSvg ? await rasterizeSvgFrameToCtx(mainSvg, octx, w, h, rasterStyleTag) : false;
+        const mainOk = mainSvg ? await rasterizeSvgFrameToCtx(mainSvg, octx, w, h, rasterStyle) : false;
         if (mainOk) rasterOkFrames++; else rasterFailFrames++;
         if (rasterOkFrames === 0 && rasterFailFrames >= 3) {
           throw new Error('本机无法把这个动画的 SVG 帧转成位图(前 3 帧都失败):'
@@ -12607,7 +13962,7 @@ async function exportVideo() {
             + '请改用电脑上的 Chrome / Edge 导出,或换一个不含共用轨道遮罩的动画。');
         }
         const popupSvg = popupExportAnim ? ((popupExportAnim as any).renderer?.svgElement as SVGSVGElement | null) : null;
-        if (popupSvg) await rasterizeSvgFrameToCtx(popupSvg, octx, w, h, rasterStyleTag);
+        if (popupSvg) await rasterizeSvgFrameToCtx(popupSvg, octx, w, h, rasterStyle);
         __rasterMs = performance.now() - __rasterT0;
         // DEV 性能统计:把光栅化耗时(rasterMs)与整帧耗时(totalMs)累计到 window.__exportStats,
         // 便于在控制台快速判断导出瓶颈在渲染还是在编码;生产构建里这段会被摇掉。
@@ -12660,10 +14015,53 @@ async function exportVideo() {
     };
     // 各导出函数统一从合成画布取帧:它们只管编码与封装,不关心画面上叠了哪些图层
     const srcCanvas = outCanvas;
+    /* 兼容录制的目标尺寸:手机把 4K 宽的合成压到 1080p 级再录(见 exportVideoRecorder 顶部注释)。
+     * 桌面端不缩放 —— 既有录制备份的行为保持不变。 */
+    const recCaptureTarget = (() => {
+      if (!IS_MOBILE) return undefined;
+      const s = Math.min(1, 1920 / w, 1080 / h);
+      if (s >= 1) return undefined;
+      return { width: evenDim(w * s), height: evenDim(h * s) };
+    })();
+    /* 兼容录制的统一入口:先按平台默认取帧方式录一遍;若判定"只录到静止画面"
+     * (BlankCaptureError),自动换另一种取帧方式再录一次。
+     * 手机上默认 auto —— 老 WebView 的 requestFrame 可能形同无效,实测会产出纯色视频;
+     * 桌面默认 manual —— 保持既有行为,帧间绝不掺入浏览器的中间态。 */
+    /* 录制实际输出的帧率(渲染跟不上时会自动降帧),用于浮层标题与完成提示 */
+    let recorderOutputFps = 0;
+    const runRecorderGuarded = async (onProgress: (p: number, detail?: string) => void) => {
+      const modes: CaptureMode[] = IS_MOBILE ? ['auto', 'manual'] : ['manual', 'auto'];
+      let lastErr: unknown = null;
+      for (const mode of modes) {
+        try {
+          const rr = await exportVideoRecorder(srcCanvas, renderFrame, totalFrames, fr, onProgress, animFrameOf, recCaptureTarget, mode);
+          // 录制被拉长(渲染慢)时,把原因带到完成提示里,而不是让用户对着长片猜
+          if (rr.slowNote) fallbackNote = (fallbackNote ? fallbackNote : '') + rr.slowNote;
+          if (rr.outputFps && rr.outputFps !== fr) {
+            recorderOutputFps = rr.outputFps;
+            fallbackNote += ' · 本机渲染跟不上 ' + fr + 'fps,已按 ' + rr.outputFps + 'fps 输出(时长正确)';
+          }
+          return rr;
+        } catch (e) {
+          if (!(e instanceof BlankCaptureError)) throw e;
+          lastErr = e;
+          renderLogAppend('REC', '取帧方式 ' + mode + ' 只拿到静止画面 · 换另一种方式重录', 'warn');
+          usedRecorder = true;
+        }
+      }
+      /* 两种取帧方式都只拿到静止画面:这台设备的画布录制确实没把动画采进去。
+       * 给出可执行的下一步,而不是把一段纯色视频当成成功交付。 */
+      throw new Error('兼容录制在这台设备上只拿到静止画面(两种取帧方式都试过):'
+        + '本机 WebView 的画布录制没有把动画采进去。请先把「Android System WebView」更新到最新版再试,'
+        + '或在电脑上的 Chrome / Edge 导出。原始信息:' + (lastErr instanceof Error ? lastErr.message : String(lastErr)));
+    };
 
     // 走兼容录制(本机没有 H.264 编码器)时,尾部文案要换一套说法
     let usedRecorder = false;
     let recorderHasAudio = false;
+    /* 走降级路时的一句补充说明(编码器拒绝 / 降档重试),追加到完成提示里,
+     * 让用户知道「这次成片为什么和平时不一样」,而不是只看到一条成功。 */
+    let fallbackNote = '';
     /* 最后一次「有音效却没能进成片」的兜底标记:只有 AAC 不可用、兼容录制也不可用时才会置位。
      * 完成提示要如实告诉用户这段视频没有声音,而不是让人以为设备坏了。 */
     let silentAudioForced = false;
@@ -12686,15 +14084,18 @@ async function exportVideo() {
       setStatus((usedRecorder ? '兼容录制: ' : '导出 MP4: ') + p + '%');
     };
 
+    /* AVI 自封装只支持 avc1(见 h264Strf):VP9 方案对 AVI 无效,按「没有可用方案」处理,
+     * 由下面的 else 分支退到 MJPEG —— 那是对老内核最稳的一条路。 */
+    const aviPlan = plan && plan.family === 'avc' ? plan : null;
     if (format === 'avi') {
       if (wantTransparent) {
         await exportVideoAvi(data, srcCanvas, renderFrame, totalFrames, fr, (p, detail) => {
           updateExportProgress(p, '正在导出透明 AVI(无压缩)', detail ?? '');
           setStatus('导出透明 AVI(无压缩): ' + p + '%');
         }, 'dib', animFrameOf);
-      } else if (plan) {
+      } else if (aviPlan) {
         try {
-          await exportVideoAviH264(data, srcCanvas, renderFrame, framesOfPlan(plan), plan.fps, onAviH264, plan, animFrameOfPlan(plan));
+          await exportVideoAviH264(data, srcCanvas, renderFrame, framesOfPlan(aviPlan), aviPlan.fps, onAviH264, aviPlan, animFrameOfPlan(aviPlan));
         } catch (e) {
           // 取消照原样抛出;只有「本机编不了这个尺寸」才降级到 MJPEG
           if (!(e instanceof EncoderConfigError)) throw e;
@@ -12717,15 +14118,15 @@ async function exportVideo() {
           /* 本机有 H.264、却没有可用的 AAC 音频编码器:MP4 容器装不了 PCM 音轨,
            * 与其静默导出一段无声 MP4,不如改走「兼容录制 + 音轨」——录出来仍是有声视频
            * (MP4 或 WebM)。录制也不可用时才退回无声 MP4,并在完成提示里写明。 */
-          updateExportProgress(0, '本机没有 AAC 音频编码器,改用兼容录制(含音轨)…', (e as Error).message);
+          updateExportProgress(0, '本机没有可用的 AAC / Opus 音轨编码器,改用兼容录制(含音轨)…', (e as Error).message);
           exportFormatTag.textContent = '兼容录制(含音轨) · ' + fr + 'fps' + popupTag;
           usedRecorder = true;
           /* 录制走的是「原始帧率逐帧渲染」,与 plan 的输出帧数不同,终端重新计数。 */
           setRenderLogTotal(totalFrames);
           try {
-            const rr = await exportVideoRecorder(srcCanvas, renderFrame, totalFrames, fr, onMp4, animFrameOf);
+            const rr = await runRecorderGuarded(onMp4);
             recorderHasAudio = rr.hasAudio;
-            exportFormatTag.textContent = '兼容录制(' + (rr.hasAudio ? '含音轨' : '无音轨') + ') · ' + fr + 'fps' + popupTag;
+            exportFormatTag.textContent = '兼容录制(' + (rr.hasAudio ? '含音轨' : '无音轨') + ') · ' + (recorderOutputFps || fr) + 'fps' + popupTag;
           } catch (recErr) {
             updateExportProgress(0, '兼容录制也不可用,本次导出无声 MP4…', (recErr as Error).message);
             // 最终产物是无声 MP4,不是录制件:进度文案与完成提示都要按 MP4 来说
@@ -12737,13 +14138,35 @@ async function exportVideo() {
           }
         } else if (e instanceof EncoderConfigError) {
           /* 少数浏览器会先答「支持」再在 configure / encode 时拒绝(见 H.264 选级那段注释)。
-           * 这时按更低一档重来一次,总好过让用户对着报错自己再点一遍导出。 */
-          const lower = await resolveH264Plan(w, h, fr, Math.max(0.2, plan.scale * 0.7));
-          if (!lower || (lower.width >= plan.width && lower.height >= plan.height)) throw e;
-          updateExportProgress(0, '编码器拒绝了 ' + plan.width + '×' + plan.height + ',正在按 ' + lower.width + '×' + lower.height + ' 重试…', (e as Error).message);
-          exportFormatTag.textContent = formatLabel + ' → ' + lower.width + '×' + lower.height + '@' + lower.fps + '(重试)';
-          setRenderLogTotal(framesOfPlan(lower));
-          await exportVideoMp4(data, srcCanvas, renderFrame, framesOfPlan(lower), lower.fps, onMp4, lower, animFrameOfPlan(lower));
+           * 老内核(安卓 WebView 103 一类)上更常见的是「一喂帧就 EncodingError」——
+           * 以前这种情况直接抛给用户,提示里只有一句 EncodingError,等于"导不出来"。
+           * 现在两步:先按更低一档重来一次;仍失败就改走兼容录制(它不经过 WebCodecs 编码器)。 */
+          renderLogAppend('ENC', 'H.264 编码失败 · ' + mediaErrorText(e), 'warn');
+          const lower = await resolveVideoPlan(w, h, fr, Math.max(0.2, plan.scale * 0.7));
+          let recovered = false;
+          if (lower && (lower.width < plan.width || lower.height < plan.height)) {
+            updateExportProgress(0, '编码器拒绝了 ' + plan.width + '×' + plan.height + ',正在按 ' + lower.width + '×' + lower.height + ' 重试…', mediaErrorText(e));
+            exportFormatTag.textContent = formatLabel + ' → ' + lower.width + '×' + lower.height + '@' + lower.fps + '(重试)';
+            setRenderLogTotal(framesOfPlan(lower));
+            try {
+              await exportVideoMp4(data, srcCanvas, renderFrame, framesOfPlan(lower), lower.fps, onMp4, lower, animFrameOfPlan(lower));
+              recovered = true;
+            } catch (retryErr) {
+              if (retryErr instanceof ExportCancelledError) throw retryErr;
+              renderLogAppend('ENC', '降档重试仍失败 · ' + mediaErrorText(retryErr), 'warn');
+              e = retryErr;
+            }
+          }
+          if (!recovered) {
+            updateExportProgress(0, '本机 H.264 编码器不稳定,改用兼容录制…', mediaErrorText(e));
+            exportFormatTag.textContent = '兼容录制(含音轨) · ' + fr + 'fps' + popupTag;
+            usedRecorder = true;
+            fallbackNote = ' · 本机 H.264 编码器拒绝了该规格,已改用兼容录制';
+            setRenderLogTotal(totalFrames);
+            const rr = await runRecorderGuarded(onMp4);
+            recorderHasAudio = rr.hasAudio;
+            exportFormatTag.textContent = '兼容录制(' + (rr.hasAudio ? '含音轨' : '无音轨') + ') · ' + (recorderOutputFps || fr) + 'fps' + popupTag;
+          }
         } else {
           throw e;
         }
@@ -12754,9 +14177,9 @@ async function exportVideo() {
       // 浮层标题如实反映真实路径:这条录出来可能是 MP4,也可能是 WebM;音轨成不成以录制结果为准
       exportFormatTag.textContent = '兼容录制' + (findAudioAsset() ? '(含音轨)' : '(无音轨)') + ' · ' + fr + 'fps' + popupTag;
       setRenderLogTotal(totalFrames);
-      const rr = await exportVideoRecorder(srcCanvas, renderFrame, totalFrames, fr, onMp4, animFrameOf);
+      const rr = await runRecorderGuarded(onMp4);
       recorderHasAudio = rr.hasAudio;
-      exportFormatTag.textContent = '兼容录制(' + (rr.hasAudio ? '含音轨' : '无音轨') + ') · ' + fr + 'fps' + popupTag;
+      exportFormatTag.textContent = '兼容录制(' + (rr.hasAudio ? '含音轨' : '无音轨') + ') · ' + (recorderOutputFps || fr) + 'fps' + popupTag;
     }
     /* 重复帧占比很高(如约一半)时,更可能是「动画内容本身按 30fps 更新」:
      * 表达式里做时间量化(posterizeTime(30)、Math.floor(time*30)/30 等)、
@@ -12772,11 +14195,11 @@ async function exportVideo() {
     const saveTip = IS_MOBILE
       ? '正在写入手机相册,完成后可直接在图库 / 相册里看到。'
       : '文件已开始下载';
-    const recNote = silentAudioForced
+    const recNote = (silentAudioForced
       ? ' · 本机无法编码或录制音频,本次成片没有声音'
       : usedRecorder
         ? ' · 兼容录制模式(' + (recorderHasAudio ? '含音轨' : '无音轨') + ',时长可能与原动画略有出入)'
-        : '';
+        : '') + fallbackNote;
     /* 编码结束、还没落盘:先把这一行切到"正在写入",别让它停在上一次的百分比上。
      * 桌面端的落盘是异步的(saveBlobViaDesktop → 主进程写文件),完成后会由
      * downloadBlob 里的 markExportFileSaved 改成「已保存 + 真实体积」。 */
@@ -12793,7 +14216,8 @@ async function exportVideo() {
       setStatus('导出已取消');
     } else {
       console.error('[导出错误]', (e as Error).stack || e);
-      const msg = (e as Error).message || String(e);
+      // DOMException 的 message 对用户没有信息量(典型:一句 "EncodingError"),换成「是什么 + 怎么办」
+      const msg = readableExportError(e);
       /* 编码相关的失败额外附一行本机能力摘要:远程排障时(用户截图发过来)
        * 一眼就能分清是「浏览器没有 WebCodecs」「不是安全上下文」还是「编码器不认这个分辨率」。 */
       const hint = /H\.264|编码|WebCodecs/.test(msg) ? ' · 本机:' + encodeSupportSummary() : '';

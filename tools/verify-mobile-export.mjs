@@ -92,6 +92,105 @@ function frameFingerprints(file, indexes) {
   } catch (e) { return { error: String(e.message || e).slice(0, 160) }; }
 }
 
+/* 容器时长自检(不依赖 ffprobe):安卓相册只读容器元数据,MediaRecorder 的 WebM 若不写
+ * Duration 就显示 0:00 —— 这正是用户报的「导出的视频是 0 秒」。所以每个用例产出的文件都必须
+ * 自带一段 > 0 的时长。这里直接在字节里找:
+ *   · WebM:Segment > Info > Duration(0x4489);
+ *   · MP4 :moov > mvhd 的 duration 字段。
+ * 自己解析的好处是 CI 里不需要装 ffmpeg,也能精确区分「装着 ffprobe 估出来有」与「文件里真有」。 */
+function containerDuration(file) {
+  const buf = fs.readFileSync(file);
+  if (buf.length < 40) return { kind: '?', duration: null };
+  const readVint = (p, isId) => {
+    const first = buf[p];
+    if (!first) return null;
+    let len = 1, mask = 0x80;
+    while (len <= 8 && !(first & mask)) { mask >>= 1; len += 1; }
+    if (len > 8) return null;
+    let v = isId ? first : first & (mask - 1);
+    for (let i = 1; i < len; i += 1) v = v * 256 + buf[p + i];
+    return { len, value: v, unknown: !isId && v === Math.pow(2, len * 7) - 1 };
+  };
+  /* WebM:递归找 Duration;只在 Info 里认,避免把随机字节当成时长 */
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) {
+    const MASTER = new Set([0x18538067, 0x1549a966]);
+    let dur = null;
+    const walk = (start, end, depth) => {
+      let p = start;
+      while (p + 2 <= end && dur === null) {
+        const id = readVint(p, true); if (!id) break;
+        const sz = readVint(p + id.len, false); if (!sz) break;
+        const ds = p + id.len + sz.len;
+        const de = Math.min(end, ds + (sz.unknown ? end - ds : sz.value));
+        if (id.value === 0x4489 && de - ds >= 4) {
+          dur = de - ds === 8 ? buf.readDoubleBE(ds) : buf.readFloatBE(ds);
+        } else if (MASTER.has(id.value) && depth < 3) {
+          walk(ds, de, depth + 1);
+        }
+        if (sz.unknown) break;
+        p = de;
+      }
+    };
+    walk(0, buf.length, 0);
+    // Duration 的单位是 TimecodeScale ticks;取出 TimecodeScale(默认 1e6ns = 1ms)
+    return { kind: 'webm', duration: dur === null ? null : dur, unit: 'ticks(≈ms)' };
+  }
+  /* MP4:顶层盒子找 moov → mvhd */
+  if (buf.length > 12 && buf.toString('latin1', 4, 8) === 'ftyp') {
+    let p = 0;
+    while (p + 8 <= buf.length) {
+      const size = buf.readUInt32BE(p);
+      const type = buf.toString('latin1', p + 4, p + 8);
+      if (!size || size < 8 || p + size > buf.length) break;
+      if (type === 'moov') {
+        const moov = buf.subarray(p, p + size);
+        const i = moov.indexOf('mvhd');
+        if (i < 0) return { kind: 'mp4', duration: null };
+        const version = moov[i + 4];
+        if (version === 0) {
+          const timescale = moov.readUInt32BE(i + 16) || 1;
+          const d = moov.readUInt32BE(i + 20);
+          return { kind: 'mp4', duration: d / timescale, unit: 's' };
+        }
+        const timescale = moov.readUInt32BE(i + 24) || 1;
+        const d = Number(moov.readBigUInt64BE(i + 28));
+        return { kind: 'mp4', duration: d / timescale, unit: 's' };
+      }
+      p += size;
+    }
+    return { kind: 'mp4', duration: null };
+  }
+  /* AVI(RIFF):时长 = dwTotalFrames × dwMicroSecPerFrame / 1e6。
+   * 头部 hdrl 里的 avih 是固定布局,直接按 RIFF 块走一遍即可。 */
+  if (buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'AVI ') {
+    const i = buf.indexOf('avih');
+    if (i < 0) return { kind: 'avi', duration: null };
+    const usPerFrame = buf.readUInt32LE(i + 8);
+    const totalFrames = buf.readUInt32LE(i + 8 + 16);
+    if (!usPerFrame || !totalFrames) return { kind: 'avi', duration: null };
+    return { kind: 'avi', duration: (usPerFrame * totalFrames) / 1e6, unit: 's' };
+  }
+  return { kind: '?', duration: null };
+}
+
+/* 没有 ffprobe 时也要能判断"成片里有没有音轨":容器里就是明文。
+ * WebM 的 Tracks 写着 A_OPUS / A_VORBIS / A_AAC;MP4 的 moov 里有 soun handler。 */
+function containerHasAudio(file) {
+  try {
+    const buf = fs.readFileSync(file);
+    const head = buf.subarray(0, Math.min(buf.length, 1024 * 1024)).toString('latin1');
+    // AVI 的音轨体现在流头 'auds'(LIST strl > strh fccType);WebM/MP4 见后两条
+    const needles = ['A_OPUS', 'A_VORBIS', 'A_AAC', 'OpusHead', 'soun', 'auds'];
+    if (needles.some((n) => head.includes(n))) return true;
+    // 碎片化 MP4 的 moov 可能写在尾部
+    if (buf.length > 1024 * 1024) {
+      const tail = buf.subarray(Math.max(0, buf.length - 4 * 1024 * 1024)).toString('latin1');
+      return needles.some((n) => tail.includes(n));
+    }
+    return false;
+  } catch { return false; }
+}
+
 function probe(file) {
   try {
     const out = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,width,height', '-show_entries', 'format=duration', '-of', 'json', file], { encoding: 'utf8' });
@@ -166,8 +265,13 @@ async function runCase(name) {
       report.probe = probe(out);
       /* 本次修复的核心断言:成片必须带音轨。以前「无 WebCodecs」与「不支持 AAC」两条降级路
        * 都会静默产出无声文件,正是用户报的「部分机型导出没声音」。 */
-      report.audioOk = !!(report.probe && report.probe.audio && report.probe.audio !== '(无音轨)');
+      /* 有 ffprobe 就用它;没装 ffmpeg 的开发机上退回容器自检(结果同样可信,只是不报编解码器名) */
+      report.containerAudio = containerHasAudio(out);
+      report.audioOk = !!(report.probe && report.probe.audio && report.probe.audio !== '(无音轨)') || report.containerAudio;
       report.content = frameFingerprints(out, [10, 60, 120, 180]);
+      /* ★ 容器里必须真的有时长:安卓相册读不到就是 0:00(这次修复的核心回归点) */
+      report.container = containerDuration(out);
+      report.durationOk = !!(report.container && report.container.duration > 0.2);
     }
   } finally {
     await browser.close();
@@ -189,6 +293,12 @@ for (const n of names) {
   if (!report.audioOk) {
     failed++;
     console.log('!! ' + n + ': 成片缺少音轨(本次修复要求所有用例都带音轨)');
+  }
+  /* 时长断言:兼容录制(recorder / noaac 的降级路)以前产出的 WebM 没有 Duration,
+   * 安卓相册显示 0:00。这条断言就是防它复发 —— 任何用例的成片都必须自带时长。 */
+  if (!report.durationOk) {
+    failed++;
+    console.log('!! ' + n + ': 成片容器里没有可读时长(安卓相册会显示 0:00)', JSON.stringify(report.container || null));
   }
 }
 if (failed) process.exitCode = 1;

@@ -81,14 +81,14 @@ const iconProbe = () => [...document.querySelectorAll('.rail .bi')].map((svg) =>
   };
 });
 
-/* 桌面:展开态 —— 六格、统一笔画、图标与文字 10px、图标落在行中轴 */
+/* 桌面:展开态 —— 七格(2026-11 起多了「图片编辑器」)、统一笔画、图标与文字 10px、图标落在行中轴 */
 {
   const { page, errs } = await openPage({ bridge: true, viewport: { width: 1480, height: 940, deviceScaleFactor: 1 } });
   const items = await page.evaluate(() => [...document.querySelectorAll('.rail-item')]
     .filter((b) => b.getBoundingClientRect().width > 0)
     .map((b) => b.dataset.page));
-  check('桌面:导航是主页/编辑器/音频/日志/下载列表/关于六格',
-    JSON.stringify(items) === JSON.stringify(['home', 'editor', 'audio', 'logs', 'downloads', 'about']), JSON.stringify(items));
+  check('桌面:导航是主页/动画编辑器/图片编辑器/音频/日志/下载列表/关于七格',
+    JSON.stringify(items) === JSON.stringify(['home', 'editor', 'image', 'audio', 'logs', 'downloads', 'about']), JSON.stringify(items));
 
   if (await page.evaluate(() => document.documentElement.dataset.rail === 'collapsed')) {
     await page.click('#railToggle');
@@ -97,7 +97,7 @@ const iconProbe = () => [...document.querySelectorAll('.rail .bi')].map((svg) =>
 
   const icons = await page.evaluate(iconProbe);
   const railIcons = icons.filter((i) => i.owner !== 'toggle');
-  check('桌面:六枚导航图标 + 收起按钮各有一枚', railIcons.length === 6 && icons.some((i) => i.owner === 'toggle'), JSON.stringify(icons.map((i) => i.owner)));
+  check('桌面:七枚导航图标 + 收起按钮各有一枚', railIcons.length === 7 && icons.some((i) => i.owner === 'toggle'), JSON.stringify(icons.map((i) => i.owner)));
   const bad = railIcons.filter((i) => i.viewBox !== '0 0 24 24' || i.fill !== 'none' ||
     i.stroke !== i.color || parseFloat(i.strokeWidth) !== 2 || i.linecap !== 'round' || i.linejoin !== 'round');
   check('桌面:全部是 24 网格 / 描边 2 / 圆头圆角 / stroke 跟随当前色', bad.length === 0, JSON.stringify(bad));

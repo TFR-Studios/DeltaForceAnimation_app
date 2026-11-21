@@ -11,7 +11,8 @@
  * 页面职责(刻意划清,避免又把东西堆回主页):
  *   · 主页 —— 只回答"现在要干什么":版本、主操作、上次打开那一套。**不放动画列表**,
  *     选动画是编辑器顶栏触发器 / 动画画廊的事。
- *   · 编辑器 —— 原来的 .layout(#viewEditor),预览 + 检查器。
+ *   · 动画编辑器 —— 原来的 .layout(#viewEditor),预览 + 检查器。
+ *   · 图片编辑器 —— #viewImage:按需加载的 PSD 文字编辑器(见 src/image-page.ts)。
  *   · 下载列表 —— 复用既有面板(#downloadsPanel):它已经是完整的下载管理器。
  *   · 关于 —— 版本 / 检查更新 / 保存目录(仅桌面)/ 制作声明 / 许可。
  *   · 日志 —— #viewLogs:运行记录 / 类型筛选 / 搜索 / 复制 / 下载(逻辑在 src/logs.ts)。
@@ -26,7 +27,7 @@ import { logs } from './logs';
 /* 开发者日志:更新检查的请求源 / 版本 / 失败原因也进原始流 */
 import { devEvent } from './devlog';
 
-export type PageId = 'home' | 'editor' | 'about' | 'logs' | 'audio';
+export type PageId = 'home' | 'editor' | 'image' | 'about' | 'logs' | 'audio';
 
 export type AppShellHooks = {
   /** 手机 / 平板(与 mobile.ts 同一套判定,由 main.ts 的 IS_MOBILE 传进来) */
@@ -96,6 +97,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   const viewLogs = document.getElementById('viewLogs');
   const viewAudio = document.getElementById('viewAudio');
   const viewEditor = document.querySelector<HTMLElement>('.layout');
+  const viewImage = document.getElementById('viewImage');
   const rail = document.getElementById('appRail');
   const navButtons = Array.from(document.querySelectorAll<HTMLElement>('.rail-item'));
   const navDownloads = document.getElementById('navDownloads');
@@ -135,6 +137,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   }
 
   const btnOpenEditor = document.getElementById('btnOpenEditor') as HTMLButtonElement | null;
+  const btnGoImage = document.getElementById('btnGoImage') as HTMLButtonElement | null;
   const btnGoAbout = document.getElementById('btnGoAbout') as HTMLButtonElement | null;
   const homeChannel = document.getElementById('homeChannel');
   const homeLast = document.getElementById('homeLast');
@@ -157,7 +160,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   const btnOpenDir = document.getElementById('btnOpenDir') as HTMLButtonElement | null;
   const aboutPath = document.getElementById('aboutPath');
 
-  const pages: Record<PageId, HTMLElement | null> = { home: viewHome, editor: viewEditor, about: viewAbout, logs: viewLogs, audio: viewAudio };
+  const pages: Record<PageId, HTMLElement | null> = { home: viewHome, editor: viewEditor, image: viewImage, about: viewAbout, logs: viewLogs, audio: viewAudio };
   /* 「跑在桌面客户端里」与「用的是手机 UI」是两件事,判定必须**移动端优先**。
    * 安卓 APK 里挂着同一个 window.dfaeDesktop 桥接层(它本来就叫这个名字,提供的是"能落盘 /
    * 能开系统浏览器"这一层能力),所以 isDesktopApp 在手机上同样成立 —— 只看它,关于页就会
@@ -189,6 +192,8 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     if (homeChannel) homeChannel.textContent = channel + ' ' + v;
     if (aboutVersion) aboutVersion.textContent = v;
     if (aboutChannel) aboutChannel.textContent = channel;
+    /* 设备快照里的版本要跟着主进程回报的版本走,否则复制出去的是一行过期版本号 */
+    paintDeviceInfo();
   }
 
   /* ---------- 主页:上次打开的那一套 ----------
@@ -206,7 +211,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     }
     /* 主按钮始终是"进入编辑器"这个总入口;右侧卡片才是"继续编辑这一套"。
      * 两者都写「继续编辑」会变成同一句话在两个位置抢注意力(重复 CTA 意图)。 */
-    if (btnOpenEditorText) btnOpenEditorText.textContent = '打开编辑器';
+    if (btnOpenEditorText) btnOpenEditorText.textContent = '打开动画编辑器';
     if (!key) {
       if (homeRecent) homeRecent.hidden = true;
       if (homeSwitch) homeSwitch.hidden = true;
@@ -261,7 +266,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   window.addEventListener('popstate', (e) => {
     if (!wantHistory) return;
     const raw = e.state && e.state.dfaePage;
-    const page: PageId = raw === 'editor' || raw === 'about' || raw === 'logs' || raw === 'audio' ? raw : 'home';
+    const page: PageId = raw === 'editor' || raw === 'image' || raw === 'about' || raw === 'logs' || raw === 'audio' ? raw : 'home';
     suppressHistory = true;
     showPage(page, { history: 'none' });
     suppressHistory = false;
@@ -275,7 +280,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     const changed = current !== page;
     current = page;
     root.dataset.page = page;
-    for (const id of ['home', 'editor', 'about', 'logs', 'audio'] as PageId[]) {
+    for (const id of ['home', 'editor', 'image', 'about', 'logs', 'audio'] as PageId[]) {
       const el = pages[id];
       if (!el) continue;
       const on = id === page;
@@ -300,12 +305,33 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     /* 导航滑块的落点跟着当前页走:放在 rAF 里,量的是这一帧布局完成后的位置。 */
     requestAnimationFrame(() => syncRailIndicator(true));
     if (page === 'home') paintHome();
+    /* 关于页每次进来重画一次设备信息:旋屏 / 换主题 / 换渲染器之后再进来,看到的才是当前值 */
+    if (page === 'about') paintDeviceInfo();
     if (page === 'editor') hooks.onEnterEditor();
+    /* 图片编辑器整页由 src/image-page.ts 在第一次进入时搭建(动态 import,
+     * 让 ag-psd 与那张 PSD 示例只在真正用到时才下载)。 */
+    if (page === 'image') ensureImagePage();
     /* 旧事件名保留:mobile.ts 的首次手势提示等的是「进编辑器」这一刻。
      * 语义映射:编辑器 = 'editor',其它页 = 'home'(提示只关心"是否在编辑器里")。 */
     try {
       window.dispatchEvent(new CustomEvent('dfae:viewchange', { detail: { view: page === 'editor' ? 'editor' : 'home', page } }));
     } catch { /* 老环境没有 CustomEvent 构造器也无所谓:data-page 是唯一权威 */ }
+  }
+
+  /* ---------- 图片编辑器:按需加载 ----------
+   * 整页 DOM 与 PSD 解析库(ag-psd)都只在第一次进入图片编辑器时加载:动画编辑器的首屏
+   * 不该为另一个编辑器多下载一份解析器和一张 11MB 的内置示例图。加载失败只记一行警告并
+   * 允许下次重试 —— 页面本身是空的挂载点,不会把外壳带崩。 */
+  let imagePageBooted = false;
+  function ensureImagePage(): void {
+    if (imagePageBooted) return;
+    imagePageBooted = true;
+    void import('./image-page')
+      .then((mod) => mod.initImagePage())
+      .catch((err) => {
+        imagePageBooted = false;
+        console.warn('[图片编辑器] 模块加载失败:', err);
+      });
   }
 
   /* ---------- 关于页:检查更新 / 应用内下载安装 ----------
@@ -863,7 +889,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
       hooks.openDownloads();
       return;
     }
-    if (page !== 'home' && page !== 'editor' && page !== 'about' && page !== 'logs' && page !== 'audio') return;
+    if (page !== 'home' && page !== 'editor' && page !== 'image' && page !== 'about' && page !== 'logs' && page !== 'audio') return;
     /* 同一页再点一次:手机上按惯例是"回到顶部"(而不是什么都不发生) */
     if (page === current) {
       if (hooks.isMobile) pages[page]?.scrollTo({ top: 0, behavior: 'smooth' });
@@ -872,25 +898,226 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     showPage(page);
   }
 
-  /* 手机端现场数据(只在关于页显示):排"底栏点不动"这类问题用。
-   * 关键读数:底栏的 y/高(是否被系统手势区压住)、安全区 inset 是否为 0、
-   * 以及最近一次 pointerup 落在哪一格 —— 点得到但页面不换 = 事件没到处理器。 */
+  /* ---------- 手机端设备信息(关于页)----------
+   * 这一块只为远程排障存在:底栏点不动、界面被系统手势区压住、手机上被认成桌面端 ——
+   * 光靠用户口述永远对不上,必须拿到"视口多大 / 安全区多高 / 底栏落在哪 / 最近一次点击
+   * 落在哪一格"。后来又加进 UA、内核、屏幕与 WebView 能力:同一份前端跑在安卓 WebView、
+   * 桌面 Electron、普通浏览器里,差异十有八九先体现在这些数字上。
+   *
+   * 采集在每次重画时**现取**,不缓存:旋屏、软键盘弹出(visualViewport)、换主题、换渲染器
+   * 都会让其中几项变;留一份过期快照比没有更误导。桌面端整块隐藏 —— 那里有 DevTools。 */
   const deviceEl = document.getElementById('aboutDevice');
+  const deviceRowEl = document.getElementById('aboutDeviceRow');
+  const deviceStatusEl = document.getElementById('aboutDeviceStatus');
+  const btnCopyDevice = document.getElementById('btnCopyDevice') as HTMLButtonElement | null;
+  const btnCopyDeviceText = document.getElementById('btnCopyDeviceText');
   let lastTapInfo = '尚无点击';
-  function paintDeviceInfo(): void {
-    if (!deviceEl) return;
-    if (!hooks.isMobile) { deviceEl.hidden = true; return; }
-    deviceEl.hidden = false;
-    const railRect = rail ? rail.getBoundingClientRect() : null;
-    const safeB = getComputedStyle(document.documentElement).getPropertyValue('--m-safe-b').trim() || '0px';
-    deviceEl.textContent =
-      '设备 · 视口 ' + window.innerWidth + '×' + window.innerHeight +
-      ' · 安全区底 ' + safeB +
-      (railRect ? ' · 底栏 y=' + Math.round(railRect.y) + ' 高=' + Math.round(railRect.height) : '') +
-      ' · ' + lastTapInfo;
+
+  /** 包一层 try:总有几个属性会在某些 WebView / 被策略拦掉的存储上直接抛,
+   *  一处抛掉不该把整块现场数据变成空白。 */
+  function probe<T>(fn: () => T, fallback: T): T {
+    try { return fn(); } catch { return fallback; }
   }
+
+  /** 设备信息按「标签: 值 · 标签: 值」分组成行:一行一组相关读数,既不会把卡片撑成
+   *  一句超长行,复制出去也是人眼能扫的结构。第一行保持原来的"现场读数"格式 ——
+   *  底栏的 y/高与最近一次点击,是"点不动"这个问题最直接的证据。 */
+  function collectDeviceInfo(): string[] {
+    const ua = probe(() => navigator.userAgent, '');
+    const uaCh = probe(
+      () => (navigator as unknown as {
+        userAgentData?: { brands?: { brand: string; version: string }[]; mobile?: boolean; platform?: string };
+      }).userAgentData,
+      undefined,
+    );
+    const vv = window.visualViewport;
+    const cs = getComputedStyle(document.documentElement);
+    const inset = (name: string): string => cs.getPropertyValue(name).trim() || '0px';
+    const safeB = inset('--m-safe-b');
+    const railRect = rail ? rail.getBoundingClientRect() : null;
+    const theme = document.documentElement.dataset.theme === 'light' ? '浅色' : '深色';
+    const rendererSel = document.getElementById('selRenderer') as HTMLSelectElement | null;
+    const nativeShell = (window as unknown as { __DFAE_MOBILE__?: boolean }).__DFAE_MOBILE__ === true;
+    const portrait = window.innerWidth <= window.innerHeight;
+    const orientation = probe(() => (screen.orientation ? screen.orientation.type : ''), '');
+    /* 内核版本从 UA 里抠:安卓 WebView 一定带 Chrome/xx,抠不出来说明 UA 被改过(本身就是线索) */
+    const kernel = (() => {
+      const chrome = /Chrome\/([\d.]+)/.exec(ua);
+      if (chrome) return 'Chrome/' + chrome[1];
+      const other = /(Firefox|Version)\/([\d.]+)/.exec(ua);
+      return other ? other[1] + '/' + other[2] : '—';
+    })();
+    const tzOffsetMin = -new Date().getTimezoneOffset();
+    const tzName = probe(() => Intl.DateTimeFormat().resolvedOptions().timeZone, '') || '未知';
+    const tzText = 'UTC' + (tzOffsetMin >= 0 ? '+' : '-') +
+      Math.abs(tzOffsetMin / 60).toFixed(tzOffsetMin % 60 === 0 ? 0 : 1);
+    /* localStorage 探一次而不是只看 typeof:存在但写不进去(隐私模式 / 配额满)才是真问题 */
+    const storage = probe(() => {
+      const k = '__dfae_probe__';
+      localStorage.setItem(k, '1');
+      localStorage.removeItem(k);
+      return '可用';
+    }, '不可用');
+    const coarse = probe(() => window.matchMedia('(pointer: coarse)').matches, false);
+    const mem = probe(() => {
+      const gb = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+      return gb ? gb + 'GB' : '未知';
+    }, '未知');
+    const brands = uaCh && uaCh.brands && uaCh.brands.length
+      ? uaCh.brands.map((b) => b.brand + ' ' + b.version).join(', ')
+      : '—';
+    const uaChText = uaCh
+      ? 'brands: ' + brands + ' · mobile: ' + (uaCh.mobile === true ? '是' : '否') + ' · platform: ' + (uaCh.platform || '—')
+      : '不支持';
+
+    return [
+      '设备 · 视口 ' + window.innerWidth + '×' + window.innerHeight +
+        ' · 安全区底 ' + safeB +
+        (railRect ? ' · 底栏 y=' + Math.round(railRect.y) + ' 高=' + Math.round(railRect.height) : '') +
+        ' · ' + lastTapInfo,
+      '版本: v' + currentVersion + ' · ' + channel,
+      '主题: ' + theme + ' · 渲染器: ' + (rendererSel ? rendererSel.value : '—') +
+        ' · 方向: ' + (portrait ? '竖屏' : '横屏') + (orientation ? '(' + orientation + ')' : '') +
+        ' · 原生壳: ' + (nativeShell ? '是' : '否') +
+        ' · 安全上下文: ' + (window.isSecureContext ? '是' : '否'),
+      '屏幕: ' + probe(() => screen.width + '×' + screen.height, '—') + ' @' + window.devicePixelRatio +
+        ' · 可视视口: ' + (vv
+          ? Math.round(vv.width) + '×' + Math.round(vv.height) + ' (offset ' +
+            Math.round(vv.offsetLeft) + ',' + Math.round(vv.offsetTop) + ' · scale ' + vv.scale + ')'
+          : '不支持'),
+      '安全区: 上 ' + inset('--m-safe-t') + ' 右 ' + inset('--m-safe-r') +
+        ' 下 ' + safeB + ' 左 ' + inset('--m-safe-l'),
+      '平台: ' + probe(() => navigator.platform, '') + ' · 内核: ' + kernel +
+        ' · 语言: ' + probe(() => navigator.language, '') + ' · 时区: ' + tzName + ' (' + tzText + ')',
+      'CPU: ' + probe(() => navigator.hardwareConcurrency || 0, 0) + ' 线程 · 内存: ' + mem +
+        ' · 本地存储: ' + storage + ' · 输入: ' + (coarse ? '粗指针(触摸)' : '精确指针') +
+        ' · 触点: ' + probe(() => navigator.maxTouchPoints || 0, 0),
+      '字体: ' + fontStatusText(),
+      'UA-CH: ' + uaChText,
+      'UA: ' + (ua || '—'),
+    ];
+  }
+
+  /** 内嵌字体状态(排障用):手机上没有系统字体兜底,字体没注册成功时文字会回退系统字体 ——
+   *  用户看到的就是「导出视频里字大了一圈」。主文档里注册成功后 main.ts 会挂 `__DFAE_FONTS__`,
+   *  这里只读展示,不参与任何渲染决策。 */
+  function fontStatusText(): string {
+    const snap = probe(
+      () => (window as unknown as { __DFAE_FONTS__?: { states?: Record<string, string>; warnings?: string[] } }).__DFAE_FONTS__,
+      undefined,
+    );
+    const states = snap && snap.states ? snap.states : {};
+    const names = Object.keys(states);
+    if (!names.length) return '未注册(可能尚未载入动画)';
+    const failed = names.filter((n) => states[n] !== 'ready');
+    const fontsSize = probe(() => (document.fonts ? document.fonts.size : 0), 0);
+    return (failed.length ? '未生效 ' + failed.join(' / ') : '全部生效(' + names.length + ')') +
+      ' · document.fonts ' + fontsSize + ' 个' +
+      (snap && snap.warnings && snap.warnings.length ? ' · 警告 ' + snap.warnings.join('; ') : '');
+  }
+
+  /** 复制出去的那一份:标题行带渠道与版本,第二行是 ISO 时间 ——
+   *  "用户什么时候拿到的这份数据"决定它对应哪次构建,口头问一遍很容易记错。 */
+  function buildDeviceInfoReport(): string {
+    return [
+      '三角洲行动动画编辑器 ' + channel + ' v' + currentVersion + ' · 设备信息',
+      '复制时间: ' + new Date().toISOString(),
+    ].concat(collectDeviceInfo()).join('\n');
+  }
+
+  /** 剪贴板写入。安卓 WebView 里 navigator.clipboard 只在安全上下文(https / localhost)才有,
+   *  Tauri 壳的自定义源经常不算安全上下文,所以必须有第二条路。 */
+  async function copyDeviceText(text: string): Promise<{ ok: boolean; why?: string }> {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        return { ok: true };
+      }
+    } catch (e) {
+      /* 权限策略拒了 / 前台化没到位:走兜底,并把原因带出去让状态行说人话 */
+      return copyByExecCommand(text) ? { ok: true } : { ok: false, why: errText(e) };
+    }
+    return copyByExecCommand(text) ? { ok: true } : { ok: false, why: '当前 WebView 不允许写剪贴板' };
+  }
+
+  /** 兜底:临时 textarea + execCommand('copy')。
+   *  用屏幕外定位而不是 display:none —— 选不中的元素 execCommand 会直接返回 false。 */
+  function copyByExecCommand(text: string): boolean {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    let ok = false;
+    try {
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      ok = document.execCommand('copy');
+    } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
+  let copyFlashTimer = 0;
+  /** 复制结果双通道反馈:按钮文案(拇指底下最直观)+ 状态行(role=status,读屏也能听到)。
+   *  2600ms 是"够看清、又不至于一直挂着"的长度。 */
+  function flashCopyResult(ok: boolean, why = ''): void {
+    if (btnCopyDeviceText) btnCopyDeviceText.textContent = ok ? '已复制' : '复制失败';
+    if (btnCopyDevice) btnCopyDevice.classList.toggle('is-copied', ok);
+    if (deviceStatusEl) {
+      deviceStatusEl.dataset.state = ok ? 'ok' : 'error';
+      deviceStatusEl.textContent = ok
+        ? '已复制到剪贴板,直接粘贴发给开发者即可'
+        : '复制失败' + (why ? ':' + why : '') + ';可以长按上面的设备信息手动选中复制';
+    }
+    window.clearTimeout(copyFlashTimer);
+    copyFlashTimer = window.setTimeout(() => {
+      if (btnCopyDeviceText) btnCopyDeviceText.textContent = '复制设备信息';
+      if (btnCopyDevice) btnCopyDevice.classList.remove('is-copied');
+      if (deviceStatusEl) {
+        deviceStatusEl.textContent = '';
+        deviceStatusEl.removeAttribute('data-state');
+      }
+    }, 2600);
+  }
+
+  function paintDeviceInfo(): void {
+    /* 手机端才显示:桌面上有 DevTools,这一整块只是噪音。index.html 里已经不写 hidden ——
+     * 空元素本来也没有高度,不会闪;这里仍然显式写 hidden,是为了让"桌面端不显示"只有一个真相。 */
+    const show = isMobileUI();
+    if (deviceEl) deviceEl.hidden = !show;
+    if (deviceRowEl) deviceRowEl.hidden = !show;
+    if (deviceStatusEl) deviceStatusEl.hidden = !show;
+    if (!show || !deviceEl) return;
+    deviceEl.textContent = collectDeviceInfo().join('\n');
+  }
+
+  if (btnCopyDevice) {
+    btnCopyDevice.addEventListener('click', () => {
+      /* 先重画再复制:用户可能是先旋屏 / 换主题再回来点,展示与复制必须是同一份 */
+      paintDeviceInfo();
+      btnCopyDevice.disabled = true;
+      void copyDeviceText(buildDeviceInfoReport())
+        .then((res) => flashCopyResult(res.ok, res.why))
+        .finally(() => { btnCopyDevice.disabled = false; });
+    });
+  }
+
   window.addEventListener('resize', paintDeviceInfo);
   window.addEventListener('orientationchange', paintDeviceInfo);
+  /* 软键盘弹出只改 visualViewport、不触发 window.resize —— "输入框把界面顶走"这类问题
+   * 只有从这里才看得见。 */
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', paintDeviceInfo);
+  /* 渲染器下拉在编辑器里,但它决定导出走哪套管线,快照要跟着当前值走 */
+  const rendererSelect = document.getElementById('selRenderer');
+  if (rendererSelect) rendererSelect.addEventListener('change', paintDeviceInfo);
+  /* 主题开关只写 <html data-theme>、不发事件,观察属性比在 ui-theme.ts 里加钩子便宜 */
+  new MutationObserver(() => paintDeviceInfo()).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-theme'],
+  });
 
   if (rail) {
     rail.addEventListener('click', (e) => {
@@ -956,6 +1183,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
       }
     });
   }
+  if (btnGoImage) btnGoImage.addEventListener('click', () => showPage('image'));
   if (btnGoAbout) btnGoAbout.addEventListener('click', () => showPage('about'));
 
   /* 主页右卡:点整张卡 = 进编辑器 + 载入这一套。先切页再载入 —— 切页是即时的,
@@ -994,7 +1222,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   let initial: PageId = 'home';
   try {
     const q = new URLSearchParams(location.search).get('view');
-    if (q === 'editor' || q === 'about' || q === 'home' || q === 'logs') initial = q;
+    if (q === 'editor' || q === 'image' || q === 'about' || q === 'home' || q === 'logs') initial = q;
   } catch { /* 读不到参数就用默认页 */ }
   showPage(initial, { history: 'replace' });
 

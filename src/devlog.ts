@@ -10,7 +10,10 @@
  *   · window 的 error / unhandledrejection;
  *   · fetch:请求方式 / URL / 状态 / 耗时 / 失败原因(不记录请求体与响应体);
  *   · setStatus 的状态栏事件(main.ts 转发;导出进度百分比在源头被过滤,避免刷屏);
- *   · 页面切换(ui => view)与显式 devEvent(anim / export / update / app …)。
+ *   · 页面切换(ui => view)与显式 devEvent(anim / export / update / app …);
+ *   · 启动环境横幅(env)、长任务与导航耗时(perf)、资源加载失败(res,捕获阶段);
+ *   · 内存 / 帧率采样只进环形缓冲,命令按需查看(perf / frames / net),不写入日志流 ——
+ *     否则日志页一打开就开始刷屏,还会把真正的错误挤出可视区。
  *
  * 查看:页头「用户日志 / 开发者日志」切换,开发者视图是内嵌终端:
  *   等级筛选 → 终端日志流 → 底部 $ 命令输入。命令集见 COMMANDS 常量(help 可查)。
@@ -106,6 +109,12 @@ const COMMANDS = [
   '  mode user|dev — switch view',
   '  exit — back to the user log',
   '  version — print the app version',
+  '  env — print the boot environment banner',
+  '  gpu — print GPU / WebGL details',
+  '  perf — print memory, frame rate and long-task samples',
+  '  frames — print the frame rate of the last 5s',
+  '  net [n] — print the last n network failures',
+  '  sample [on|off] — toggle the 30s memory/frame sampling',
   '  ↑/↓ history · Esc clears input · Ctrl+L clears the log',
 ];
 
@@ -353,11 +362,42 @@ export function devEvent(source: string, msg: string, detail?: string, level: De
   pushEntry(level, source, msg, detail);
 }
 
+export type DevConsoleMethod =
+  | 'debug'
+  | 'log'
+  | 'info'
+  | 'warn'
+  | 'error'
+  | 'assert'
+  | 'table'
+  | 'group'
+  | 'groupCollapsed'
+  | 'groupEnd';
+
+/** 与浏览器控制台一致的等级映射:assert 只有断言失败时才输出错误,table 是信息,group 只是排版。 */
+const CONSOLE_LEVEL: Record<DevConsoleMethod, DevLogLevel> = {
+  debug: 'debug',
+  log: 'info',
+  info: 'info',
+  warn: 'warn',
+  error: 'error',
+  assert: 'error',
+  table: 'info',
+  group: 'debug',
+  groupCollapsed: 'debug',
+  groupEnd: 'debug',
+};
+
 /** console 包装器调用:保留原始参数,不再经过用户日志的"汇总成一句"格式化。 */
-export function devCaptureConsole(method: 'debug' | 'log' | 'info' | 'warn' | 'error', args: unknown[]): void {
-  const level: DevLogLevel = method === 'debug' ? 'debug' : method === 'warn' ? 'warn' : method === 'error' ? 'error' : 'info';
+export function devCaptureConsole(method: DevConsoleMethod, args: unknown[]): void {
+  /* assert 的条件参数由调用方剥掉(见 logs.ts 的 captureExtraConsole):到这里只剩
+   * 浏览器真的会打印的那几个值,与控制台行为保持一致。 */
   const formatted = formatConsoleArgs(args);
-  pushEntry(level, 'console.' + method, formatted.msg || '(empty)', formatted.detail);
+  let msg = formatted.msg;
+  if (method === 'assert') msg = msg ? 'assertion failed: ' + msg : 'assertion failed';
+  else if (method === 'group' || method === 'groupCollapsed') msg = 'group: ' + (msg || '(no label)');
+  else if (method === 'groupEnd') msg = 'group end';
+  pushEntry(CONSOLE_LEVEL[method], 'console.' + method, msg || '(empty)', formatted.detail);
 }
 
 /** window error / unhandledrejection 调用:source 用原生事件名区分。 */
@@ -398,6 +438,9 @@ function installFetch(): void {
         response = original.call(window, input as RequestInfo, init);
       } catch (e) {
         devEvent('net', '!!! ' + methodLabel + ' ' + shortUrl + ' · ' + errText(e), undefined, 'error');
+        /* 失败也进环形缓冲:net 命令要能一次看全最近几次断网 / 跨域 / 404,
+         * 不必在几千行日志里翻。 */
+        recordNetFailure('!!! ' + methodLabel + ' ' + shortUrl + ' · ' + errText(e));
         throw e;
       }
       return response.then(
@@ -405,17 +448,629 @@ function installFetch(): void {
           const ms = Math.round(performance.now() - started);
           const level: DevLogLevel = res.ok ? 'debug' : 'warn';
           devEvent('net', '<-- ' + res.status + ' ' + res.statusText + ' ' + shortUrl + ' · ' + ms + 'ms', undefined, level);
+          if (!res.ok) recordNetFailure(res.status + ' ' + res.statusText + ' ' + methodLabel + ' ' + shortUrl + ' · ' + ms + 'ms');
           return res;
         },
         (e) => {
           const ms = Math.round(performance.now() - started);
           devEvent('net', '!!! ' + methodLabel + ' ' + shortUrl + ' · ' + errText(e) + ' · ' + ms + 'ms', undefined, 'error');
+          recordNetFailure('!!! ' + methodLabel + ' ' + shortUrl + ' · ' + errText(e) + ' · ' + ms + 'ms');
           throw e;
         },
       );
     } as typeof window.fetch;
   } catch {
     fetchInstalled = false;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 环境 / GPU / 能力探测
+ * ---------------------------------------------------------------------------
+ * 排障时最先要回答的永远是「什么机器、什么内核、什么 GPU、缺哪个 API」。
+ * 这些信息散在开发者工具的七八个面板里,而且手机壳里根本看不到;这里一次性
+ * 收成可复制的文本:启动时记一条(见 logEnvironment),随时也能用 env / gpu 重打。
+ * 全部按需计算,不做轮询 —— 环境不会中途变化,没必要为它花电。
+ * ------------------------------------------------------------------------- */
+
+type UaChData = {
+  brands?: Array<{ brand: string; version: string }>;
+  mobile?: boolean;
+  platform?: string;
+};
+
+type MemoryInfo = {
+  usedJSHeapSize: number;
+  totalJSHeapSize: number;
+  jsHeapSizeLimit: number;
+};
+
+type GlInfo = {
+  vendor: string;
+  renderer: string;
+  version: string;
+  glsl: string;
+  maxTexture: number;
+};
+
+const WEBCODECS_APIS = ['VideoEncoder', 'AudioEncoder', 'VideoFrame', 'AudioData'];
+const MEDIA_MIMES = [
+  'video/webm;codecs=vp9',
+  'video/webm;codecs=vp8',
+  'video/webm',
+  'video/mp4;codecs=avc1.42E01E',
+  'video/mp4',
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/mp4',
+];
+
+function hasApi(name: string): boolean {
+  try {
+    return typeof (window as unknown as Record<string, unknown>)[name] !== 'undefined';
+  } catch {
+    return false;
+  }
+}
+
+function buildMode(): string {
+  try {
+    return import.meta.env.DEV ? 'dev' : 'production';
+  } catch {
+    return '?';
+  }
+}
+
+/** 渠道:桌面壳 / 手机壳 / 网页版 —— 与 logs.ts 同一套判定(桌面桥 + mobile 标记)。 */
+function clientText(): string {
+  const bridge = getBridge();
+  if (!bridge) return 'web';
+  return isMobileLike() ? 'mobile client' : 'desktop client';
+}
+
+/** 从 UA 里抠内核版本。Electron 壳的 UA 同时带 Chrome 与 Electron,两个都要:
+ *  报 bug 时「Electron 31 + Chromium 126」比单独一个 Chromium 号更有用。 */
+function engineText(): string {
+  try {
+    const ua = navigator.userAgent || '';
+    const electron = ua.match(/Electron\/([\d.]+)/);
+    const chrome = ua.match(/Chrome\/([\d.]+)/);
+    const firefox = ua.match(/Firefox\/([\d.]+)/);
+    const safari = ua.match(/Version\/([\d.]+).*Safari/);
+    const parts: string[] = [];
+    if (electron) parts.push('Electron/' + electron[1]);
+    if (chrome) parts.push('Chrome/' + chrome[1]);
+    if (firefox) parts.push('Firefox/' + firefox[1]);
+    if (!chrome && !firefox && safari) parts.push('Safari/' + safari[1]);
+    return parts.join(' · ') || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** UA-CH 的 brands 是结构化客户端提示;它不含真实内核版本(常被 "Not A Brand" 填充),
+ *  所以内核版本仍以 UA 为准,这里只补 brands / mobile / platform 三项。 */
+function uaChText(): string {
+  try {
+    const data = (navigator as Navigator & { userAgentData?: UaChData }).userAgentData;
+    if (!data) return 'unavailable';
+    const brands = (data.brands || []).map((item) => item.brand + '/' + item.version).join(', ');
+    return (brands || '(no brands)')
+      + ' · mobile=' + (data.mobile === true)
+      + (data.platform ? ' · platform=' + data.platform : '');
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function screenText(): string {
+  try {
+    const screen = window.screen;
+    if (!screen) return 'unavailable';
+    return screen.width + '×' + screen.height
+      + ' · avail ' + screen.availWidth + '×' + screen.availHeight
+      + ' · dpr ' + (window.devicePixelRatio || 1)
+      + ' · depth ' + (screen.colorDepth || 0);
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function viewportText(): string {
+  try {
+    const vv = window.visualViewport;
+    const vvText = vv
+      ? ' · visualViewport ' + Math.round(vv.width) + '×' + Math.round(vv.height) + ' scale=' + vv.scale.toFixed(2)
+      : ' · visualViewport unavailable';
+    return window.innerWidth + '×' + window.innerHeight + vvText;
+  } catch {
+    return 'unavailable';
+  }
+}
+
+/** CSS env(safe-area-inset-*) 没有 JS 读取接口,只能放一个探针元素量它的 padding:
+ *  这是拿到刘海 / 手势条占位的唯一可靠办法(手机端导出被裁切时先看这一项)。 */
+function safeAreaText(): string {
+  try {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;'
+      + 'padding-top:env(safe-area-inset-top,0px);padding-right:env(safe-area-inset-right,0px);'
+      + 'padding-bottom:env(safe-area-inset-bottom,0px);padding-left:env(safe-area-inset-left,0px);';
+    (document.body || document.documentElement).appendChild(probe);
+    const style = getComputedStyle(probe);
+    const value = [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].join(' ');
+    probe.remove();
+    return value;
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function localeText(): string {
+  try {
+    const langs = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language]).join(',');
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '?';
+    return 'lang ' + navigator.language + ' · langs ' + langs + ' · tz ' + tz;
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function hardwareText(): string {
+  try {
+    const nav = navigator as Navigator & { deviceMemory?: number };
+    const cores = navigator.hardwareConcurrency || 0;
+    const memory = typeof nav.deviceMemory === 'number' ? nav.deviceMemory + 'GB' : 'n/a';
+    return 'cores ' + (cores || '?') + ' · deviceMemory ' + memory + ' · platform ' + (navigator.platform || '?');
+  } catch {
+    return 'unavailable';
+  }
+}
+
+/** performance.memory 只有 Chromium 系有;拿不到就返回 null,由调用方写 unavailable。 */
+function readMemory(): MemoryInfo | null {
+  try {
+    const memory = (performance as Performance & { memory?: MemoryInfo }).memory;
+    if (!memory || typeof memory.usedJSHeapSize !== 'number') return null;
+    return memory;
+  } catch {
+    return null;
+  }
+}
+
+function mbText(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
+}
+
+function webCodecsText(): string {
+  return WEBCODECS_APIS.map((name) => name + '=' + (hasApi(name) ? 'yes' : 'no')).join(' · ');
+}
+
+/** isTypeSupported 的结果矩阵:只报是否支持,不真的去构造 MediaRecorder(那会要权限)。 */
+function mediaRecorderText(): string {
+  try {
+    if (typeof MediaRecorder === 'undefined') return 'missing';
+    const ok: string[] = [];
+    const no: string[] = [];
+    for (const mime of MEDIA_MIMES) {
+      let supported = false;
+      try {
+        supported = MediaRecorder.isTypeSupported(mime);
+      } catch {
+        supported = false;
+      }
+      (supported ? ok : no).push(mime);
+    }
+    return 'yes · ok=[' + (ok.join(', ') || '(none)') + '] · no=[' + (no.join(', ') || '(none)') + ']';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function captureStreamText(): string {
+  try {
+    const canvas = document.createElement('canvas');
+    return typeof canvas.captureStream === 'function' ? 'yes' : 'no';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function readGlInfo(kind: 'webgl' | 'webgl2'): GlInfo | null {
+  let context: WebGLRenderingContext | WebGL2RenderingContext | null = null;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    context = (kind === 'webgl2' ? canvas.getContext('webgl2') : canvas.getContext('webgl')) as WebGLRenderingContext | WebGL2RenderingContext | null;
+  } catch {
+    context = null;
+  }
+  if (!context) return null;
+  /* 先落到 const:下面的 param 是个闭包,TS 不保证闭包执行时 let 仍是非空 */
+  const gl = context;
+  const param = (pname: number): string => {
+    try {
+      return String(gl.getParameter(pname) ?? '?');
+    } catch {
+      return '?';
+    }
+  };
+  const info: GlInfo = {
+    vendor: param(gl.VENDOR),
+    renderer: param(gl.RENDERER),
+    version: param(gl.VERSION),
+    glsl: param(gl.SHADING_LANGUAGE_VERSION),
+    maxTexture: Number(gl.getParameter(gl.MAX_TEXTURE_SIZE) || 0),
+  };
+  try {
+    /* WEBGL_debug_renderer_info 才能拿到真实 GPU 名(ANGLE 包装后的显卡型号);
+     * 部分隐私设置会屏蔽它,那时保留标准 VENDOR/RENDERER,不要写 "?" 让人误判。 */
+    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info') as
+      | { UNMASKED_VENDOR_WEBGL: number; UNMASKED_RENDERER_WEBGL: number }
+      | null;
+    if (debugInfo) {
+      info.vendor = param(debugInfo.UNMASKED_VENDOR_WEBGL);
+      info.renderer = param(debugInfo.UNMASKED_RENDERER_WEBGL);
+    }
+  } catch {
+    /* 扩展不可用:保留标准值 */
+  }
+  try {
+    /* 用完立刻释放:环境横幅可能被反复打印,不能每次留下一个 WebGL 上下文 */
+    const lose = gl.getExtension('WEBGL_lose_context') as { loseContext?: () => void } | null;
+    if (lose && typeof lose.loseContext === 'function') lose.loseContext();
+  } catch {
+    /* 释放失败不影响结果 */
+  }
+  return info;
+}
+
+function gpuText(): string {
+  const gl = readGlInfo('webgl');
+  const gl2 = readGlInfo('webgl2');
+  if (!gl && !gl2) return 'WebGL unavailable';
+  const main = gl2 || gl;
+  return (main ? main.renderer : '?') + ' · webgl=' + (gl ? 'yes' : 'no') + ' webgl2=' + (gl2 ? 'yes' : 'no');
+}
+
+function collectGpuLines(): string[] {
+  const lines: string[] = [];
+  const gl = readGlInfo('webgl');
+  const gl2 = readGlInfo('webgl2');
+  lines.push('GPU · webgl=' + (gl ? 'yes' : 'no') + ' · webgl2=' + (gl2 ? 'yes' : 'no'));
+  const pairs: Array<[string, GlInfo | null]> = [['webgl', gl], ['webgl2', gl2]];
+  for (const [label, info] of pairs) {
+    if (!info) {
+      lines.push('  ' + label + ': unavailable');
+      continue;
+    }
+    lines.push('  ' + label + ' vendor: ' + clip(info.vendor, 200));
+    lines.push('  ' + label + ' renderer: ' + clip(info.renderer, 300));
+    lines.push('  ' + label + ' version: ' + clip(info.version, 200));
+    lines.push('  ' + label + ' glsl: ' + clip(info.glsl, 160) + ' · maxTexture: ' + info.maxTexture);
+  }
+  return lines;
+}
+
+/** document.fonts 是 FontFaceSet:lib.dom 只声明了 forEach,size 需要自己确认。
+ *  字体注册失败会让导出文字换字体,所以 Family 列表要能一眼看到。 */
+function fontsText(): string {
+  try {
+    const fonts = document.fonts as FontFaceSet & { size?: number };
+    if (!fonts) return 'unavailable';
+    const families = new Set<string>();
+    fonts.forEach((face) => {
+      const family = String(face.family || '').replace(/^["']|["']$/g, '');
+      if (family) families.add(family);
+    });
+    const list = Array.from(families);
+    const shown = list.slice(0, 24).join(', ') || '(none)';
+    return 'size ' + (typeof fonts.size === 'number' ? fonts.size : list.length)
+      + ' · families ' + shown
+      + (list.length > 24 ? ' …(+' + (list.length - 24) + ')' : '');
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function storageText(): string {
+  try {
+    const key = '__dfae_probe__';
+    window.localStorage.setItem(key, '1');
+    window.localStorage.removeItem(key);
+    return 'localStorage=ok';
+  } catch {
+    return 'localStorage=blocked';
+  }
+}
+
+/** 环境横幅的明细(多行)。env 命令与启动那条日志共用同一份输出,保证两处口径一致。
+ *  gpu 由调用方传进来:探测一次 WebGL 要建两个上下文,标题与明细各算一遍太浪费。 */
+function collectEnvLines(gpu: string): string[] {
+  const memory = readMemory();
+  return [
+    'app: ' + (versionLabel() ? 'v' + versionLabel() : 'version unknown') + ' · ' + clientText() + ' · build ' + buildMode(),
+    'ua: ' + clip(navigator.userAgent || '?', 400),
+    'engine: ' + engineText() + ' · platform ' + (navigator.platform || '?'),
+    'ua-ch: ' + uaChText(),
+    'screen: ' + screenText(),
+    'viewport: ' + viewportText(),
+    'safe-area: ' + safeAreaText(),
+    'locale: ' + localeText(),
+    'hardware: ' + hardwareText(),
+    'heap: ' + (memory
+      ? mbText(memory.usedJSHeapSize) + ' used · ' + mbText(memory.totalJSHeapSize) + ' total · limit ' + mbText(memory.jsHeapSizeLimit)
+      : 'unavailable'),
+    'secure: ' + (window.isSecureContext ? 'yes' : 'no') + ' · webcodecs: ' + webCodecsText(),
+    'mediarecorder: ' + mediaRecorderText(),
+    'captureStream: ' + captureStreamText(),
+    'gpu: ' + gpu,
+    'fonts: ' + fontsText(),
+    'storage: ' + storageText(),
+  ];
+}
+
+function envSummary(gpu: string): string {
+  const parts: string[] = [];
+  try {
+    parts.push(versionLabel() ? 'v' + versionLabel() : 'v?');
+    parts.push(clientText());
+    parts.push(engineText());
+    if (window.screen) parts.push(window.screen.width + '×' + window.screen.height + '@' + (window.devicePixelRatio || 1));
+    parts.push(clip(gpu, 90));
+  } catch {
+    /* 任意一项失败就保留已经拼好的部分,整条横幅不该因为一个 API 抛错而消失 */
+  }
+  return parts.join(' · ');
+}
+
+/** 导出链路强依赖的能力:缺了就在启动日志里标红,省得用户报「导出没反应」。 */
+function missingCapabilities(): string[] {
+  const missing: string[] = [];
+  try {
+    if (!window.isSecureContext) missing.push('isSecureContext=false · WebCodecs / 剪贴板 / 存储访问可能被限制');
+    if (!hasApi('VideoEncoder') || !hasApi('VideoFrame')) missing.push('WebCodecs 视频编码缺失(VideoEncoder / VideoFrame)· MP4 / WebM 导出会失败');
+    if (!hasApi('AudioEncoder') || !hasApi('AudioData')) missing.push('WebCodecs 音频编码缺失(AudioEncoder / AudioData)· 带音轨的导出会失败');
+    if (captureStreamText() !== 'yes') missing.push('canvas.captureStream 缺失 · 逐帧推流录制的兜底路径不可用');
+  } catch {
+    /* 探测失败就当没缺:宁可少一条警告,也不要让人误判 */
+  }
+  return missing;
+}
+
+/* ---------------------------------------------------------------------------
+ * 性能采集:长任务 / 导航耗时 / 内存与帧率采样
+ * ---------------------------------------------------------------------------
+ * 采样只在日志页可见(或开发者模式下)运行:rAF 回调本身便宜,但 performance.memory
+ * 的读取和 30s 定时器在后台页里纯属耗电,手机壳上尤其明显;sample off 可以整体关掉。
+ * 采样结果只进环形缓冲,不写进日志流 —— 排障时用 perf / frames 按需看,
+ * 否则日志页开着就每 30s 多一行,真正的错误会被挤走。
+ * ------------------------------------------------------------------------- */
+
+const SAMPLE_MS = 30000;
+const MAX_SAMPLES = 40;
+const MAX_NET_FAILURES = 40;
+const MAX_LONG_TASKS = 40;
+const FRAME_WINDOW_MS = 5000;
+const MAX_FRAME_STAMPS = 900;
+
+type MemSample = { t: number; used: number; total: number; limit: number; fps: number };
+type NetFailure = { t: number; msg: string };
+type LongTask = { t: number; ms: number };
+type FrameStats = { fps: number; frames: number; spanMs: number };
+
+const memSamples: MemSample[] = [];
+const netFailures: NetFailure[] = [];
+const longTasks: LongTask[] = [];
+const frameStamps: number[] = [];
+let sampleEnabled = true;
+let sampleTimer = 0;
+let frameRaf = 0;
+let hiddenSince = 0;
+
+/** 只有日志页在可见状态时才值得采样;页面切走 / 窗口最小化都立刻停。 */
+function samplingAllowed(): boolean {
+  try {
+    if (document.visibilityState === 'hidden') return false;
+    return isLogsPage() || mode === 'dev';
+  } catch {
+    return false;
+  }
+}
+
+function pruneFrameStamps(now: number): void {
+  while (frameStamps.length > MAX_FRAME_STAMPS) frameStamps.shift();
+  /* 留两个窗口:统计按最近 5s,更老的戳没有用处,只会让数组一直涨 */
+  while (frameStamps.length && now - frameStamps[0] > FRAME_WINDOW_MS * 2) frameStamps.shift();
+}
+
+function onFrame(stamp: number): void {
+  frameRaf = 0;
+  try {
+    frameStamps.push(stamp);
+    pruneFrameStamps(stamp);
+  } catch {
+    /* 采样失败不能影响页面 */
+  }
+  if (samplingAllowed()) frameRaf = requestAnimationFrame(onFrame);
+}
+
+function startFrameLoop(): void {
+  if (frameRaf || !samplingAllowed()) return;
+  frameRaf = requestAnimationFrame(onFrame);
+}
+
+function stopFrameLoop(): void {
+  if (!frameRaf) return;
+  cancelAnimationFrame(frameRaf);
+  frameRaf = 0;
+}
+
+/** 最近 windowMs 的粗略帧率:按 rAF 时间戳算,不依赖任何性能 API。 */
+function frameStats(windowMs = FRAME_WINDOW_MS): FrameStats {
+  try {
+    const now = performance.now();
+    let start = 0;
+    while (start < frameStamps.length && now - frameStamps[start] > windowMs) start += 1;
+    const frames = frameStamps.length - start;
+    if (frames < 2) return { fps: 0, frames, spanMs: 0 };
+    const span = frameStamps[frameStamps.length - 1] - frameStamps[start];
+    return { fps: span > 0 ? ((frames - 1) * 1000) / span : 0, frames, spanMs: span };
+  } catch {
+    return { fps: 0, frames: 0, spanMs: 0 };
+  }
+}
+
+function takeSample(): void {
+  try {
+    const memory = readMemory();
+    /* 没有 performance.memory(部分 WebView)就不采样:全是 0 的样本比没有更误导 */
+    if (!memory) return;
+    const stats = frameStats();
+    memSamples.push({
+      t: Date.now(),
+      used: memory.usedJSHeapSize,
+      total: memory.totalJSHeapSize,
+      limit: memory.jsHeapSizeLimit,
+      fps: stats.fps,
+    });
+    if (memSamples.length > MAX_SAMPLES) memSamples.splice(0, memSamples.length - MAX_SAMPLES);
+  } catch {
+    /* 采样失败就当这次没采到 */
+  }
+}
+
+function stopSampleTimer(): void {
+  if (!sampleTimer) return;
+  window.clearInterval(sampleTimer);
+  sampleTimer = 0;
+}
+
+function ensureSampleTimer(): void {
+  if (!sampleEnabled || !samplingAllowed()) {
+    stopSampleTimer();
+    return;
+  }
+  if (sampleTimer) return;
+  sampleTimer = window.setInterval(takeSample, SAMPLE_MS);
+  /* 先立刻采一次:否则 perf 命令在头 30s 里只能看到 "collecting" */
+  takeSample();
+}
+
+/** 可见性 / 页面切换 / sample 开关都走这里:统一决定 rAF 与 30s 定时器该不该开。 */
+function refreshSampling(): void {
+  if (!samplingAllowed()) {
+    stopFrameLoop();
+    stopSampleTimer();
+    return;
+  }
+  startFrameLoop();
+  if (sampleEnabled) ensureSampleTimer();
+  else stopSampleTimer();
+}
+
+function recordNetFailure(msg: string): void {
+  try {
+    netFailures.push({ t: Date.now(), msg: clip(msg, 400) });
+    if (netFailures.length > MAX_NET_FAILURES) netFailures.splice(0, netFailures.length - MAX_NET_FAILURES);
+  } catch {
+    /* 诊断缓冲失败无所谓,不能影响网络请求本身 */
+  }
+}
+
+function ageText(t: number): string {
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (sec < 60) return '-' + sec + 's';
+  if (sec < 3600) return '-' + Math.floor(sec / 60) + 'm' + (sec % 60) + 's';
+  return '-' + Math.floor(sec / 3600) + 'h' + Math.floor((sec % 3600) / 60) + 'm';
+}
+
+/** 长任务只报 >50ms 的:再短的抖动在动画编辑器里到处都是,记下来只会淹没真问题。
+ *  >200ms 提到 WARN:那种量级已经会让掉帧肉眼可见。 */
+function installPerfObservers(): void {
+  try {
+    if (typeof PerformanceObserver !== 'undefined') {
+      const supported = PerformanceObserver.supportedEntryTypes || [];
+      if (supported.indexOf('longtask') >= 0) {
+        const observer = new PerformanceObserver((list) => {
+          try {
+            for (const entry of list.getEntries()) {
+              if (!(entry.duration > 50)) continue;
+              const ms = Math.round(entry.duration);
+              longTasks.push({ t: Date.now(), ms });
+              if (longTasks.length > MAX_LONG_TASKS) longTasks.splice(0, longTasks.length - MAX_LONG_TASKS);
+              devEvent(
+                'perf',
+                'longtask ' + ms + 'ms',
+                'start ' + Math.round(entry.startTime) + 'ms · name ' + (entry.name || 'anonymous'),
+                ms >= 200 ? 'warn' : 'debug',
+              );
+            }
+          } catch {
+            /* 单条 entry 解析失败不能把观察者打断 */
+          }
+        });
+        observer.observe({ entryTypes: ['longtask'] });
+      }
+    }
+  } catch {
+    /* 老内核 / 不支持 longtask:静默跳过 */
+  }
+  /* loadEventEnd 要等 load 事件派发**结束**之后才写进 performance 条目:
+   * 在 load 监听器里同步读只会拿到 0,所以再等一个任务(load 之后 initDevLog
+   * 可能还没跑,也要补一次)。 */
+  if (document.readyState === 'complete') reportNavigationTiming();
+  else window.addEventListener('load', () => window.setTimeout(reportNavigationTiming, 0), { once: true });
+}
+
+function reportNavigationTiming(): void {
+  try {
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    if (!nav) return;
+    const dcl = Math.round(nav.domContentLoadedEventEnd);
+    if (!dcl) return;
+    const load = Math.round(nav.loadEventEnd || 0);
+    devEvent('perf', 'navigation dcl=' + dcl + 'ms load=' + (load > 0 ? load + 'ms' : 'n/a'), [
+      'type: ' + (nav.type || '?'),
+      'responseEnd: ' + Math.round(nav.responseEnd) + 'ms',
+      'domInteractive: ' + Math.round(nav.domInteractive) + 'ms',
+      'domContentLoaded: ' + dcl + 'ms',
+      'load: ' + (load > 0 ? load + 'ms' : 'n/a'),
+      'transferSize: ' + (nav.transferSize || 0) + 'B',
+    ].join('\n'), 'info');
+  } catch {
+    /* 老内核没有 navigation timing:静默跳过 */
+  }
+}
+
+/** 资源加载失败(img / script / link 的 error 不冒泡,只能在捕获阶段听)。
+ *  这类失败不会产生 JS 异常,logs.ts 的异常采集会跳过它,开发者日志必须自己收:
+ *  白屏 / 缺图 / 样式没生效时,先看这里有没有 404。 */
+function installResourceErrors(): void {
+  window.addEventListener('error', (event) => {
+    try {
+      if (event.message) return; // 真正的 JS 异常交给 logs.ts,避免同一件事记两遍
+      const target = event.target as (HTMLElement & { src?: string; href?: string; currentSrc?: string }) | null;
+      if (!target || !target.tagName) return;
+      const tag = String(target.tagName).toLowerCase();
+      const url = String(target.currentSrc || target.src || target.href || '');
+      const msg = '<' + tag + '> load failed' + (url ? ' · ' + compactUrl(url) : '');
+      devEvent('res', msg, 'tag: ' + tag + '\nurl: ' + (url || '(none)'), 'warn');
+      recordNetFailure(msg);
+    } catch {
+      /* 资源错误采集失败不影响页面 */
+    }
+  }, true);
+}
+
+/** 启动环境横幅:整组只写一条(明细全部塞进 detail),避免一开机就刷屏。 */
+function logEnvironment(): void {
+  const gpu = gpuText();
+  devEvent('env', 'environment · ' + envSummary(gpu), collectEnvLines(gpu).join('\n'), 'info');
+  const missing = missingCapabilities();
+  if (missing.length) {
+    devEvent('env', 'missing capability · ' + missing.length + ' item(s)', missing.map((item) => '- ' + item).join('\n'), 'error');
   }
 }
 
@@ -795,6 +1450,70 @@ function clearDevLog(keepCommand?: string): void {
   render();
 }
 
+/* ---------------------------------------------------------------------------
+ * 诊断命令输出
+ * ---------------------------------------------------------------------------
+ * 输出走命令行回显区(不只写日志流):这些是一次性快照,不该和业务日志抢位置,
+ * 也不该被等级 / 关键词筛选挡住 —— 用户敲 env 就是想立刻看到结果。
+ * ------------------------------------------------------------------------- */
+
+function fpsText(stats: FrameStats): string {
+  if (stats.frames < 2) return 'collecting';
+  return stats.fps.toFixed(1) + ' fps · ' + stats.frames + ' frames / ' + (stats.spanMs / 1000).toFixed(1) + 's';
+}
+
+function printEnv(): void {
+  const gpu = gpuText();
+  addLocal('out', 'ENV · ' + envSummary(gpu));
+  for (const line of collectEnvLines(gpu)) addLocal('out', '  ' + line);
+}
+
+function printGpu(): void {
+  for (const line of collectGpuLines()) addLocal('out', '  ' + line);
+}
+
+function printFrames(): void {
+  const stats = frameStats();
+  if (stats.frames < 2) {
+    startFrameLoop();
+    addLocal('out', 'frames: collecting… the rAF sampler only runs while the logs page is visible');
+    return;
+  }
+  addLocal('out', 'frames · ' + fpsText(stats));
+}
+
+function printPerf(): void {
+  const memory = readMemory();
+  const stats = frameStats();
+  addLocal('out', 'PERF · heap '
+    + (memory ? mbText(memory.usedJSHeapSize) + ' / limit ' + mbText(memory.jsHeapSizeLimit) : 'unavailable')
+    + ' · fps ' + (stats.frames >= 2 ? stats.fps.toFixed(1) : 'collecting')
+    + ' · sample ' + (sampleEnabled ? 'on' : 'off')
+    + ' · longtasks ' + longTasks.length);
+  /* 采样器还没跑过(刚打开日志页)就先补一个点,别让 perf 只回一行标题 */
+  if (!memSamples.length && memory) takeSample();
+  for (const sample of memSamples.slice(-8)) {
+    addLocal('out', '  ' + ageText(sample.t)
+      + ' heap ' + mbText(sample.used) + ' / limit ' + mbText(sample.limit)
+      + ' · fps ' + (sample.fps > 0 ? sample.fps.toFixed(1) : 'n/a'));
+  }
+  if (longTasks.length) {
+    for (const task of longTasks.slice(-3)) addLocal('out', '  ' + ageText(task.t) + ' longtask ' + task.ms + 'ms');
+  }
+}
+
+function printNetFailures(rest: string): void {
+  if (!netFailures.length) {
+    addLocal('out', 'net: no failures recorded in this session');
+    return;
+  }
+  const asked = Number(rest);
+  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(MAX_NET_FAILURES, Math.floor(asked)) : 10;
+  const list = netFailures.slice(-limit);
+  addLocal('out', 'NET · ' + netFailures.length + ' failure(s) · showing last ' + list.length);
+  for (const failure of list) addLocal('out', '  ' + nativeTime(failure.t) + ' ' + failure.msg);
+}
+
 function runCommand(raw: string): void {
   const command = raw.trim();
   if (!command) return;
@@ -873,6 +1592,25 @@ function runCommand(raw: string): void {
     addLocal('out', 'DFAE ' + (versionLabel() || 'unknown') + ' · devlog session');
     return;
   }
+  if (name === 'env') { printEnv(); return; }
+  if (name === 'gpu') { printGpu(); return; }
+  if (name === 'frames') { printFrames(); return; }
+  if (name === 'perf') { printPerf(); return; }
+  if (name === 'net') { printNetFailures(rest); return; }
+  if (name === 'sample') {
+    const value = rest.toLowerCase();
+    if (!value) sampleEnabled = !sampleEnabled;
+    else if (value === 'on' || value === 'true' || value === '1') sampleEnabled = true;
+    else if (value === 'off' || value === 'false' || value === '0') sampleEnabled = false;
+    else { addLocal('err', 'usage: sample [on|off]'); return; }
+    /* refreshSampling 会按「是否在日志页」决定开不开定时器:off 之后即使切回
+     * 日志页也不会自己复活,必须再敲 sample on —— 开关语义要明确。 */
+    refreshSampling();
+    addLocal('out', 'sample = ' + (sampleEnabled
+      ? 'on · every ' + SAMPLE_MS / 1000 + 's while the logs page is visible'
+      : 'off · periodic sampling stopped (perf / frames still work)'));
+    return;
+  }
   addLocal('err', 'unknown command: ' + name + ' (type help)');
 }
 
@@ -891,6 +1629,9 @@ function readMode(): DevMode {
 function setMode(next: DevMode, persist = true, focusCommand = true): void {
   mode = next;
   if (persist) persistMode(next);
+  /* 采样是否该跑和视图有关(开发者模式也算「正在看日志」),和有没有绑定到 DOM 无关,
+   * 所以放在下面的 ui 判空前:启动阶段 ui 可能还没绑好。 */
+  refreshSampling();
   if (!ui) return;
   ui.root.dataset.logMode = next;
   ui.userPane.hidden = next === 'dev';
@@ -1035,9 +1776,22 @@ function installUiEvents(): void {
     if (!detail) return;
     devEvent('ui', 'view -> ' + (detail.page || '?'), undefined, 'debug');
     if (detail.page === 'logs' && mode === 'dev') render();
+    /* 离开日志页要停掉 rAF / 定时器,回来再起:只在看日志时才付出这份开销 */
+    refreshSampling();
   });
   document.addEventListener('visibilitychange', () => {
-    devEvent('ui', 'visibility = ' + document.visibilityState, undefined, 'debug');
+    const state = document.visibilityState;
+    let suffix = '';
+    if (state === 'hidden') {
+      hiddenSince = Date.now();
+    } else if (hiddenSince) {
+      /* 前后台切换是「导出中断」类问题的第一现场:回来时补上离开了多久,
+       * 才能判断是切后台被节流、还是导出本身卡住。 */
+      suffix = ' · hidden ' + ((Date.now() - hiddenSince) / 1000).toFixed(1) + 's';
+      hiddenSince = 0;
+    }
+    devEvent('ui', 'visibility = ' + state + suffix, undefined, 'debug');
+    refreshSampling();
   });
   window.addEventListener('online', () => devEvent('net', 'browser online', undefined, 'debug'));
   window.addEventListener('offline', () => devEvent('net', 'browser offline', undefined, 'warn'));
@@ -1055,7 +1809,8 @@ function logBoot(): void {
     'href: ' + location.href,
     'bridge: ' + (bridge ? 'window.dfaeLogs' : 'none (session only)'),
     'mode: ' + mode,
-    'build: ' + (() => { try { return import.meta.env.DEV ? 'dev' : 'production'; } catch { return '?'; } })(),
+    'build: ' + buildMode(),
+    'env: type env / gpu / perf / frames / net in the terminal for details',
   ].join('\n'), 'info');
   devEvent('app', 'devlog mode restored: ' + mode, undefined, 'debug');
 }
@@ -1067,7 +1822,13 @@ export function initDevLog(): void {
   ui = bindUi();
   installFetch();
   installUiEvents();
+  installResourceErrors();
+  installPerfObservers();
   mode = readMode();
   if (ui) setMode(mode, false);
   logBoot();
+  /* 环境横幅放在最后:前面的 boot 行已经标好「什么时候、哪个壳」,
+   * 这一条只补「什么机器、什么能力」,两行合起来就是一份可直接贴进 issue 的现场。 */
+  logEnvironment();
+  refreshSampling();
 }

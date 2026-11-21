@@ -7,7 +7,8 @@
  *   · console.debug / log / info / warn / error —— 包装后原样转发,再记一条;
  *   · window 的 error / unhandledrejection —— 未捕获异常与未处理的 Promise 拒绝;
  *   · 状态栏 —— 由 main.ts 的 setStatus 转发(它本来就是"最近一次操作的结果");
- *   · 关键业务事件 —— main.ts / start-screen.ts 在载入、导出、更新等节点显式记一条。
+ *   · 关键业务事件 —— main.ts / start-screen.ts 在载入、导出、更新等节点显式记一条;
+ *   · 启动环境摘要 —— 版本 / 渠道 / 平台 / 内核 / 屏幕 / 语言,UA 只留截断版。
  *
  * 落盘(仅桌面客户端):
  *   主进程(见 electron/logs.cjs)把同一份记录写成 JSONL:<userData>/logs/dfae.log,
@@ -116,6 +117,44 @@ function versionLabel(): string {
 function errText(e: unknown): string {
   if (e instanceof Error) return e.message || e.name;
   return String(e || '未知错误');
+}
+
+/** 内核版本:Electron 壳的 UA 同时带 Chrome 与 Electron,两个都保留。
+ *  与 devlog 的 env 横幅同一套抠法,只是这里只取版本串。 */
+function engineText(): string {
+  try {
+    const ua = navigator.userAgent || '';
+    const parts: string[] = [];
+    const electron = ua.match(/Electron\/([\d.]+)/);
+    const chrome = ua.match(/Chrome\/([\d.]+)/);
+    if (electron) parts.push('Electron/' + electron[1]);
+    if (chrome) parts.push('Chrome/' + chrome[1]);
+    if (!parts.length) {
+      const firefox = ua.match(/Firefox\/([\d.]+)/);
+      if (firefox) parts.push('Firefox/' + firefox[1]);
+    }
+    return parts.join(' · ') || '未知内核';
+  } catch {
+    return '未知内核';
+  }
+}
+
+/** 平台名优先用 UA-CH(结构化的),老内核退回 navigator.platform。 */
+function platformText(): string {
+  try {
+    const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+    return nav.userAgentData?.platform || navigator.platform || '未知平台';
+  } catch {
+    return '未知平台';
+  }
+}
+
+function timeZoneText(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '未知时区';
+  } catch {
+    return '未知时区';
+  }
 }
 
 function clip(s: string, max: number): string {
@@ -261,6 +300,59 @@ function captureConsole(): void {
       }
     };
   }
+  captureExtraConsole();
+}
+
+let extraConsoleCaptured = false;
+
+/**
+ * assert / table / group 的降级捕获。
+ *
+ * 只转给开发者日志:用户日志是中文业务时间线,把 console.table 的表格和
+ * group 的缩进收进去只会把真正的事件冲散;而开发者日志本来就是原始控制台镜像,
+ * 少了这几个方法,「为什么断言失败没声音 / 表格被吞了」就无从查起。
+ * 等级与控制台一致:assert 失败 = error,table = info,group/groupEnd = debug。
+ */
+function captureExtraConsole(): void {
+  if (extraConsoleCaptured) return;
+  extraConsoleCaptured = true;
+
+  /* assert:浏览器只在断言失败时打印,成功的断言不该在日志里留一条"什么都没发生"。 */
+  try {
+    const nativeAssert = console.assert.bind(console);
+    console.assert = (condition?: unknown, ...args: unknown[]) => {
+      nativeAssert(!!condition, ...args);
+      if (condition) return;
+      try { devCaptureConsole('assert', args); } catch { /* 开发者日志失败不影响控制台 */ }
+    };
+  } catch { /* 没有 console.assert 的环境跳过 */ }
+
+  /* table:第二个参数只是列筛选,原样附在后面,别让数据看起来像少了字段。 */
+  try {
+    const nativeTable = console.table.bind(console);
+    console.table = (data?: unknown, columns?: readonly string[]) => {
+      nativeTable(data, columns);
+      try { devCaptureConsole('table', columns === undefined ? [data] : [data, columns]); } catch { /* 同上 */ }
+    };
+  } catch { /* 没有 console.table 的环境跳过 */ }
+
+  try {
+    const nativeGroup = console.group.bind(console);
+    console.group = (...args: unknown[]) => {
+      nativeGroup(...args);
+      try { devCaptureConsole('group', args); } catch { /* 同上 */ }
+    };
+    const nativeGroupCollapsed = console.groupCollapsed.bind(console);
+    console.groupCollapsed = (...args: unknown[]) => {
+      nativeGroupCollapsed(...args);
+      try { devCaptureConsole('groupCollapsed', args); } catch { /* 同上 */ }
+    };
+    const nativeGroupEnd = console.groupEnd.bind(console);
+    console.groupEnd = () => {
+      nativeGroupEnd();
+      try { devCaptureConsole('groupEnd', []); } catch { /* 同上 */ }
+    };
+  } catch { /* 没有分组 API 的环境跳过 */ }
 }
 
 /* ---------------------------------------------------------------------------
@@ -269,34 +361,62 @@ function captureConsole(): void {
 
 let errorsCaptured = false;
 
+/** 未捕获异常的源码位置:filename:line:col。跨域脚本可能只有一个 "Script error." */
+function errorLocation(event: ErrorEvent): string {
+  const file = String(event.filename || '');
+  if (!file) return '';
+  return file + (event.lineno ? ':' + event.lineno + (event.colno ? ':' + event.colno : '') : '');
+}
+
+/**
+ * Promise 拒绝原因的两种形态:
+ *   · Error → 取 message + 原生堆栈(行号最准);
+ *   · 其它   → 安全 JSON 化并截断。Promise.reject(巨大对象)不能把整块数据
+ *     塞进一条日志,否则一次拒绝就能把环形缓冲挤掉几十条。
+ */
+function reasonParts(reason: unknown): { text: string; detail?: string } {
+  try {
+    if (reason instanceof Error) {
+      return {
+        text: reason.message || reason.name,
+        ...(reason.stack ? { detail: String(reason.stack) } : {}),
+      };
+    }
+    if (reason === undefined) return { text: 'undefined' };
+    if (reason === null) return { text: 'null' };
+    if (typeof reason === 'string') return { text: clip(reason, 800) };
+    const json = clip(argToText(reason), 8000);
+    return { text: clip(json, 800), ...(json.length > 800 ? { detail: json } : {}) };
+  } catch {
+    return { text: '[无法序列化的拒绝原因]' };
+  }
+}
+
 function captureGlobalErrors(): void {
   if (errorsCaptured) return;
   errorsCaptured = true;
   window.addEventListener('error', (event) => {
     /* 资源加载失败也会走到这里(message 为空、target 是 img/script):
-     * 它不是 JS 异常,当成错误记下来只会制造噪音,跳过。 */
+     * 它不是 JS 异常,当成错误记下来只会制造噪音,跳过 —— 开发者日志会单独收
+     * 一条 source=res 的记录(见 devlog.ts 的资源捕获)。 */
     if (!event.message) return;
-    const where = event.filename
-      ? ' @ ' + event.filename + (event.lineno ? ':' + event.lineno + (event.colno ? ':' + event.colno : '') : '')
-      : '';
+    const location = errorLocation(event);
+    const where = location ? ' @ ' + location : '';
     const err = event.error instanceof Error ? event.error : null;
-    pushEntry('error', '异常', event.message + where, err && err.stack ? String(err.stack) : undefined);
+    /* 有 Error 就有原生堆栈,优先用它;没有(跨域脚本)时才用 filename:line:col
+     * 造一行,两边都写同一份信息只会让一条日志变成两遍重复。 */
+    const detail = err && err.stack ? String(err.stack) : (location ? 'at ' + location : undefined);
+    pushEntry('error', '异常', event.message + where, detail);
     try {
-      devCaptureError('window.error', event.message + where, err && err.stack ? String(err.stack) : undefined);
+      devCaptureError('window.error', event.message + where, detail);
     } catch { /* 开发者日志失败不影响用户日志 */ }
   }, true);
 
   window.addEventListener('unhandledrejection', (event) => {
-    const reason = event.reason;
-    const text = reason instanceof Error ? reason.message : argToText(reason);
-    pushEntry(
-      'error',
-      '异常',
-      '未处理的 Promise 拒绝: ' + text,
-      reason instanceof Error && reason.stack ? String(reason.stack) : undefined,
-    );
+    const parts = reasonParts(event.reason);
+    pushEntry('error', '异常', '未处理的 Promise 拒绝: ' + parts.text, parts.detail);
     try {
-      devCaptureError('unhandledrejection', text, reason instanceof Error && reason.stack ? String(reason.stack) : undefined);
+      devCaptureError('unhandledrejection', parts.text, parts.detail);
     } catch { /* 开发者日志失败不影响用户日志 */ }
   });
 }
@@ -1075,6 +1195,19 @@ export function initLogs(): void {
     'UA: ' + navigator.userAgent,
     '语言: ' + navigator.language + ' · 视口: ' + window.innerWidth + '×' + window.innerHeight,
     '地址: ' + location.href,
+  ].join('\n'));
+
+  /* 启动环境摘要:和上面那条分工不同 —— 那条回答「这次什么时候、哪个壳」,
+   * 这条回答「这台机器什么环境」,一眼能贴进 issue。UA 只留截断版:全文上面已有,
+   * 重复一份只会把日志页拉长。 */
+  pushEntry('info', '环境', '启动环境 · v' + (version || '未知') + ' · ' + client + ' · ' + platformText() + ' · ' + engineText(), [
+    '版本: v' + (version || '未知'),
+    '渠道: ' + client,
+    '平台: ' + platformText() + ' · 内核: ' + engineText(),
+    '屏幕: ' + (window.screen ? window.screen.width + '×' + window.screen.height + ' @ ' + (window.devicePixelRatio || 1) : '未知'),
+    '视口: ' + window.innerWidth + '×' + window.innerHeight,
+    '语言: ' + navigator.language + ' · 时区: ' + timeZoneText(),
+    'UA(截断): ' + clip(navigator.userAgent || '', 160),
   ].join('\n'));
 
   if (desktop) {

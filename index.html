@@ -160,9 +160,15 @@
             <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
             <span>主页</span>
           </button>
-          <button type="button" class="rail-item" data-page="editor" title="编辑器">
+          <button type="button" class="rail-item" data-page="editor" title="动画编辑器">
             <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997A1 1 0 0 1 9 14.996z"/></svg>
-            <span>编辑器</span>
+            <span>动画编辑器</span>
+          </button>
+          <!-- 图片编辑器:独立页面(#viewImage),打开 PSD 改文字 / 颜色 / 透明度,
+               见 src/image-page.ts。手机端不出现(依赖桌面端落盘与较大的屏幕)。 -->
+          <button type="button" class="rail-item" data-page="image" title="图片编辑器">
+            <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+            <span>图片编辑器</span>
           </button>
           <!-- 音频提取:直接从游戏 pak 里抽 Wwise 音频(.wem)。只在桌面端可用:
                主进程要读 pak、调 Oodle 解压、再用 vgmstream 解码试听。见 electron/audio/。 -->
@@ -450,6 +456,14 @@
           </button>
           <button type="button" id="btnNudgeReset" class="nudge-btn" title="重置为 0">重置</button>
         </div>
+        <!-- 图标大小:改图标图层自身的 ks.s(锚点就在图片中心),等比缩放不裁切、不挪位;
+             百分比相对出厂尺寸,100% = 原样;位置暴露的两段各记各的 -->
+        <div class="icon-nudge icon-scale" id="iconScaleRow" title="缩放图标:相对出厂大小的百分比,绕图标中心等比缩放(SVG / Canvas、导出均生效)">
+          <span class="timing-name">图标大小</span>
+          <input type="range" class="o-slider" id="iconScaleSlider" min="10" max="300" step="1" value="100" aria-label="图标大小" />
+          <span id="iconScaleVal" class="nudge-val">100%</span>
+          <button type="button" id="btnIconScaleReset" class="nudge-btn" title="恢复出厂大小(100%)">重置</button>
+        </div>
         <!-- 分段选项卡(仅位置暴露动画显示):任务弹窗动画只有一个图标位,不需要分段 -->
         <div class="icon-scope" id="iconScopeTabs" role="tablist" aria-label="选择要自定义图标的扫描段">
           <button type="button" class="icon-scope-btn is-active" id="iconScopeMain" data-scope="main" role="tab" aria-selected="true" title="自定义位置暴露(第一段)的图标">
@@ -527,14 +541,15 @@
               <p class="home-channel" id="homeChannel">桌面版 v1.0.5</p>
             </div>
             <h1 class="home-title" id="homeTitle">把游戏动画改成你自己的</h1>
-            <p class="home-desc">十套由人工用 AE 制作的 HUD 动画。改文案、配色和图标,导出成带音效的 MP4 / AVI。</p>
+            <p class="home-desc">十套由人工用 AE 制作的 HUD 动画,改文案、配色和图标,导出成带音效的 MP4 / AVI;内置的图片编辑器还能直接改 PSD 的文字、颜色与透明度。</p>
             <div class="home-actions">
               <button type="button" class="home-primary" id="btnOpenEditor">
-                <span id="btnOpenEditorText">打开编辑器</span>
+                <span id="btnOpenEditorText">打开动画编辑器</span>
                 <svg class="bi home-arrow" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                   <path d="M5.3 2.6 11.7 8l-6.4 5.4z" />
                 </svg>
               </button>
+              <button type="button" class="home-ghost" id="btnGoImage">图片编辑器</button>
               <button type="button" class="home-ghost" id="btnGoAbout">关于与更新</button>
             </div>
             <ul class="home-keys" aria-label="常用快捷键">
@@ -563,7 +578,7 @@
             <button type="button" class="home-switch" id="homeSwitch" hidden>换一套动画</button>
             <div class="home-empty" id="homeEmpty">
               <p class="home-empty-title">还没有打开过动画</p>
-              <p class="home-empty-desc">十套 HUD 动画在编辑器里,任选一套开始改文案、配色和图标。</p>
+              <p class="home-empty-desc">十套 HUD 动画在动画编辑器里,任选一套开始改文案、配色和图标。</p>
               <button type="button" class="home-browse" id="btnBrowseAnims">选择动画</button>
             </div>
           </aside>
@@ -631,9 +646,21 @@
             动画由人工使用 <b>AE</b> 制作,未使用 AI
           </p>
           <p class="about-meta">编辑器代码 GPL-3.0,动画素材版权归原游戏所有</p>
-          <!-- 手机端的现场数据:底栏点不动这类问题只有拿到这些数字才能定位
-               (视口 / 安全区 / 底栏位置 / 最近一次点击落在哪一格)。桌面端不显示。 -->
-          <p class="about-meta about-device" id="aboutDevice" hidden></p>
+          <!-- 手机端的设备快照:底栏点不动 / 界面被系统手势区压住 / 手机上被认成桌面端这类问题,
+               只有拿到这些数字才能远程定位 —— 视口与安全区、底栏落在哪、最近一次点击落在哪一格,
+               外加 UA / 内核 / 屏幕 / WebView 能力。桌面端由 JS 整块隐藏(见 start-screen.ts)。
+               「复制设备信息」把同一份数据连同标题行与 ISO 时间写进剪贴板,用户粘贴到聊天里就能发。 -->
+          <div class="about-row about-device-row" id="aboutDeviceRow" hidden>
+            <span class="about-label">设备</span>
+            <span class="about-actions">
+              <button type="button" class="about-btn" id="btnCopyDevice" title="把下面的设备信息复制到剪贴板,反馈问题时粘贴过来即可">
+                <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/></svg>
+                <span id="btnCopyDeviceText">复制设备信息</span>
+              </button>
+            </span>
+          </div>
+          <p class="about-meta about-device" id="aboutDevice"></p>
+          <p class="about-meta about-device-status" id="aboutDeviceStatus" role="status" aria-live="polite"></p>
           <p class="about-meta">
             <a class="about-link" href="https://github.com/TFR-Studios/DeltaForceAnimation_app" target="_blank" rel="noopener noreferrer">GitHub</a>
             <span class="about-sep">/</span>
@@ -782,6 +809,12 @@
     <section class="page page-audio" id="viewAudio" hidden aria-labelledby="audioTitle">
       <div class="audio-host" id="audioMount"></div>
     </section>
+
+    <!-- 图片编辑器:同样只留挂载点,页面由 src/image-page.ts 在首次进入时搭建
+         (PSD 解析 / 合成在 src/psd-document.ts)。标题 id 也由那段 DOM 提供。 -->
+    <section class="page page-image" id="viewImage" hidden aria-labelledby="imgedTitle">
+      <div class="imged-host" id="imgedMount"></div>
+    </section>
     </div>
 
 
@@ -835,6 +868,12 @@
               <svg class="export-check-mark" viewBox="0 0 96 96" aria-hidden="true" focusable="false">
                 <path d="M29 49.5 42 62.5 67.5 35" />
               </svg>
+              <!-- 失败态的叉:与对勾共用同一套"环 + 笔画描出"的动效,只把颜色与笔画换成红叉。
+                   成功 / 失败二选一显示(见 style.css 的 .export-card:is(.is-done, .is-failed))。 -->
+              <svg class="export-check-cross" viewBox="0 0 96 96" aria-hidden="true" focusable="false">
+                <path d="M34 34 62 62" />
+                <path d="M62 34 34 62" />
+              </svg>
             </span>
             <p class="export-success-title">导出成功</p>
             <p class="export-success-name" id="exportSuccessName">—</p>
@@ -851,6 +890,9 @@
             <div class="render-log" id="renderLog" aria-hidden="true">
               <div class="render-log-head">
                 <span class="render-log-title">渲染器日志</span>
+                <!-- 复制整段渲染器日志(用户要求:导出卡片上直接能拿到,不用去日志页翻)。
+                     导出中/成功/失败都可用,文本里带规格头与每行时间戳。 -->
+                <button id="btnRenderLogCopy" class="render-log-copy" type="button" title="把整段渲染器日志复制到剪贴板">复制</button>
                 <span class="render-log-frame" id="renderLogFrame">FRAME — / —</span>
               </div>
               <div class="render-log-body" id="renderLogBody"></div>
@@ -889,6 +931,11 @@
               <path d="M6 2.6 12.9 8 6 13.4z" />
             </svg>
             <span id="btnExportLogText">查看渲染日志</span>
+          </button>
+          <!-- 导出结束后的出口之一:把这份渲染器日志整段复制走(发反馈时附在聊天里最省事)。 -->
+          <button id="btnExportLogCopy" type="button" class="export-copy-log" title="把整段渲染器日志复制到剪贴板">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/></svg>
+            <span id="btnExportLogCopyText">复制渲染日志</span>
           </button>
         </div>
       </div>

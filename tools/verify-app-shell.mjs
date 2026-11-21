@@ -116,7 +116,7 @@ const probe = () => {
   /* 默认是收起态(56px),所以这里只断言"贴左 + 在顶栏之下 + 在 56~176 之间",
    * 具体宽度的行为由下面「侧边栏:默认收起 + 展开动画」那一组负责。 */
   check('桌面:左侧导航轨贴左、位于顶栏之下', s.rail && s.rail.x === 0 && s.rail.y <= 60 && s.rail.w >= 56 && s.rail.w <= 176, JSON.stringify(s.rail));
-  check('桌面:导航含 主页/编辑器/音频/日志/下载列表/关于', JSON.stringify(s.railItems) === JSON.stringify(['home', 'editor', 'audio', 'logs', 'downloads', 'about']), JSON.stringify(s.railItems));
+  check('桌面:导航含 主页/动画编辑器/图片编辑器/音频/日志/下载列表/关于', JSON.stringify(s.railItems) === JSON.stringify(['home', 'editor', 'image', 'audio', 'logs', 'downloads', 'about']), JSON.stringify(s.railItems));
   check('桌面:主页**没有**动画卡片', s.animCards === 0, s.animCards);
   check('桌面:主页标题文案已换', /把游戏动画/.test(s.homeTitle), s.homeTitle);
   check('桌面:主页主按钮 36px 不换行', s.primaryH === 36 && s.primaryW > 100, JSON.stringify({ h: s.primaryH, w: s.primaryW }));

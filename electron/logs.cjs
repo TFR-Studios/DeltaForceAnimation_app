@@ -42,6 +42,11 @@ const DEFAULT_LIMIT = 1000;                     // read 默认条数
 const MAX_LIMIT = 5000;                         // read 上限(再多页面也渲染不动)
 const DEFAULT_TAG = '应用';                     // 没给 tag 的记录归到默认分组
 const MAIN_TAG = '主进程';                      // 主进程自己产生的事件固定用这个 tag
+/* 落盘时给每行补「谁写的」:用户发回的日志、跨版本对比的日志常常混在一起,
+ * 只靠 msg 里的版本号猜不出来。读取走 normalizeRecord 的白名单,这两个字段
+ * 会被忽略,所以渲染层完全不受影响。 */
+const PLATFORM = process.platform;
+const ARCH = process.arch;
 
 /* ---------------------------------------------------------------------------
  * 1. 小工具
@@ -262,8 +267,15 @@ function createLogs(opts = {}) {
         lines = [];
         buffered = 0;
       };
+      /* v / p 是「落盘元信息」而不是记录字段:不进 normalizeRecord 的白名单,
+       * 只用来在原始 JSONL 里区分版本与平台;空版本号不写,免得留一个 "v":""。 */
+      const stamp = (rec) => {
+        const out = { ...rec, p: PLATFORM };
+        if (version) out.v = version;
+        return JSON.stringify(out);
+      };
       for (const rec of records) {
-        const line = JSON.stringify(rec);
+        const line = stamp(rec);
         const bytes = Buffer.byteLength(line, 'utf8') + 1;   // +1 = 换行符
         if (size > 0 && size + buffered + bytes > maxBytes) {
           flush();
@@ -329,7 +341,8 @@ function createLogs(opts = {}) {
     return errors.length ? { ok: false, error: errors.join(';') } : { ok: true };
   }
 
-  /** 日志目录 / 文件 / 体积,日志页顶栏用来显示「日志存哪儿了」。 */
+  /** 日志目录 / 文件 / 体积,日志页顶栏用来显示「日志存哪儿了」。
+   *  版本与平台一并返回:页面导出、用户反馈时能立刻说清这份日志出自哪个壳。 */
   function info() {
     return {
       dir,
@@ -339,6 +352,9 @@ function createLogs(opts = {}) {
       rotatedSize: safeSize(rotatedFile),
       maxBytes,
       version,
+      platform: PLATFORM,
+      arch: ARCH,
+      electron: process.versions.electron || '',
     };
   }
 

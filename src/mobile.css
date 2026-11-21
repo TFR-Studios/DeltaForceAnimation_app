@@ -29,9 +29,13 @@
 
 html[data-ui='mobile'] {
   /* 面板高度(px,由 mobile.ts 在拖拽/吸附时写入);停靠模式下改成 --m-side 管宽度 */
-  --m-sheet: 26dvh;
+  /* 首屏兜底:mobile.ts 会在初始化时按视口算出真正的三档高度并写进行内样式,
+   * 这里的值只负责"脚本还没跑完"的那一两帧,所以取与 390 宽收起档同量级的值。
+   * 原来写 26dvh(844 下 219px)会让面板先矮一下再撑开,像闪了一次。 */
+  --m-sheet: 196px;
   --m-side: 320px;
-  --m-grip-h: 22px;
+  /* 把手命中区 28px:它是展开/收起面板的唯一入口,22px 太薄 */
+  --m-grip-h: 28px;
   --m-tabs-h: 46px;
   --m-pad: 12px;
   --m-safe-t: env(safe-area-inset-top, 0px);
@@ -153,16 +157,17 @@ html[data-ui='mobile'] .theme-btn::before {
 html[data-ui='mobile'] .anim-trigger:active { transform: scale(0.97); }
 html[data-ui='mobile'] .theme-btn:active .bi { transform: scale(0.88); }
 
-/* 制作声明压到 10.5px:它要一直在,但不该跟主任务抢注意力 */
+/* 制作声明压到 11px:它要一直在,但不该跟主任务抢注意力。
+ * 10.5px 在手机高 DPR 屏上仍偏小,11px 是"一直读得清"的下限(再大就抢主任务)。 */
 html[data-ui='mobile'] .craft-note {
   padding: 0;
   height: var(--m-craft-h);
   border: none;
   background: none;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-3);
 }
-html[data-ui='mobile'] .craft-note-text { font-size: 10.5px; }
+html[data-ui='mobile'] .craft-note-text { font-size: 11px; }
 html[data-ui='mobile'] .craft-note-ico { width: 12px; height: 12px; }
 
 /* ---------- 3. 主区 ---------- */
@@ -206,8 +211,14 @@ html[data-ui='mobile'] .m-stage-tools {
   gap: var(--sp-2);
   pointer-events: none;
 }
-html[data-ui='mobile'] .m-tool,
-html[data-ui='mobile'] .m-zoom-badge { pointer-events: auto; }
+html[data-ui='mobile'] .m-tool { pointer-events: auto; }
+/* 缩放徽标是读数不是按钮:原来它 pointer-events:auto,按上去又被手势层当成"控件"拦掉,
+ * 等于画布右下角一块什么都不发生的死区。这里明确不接事件,让手势穿过去。 */
+html[data-ui='mobile'] .m-zoom-badge { pointer-events: none; }
+/* 画布上的播放键与播放条里的播放键是同一个动作,且播放条离拇指更近;
+ * 去掉后舞台悬浮簇从 78×130 收到 78×26,画布多出一块可拖区域。 */
+/* 选择器要比后面的 .m-tool(display:inline-flex)更具体,否则会被它静默改回可见 */
+html[data-ui='mobile'] .m-stage-tools .m-tool-play { display: none; }
 
 html[data-ui='mobile'] .m-tool {
   /* 44px 是触屏最小命中区(Apple HIG / Material 都取这个量级) */
@@ -284,6 +295,8 @@ html[data-ui='mobile'] .timeline {
   padding: 8px var(--m-pad-r) 0 var(--m-pad-l);
   gap: var(--sp-2);
 }
+/* 缩放读数在画布右下角已经有徽标,播放条里再占一份会把 360 宽的「设置」挤出屏幕 */
+html[data-ui='mobile'] .transport .frame { display: none; }
 html[data-ui='mobile'] .timeline .frame { font-size: 11px; }
 /* 右侧编辑区的第一行(一键重置):手机上它是底部面板的第一块内容(芯片条下面),
  * 通栏 44px 实心按钮 —— 触屏主操作尺寸,不用在密集的检查器行里找;
@@ -299,10 +312,26 @@ html[data-ui='mobile'] .side-head {
   padding: 6px var(--m-pad-r) 6px var(--m-pad-l);
   border-bottom: 1px solid var(--line);
 }
+/* 手机上「一键重置」与「导出视频」同处一屏:两个实心白块会互相抵消主次。
+ * 重置是破坏性/低频动作,降成描边按钮;实心只留给这一屏真正的主操作(导出)。
+ * 这是移动端专属的层级偏离(DESIGN.md 的桌面版仍是实心),写在这里便于回查。 */
 html[data-ui='mobile'] .btn-reset-all {
   height: 40px;
   min-height: 40px;
   font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  box-shadow: none;
+}
+html[data-ui='mobile'] .btn-reset-all:hover {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+html[data-ui='mobile'] .btn-reset-all:active {
+  background: var(--surface-3);
+  transform: scale(0.99);
 }
 html[data-ui='mobile'] .btn-reset-all .bi { width: 16px; height: 16px; }
 /* 手机上不显示说明行:按钮已经通栏,"恢复哪一套"由顶栏的动画选择器回答 */
@@ -326,12 +355,13 @@ html[data-ui='mobile'] .transport .play-btn {
 }
 /* 导出是这一屏唯一的主操作:实心、够高、标签说清后果 */
 html[data-ui='mobile'] #btnExport {
-  min-height: 46px;
-  padding: 0 16px;
+  min-height: 48px;
+  padding: 0 18px;
+  font-size: 14px;
   font-weight: 700;
 }
 html[data-ui='mobile'] .m-settings-btn {
-  min-height: 44px;
+  min-height: 46px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -347,12 +377,12 @@ html[data-ui='mobile'] .m-settings-btn {
 html[data-ui='mobile'] .m-settings-btn:active { background: var(--surface-3); }
 html[data-ui='mobile'] .m-settings-btn svg { width: 15px; height: 15px; fill: currentColor; }
 
-/* 时间轴与播放条里的滑杆:触屏上要给足够粗的滑钮 */
-html[data-ui='mobile'] .timeline input[type='range'] { height: 32px; }
+/* 时间轴与播放条里的滑杆:触屏上要给足够粗的滑钮与命中区(40px 是产品下限) */
+html[data-ui='mobile'] .timeline input[type='range'] { height: 40px; }
 html[data-ui='mobile'] input[type='range']::-webkit-slider-thumb {
-  width: 22px;
-  height: 22px;
-  margin-top: -9px;
+  width: 24px;
+  height: 24px;
+  margin-top: -10px;
 }
 html[data-ui='mobile'] .transport .export-hint { display: none; }
 
@@ -402,10 +432,12 @@ html[data-ui='mobile'] .m-grip {
 }
 html[data-ui='mobile'] .m-grip::before {
   content: '';
-  width: 40px;
+  width: 44px;
   height: 4px;
   border-radius: var(--r-pill);
-  background: var(--line-strong);
+  /* 原来是 --line-strong 压在 --surface 上(约 1.65:1),细线几乎看不见;
+   * 混到 text-3 后约 4.4:1:仍然安静,但能看出"这里有一条可拖的把手"。 */
+  background: color-mix(in srgb, var(--text-3) 90%, transparent);
   transition: background var(--dur-fast) var(--ease), width var(--dur) var(--ease);
 }
 html[data-ui='mobile'] .side-panel.is-dragging .m-grip::before,
@@ -428,7 +460,13 @@ html[data-ui='mobile'] .m-tabs {
   height: var(--m-tabs-h);
   margin-left: calc(-1 * var(--m-pad-l));
   margin-right: calc(-1 * var(--m-pad-r));
+  /* 末尾留 26px:右缘渐隐遮罩之后仍能滚出最后一枚芯片。
+   * 三档截图里第 4 枚都在被裁(390 溢出 2.8px / 360 溢出 32.8px / 横屏整枚不可见),
+   * 固定位置的渐隐是"还能往右滑"最轻的暗示,不需要再加一枚箭头按钮。 */
   padding: 0 var(--m-pad-l) 0 var(--m-pad-r);
+  padding-right: calc(var(--m-pad-l) + 26px);
+  -webkit-mask-image: linear-gradient(90deg, #000 0 calc(100% - 24px), transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0 calc(100% - 24px), transparent 100%);
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -452,6 +490,11 @@ html[data-ui='mobile'] .m-tab {
   font-weight: 500;
   white-space: nowrap;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+html[data-ui='mobile'] .m-tab:active {
+  background: var(--surface-3);
+  border-color: var(--line-strong);
+  transform: scale(0.97);
 }
 html[data-ui='mobile'] .m-tab .m-tab-count {
   color: var(--text-3);
@@ -513,10 +556,16 @@ html[data-ui='mobile'] .m-sec-toggle svg {
 }
 html[data-ui='mobile'] .m-sec-toggle[aria-expanded='true'] svg { transform: rotate(90deg); }
 
-/* 面板里的行高与命中区:触屏一律抬到 38-44px */
-html[data-ui='mobile'] .side-panel input[type='range'] { height: 34px; }
+/* 面板里的行高与命中区:触屏一律抬到 40px(PRODUCT.md 的硬下限) */
+html[data-ui='mobile'] .side-panel input[type='range'] { height: 40px; }
 html[data-ui='mobile'] .side-panel fluent-button,
-html[data-ui='mobile'] .side-panel button { min-height: 38px; }
+html[data-ui='mobile'] .side-panel button { min-height: 40px; }
+/* 颜色块/色值输入是面板里最小的命中目标(实测 34×26 与 38px),统一抬到 40 */
+html[data-ui='mobile'] :is(.t-color, .s-fill, .s-stroke, .pt-color) {
+  width: 40px;
+  height: 40px;
+}
+html[data-ui='mobile'] :is(.hex-input, .t-input) { min-height: 40px; }
 /* 芯片条例外:它是主分区导航,不属于"密集检查器行"的 38px 口径,按触屏下限 40px。
  * 选择器必须比上面那条 .side-panel button 更具体才压得住(同为 38 时后者在文件更靠后,
  * 而 .m-tab 的基础规则在前面 —— 只改基础规则会被这一条静默覆盖,实测卡在 38)。 */
@@ -638,6 +687,9 @@ html[data-ui='mobile'] .m-hint b { color: var(--text); font-weight: 700; }
   html[data-ui='mobile'] .m-grip::before { width: 56px; }
   html[data-ui='mobile'] .side-panel.is-dragging .m-grip::before { width: 72px; }
 }
+
+/* 手机上键盘快捷键没有意义(空格/斜杠在触屏上没有对应动作),首屏不占两行 */
+html[data-ui='mobile'] .home-keys { display: none; }
 
 /* 手机横屏:纵向极度紧张,顶栏 / 时间轴 / 播放条 / 状态栏全部再收一档。
  * 这几行不是凑数 —— 实测 800×450 下不收紧时舞台只剩 151px。 */
@@ -941,6 +993,17 @@ html[data-ui='mobile'] .about-btn { height: 40px; padding: 0 var(--sp-3); }
 html[data-ui='mobile'] .about-path { flex: 1; }
 html[data-ui='mobile'] .update-link { height: 40px; padding: 0 14px; }
 html[data-ui='mobile'] .about-craft-card { padding: var(--sp-3); }
+/* 设备快照与「复制设备信息」:手机是这一页唯一要伸手去点的地方,按钮抬到 44(与导出按钮
+   同一档,原文案里 40 的通用档在这条动作上差 4px 就摸不到);正文再缩一档 —— 390px 宽下
+   11px 的等宽字一行只剩十几个字,分组换行会多到看不清。 */
+html[data-ui='mobile'] .about-device {
+  padding-top: 6px;
+  font-size: 10.5px;
+  line-height: 1.75;
+}
+html[data-ui='mobile'] .about-device-row { padding: 4px 0 6px; }
+html[data-ui='mobile'] .about-device-row .about-btn { height: 44px; min-height: 44px; }
+html[data-ui='mobile'] .about-device-status { font-size: 11px; }
 
 /* 手机上的顶栏:动画选择器 / 下载入口只在编辑器页出现(与桌面同一套规则,
  * 但手机端 .anim-switch 的 grid-area 由顶栏网格决定,隐藏时那一格自然空出) */
@@ -977,6 +1040,13 @@ html[data-ui='mobile'] .logs-filters {
   padding-bottom: 2px;
 }
 html[data-ui='mobile'] .logs-filters::-webkit-scrollbar { display: none; }
+/* 360px 下第 5 枚类型芯片会被右边裁掉,补 6px 让它还能滚出来 */
+html[data-ui='mobile'] .logs-filters { padding-right: calc(var(--m-pad-r) + 6px); }
+/* 滚动列表顶部渐隐 14px:手机上工具条与列表挨得紧,第一行常被切掉半个时间戳 */
+html[data-ui='mobile'] .logs-body {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+}
 html[data-ui='mobile'] .logs-chip {
   flex: none;
   height: 40px;
@@ -1196,7 +1266,16 @@ html[data-ui='mobile'] .export-foot :is(button, fluent-button) {
 }
 /* 日志展开时给槽位一点呼吸;卡片高度仍由 main.ts 的一次有界过渡负责 */
 html[data-ui='mobile'] .export-card.is-done.is-log-open .export-log-slot { margin-top: var(--sp-2); }
-html[data-ui='mobile'] .render-log-body { height: clamp(140px, 26vh, 220px); }
+/* 手机上日志是排障附件,不是主角:原来 219px(占卡片一半)把进度与文案都挤没了。
+ * 现在 96-128px 够滚动看几行,也把"正在编码帧 / 百分比"还给用户。 */
+html[data-ui='mobile'] .render-log-body { height: clamp(96px, 15vh, 128px); }
+html[data-ui='mobile'] .export-bar { height: 8px; }
+/* 「609 帧…」这类元信息在手机上允许换行,不要被一行省略号吃掉 */
+html[data-ui='mobile'] .export-file .dw-meta {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
 
 /* ---------- 10. 减少动效 ---------- */
 
@@ -1244,3 +1323,6 @@ html[data-ui='mobile'] .render-log-body { height: clamp(140px, 26vh, 220px); }
 
 /* 音频提取依赖主进程读 pak / Oodle 解压,手机端没有这套能力,导航项直接不出现。 */
 html[data-ui='mobile'] .rail-item[data-page='audio'] { display: none; }
+/* 图片编辑器(PSD)同样只开放桌面端:11MB 起步的 PSD 解析 + 导出落盘都指望桌面环境,
+ * 手机上那块窄屏也不适合对着画布调文字。页面仍在,?view=image 可以直接看。 */
+html[data-ui='mobile'] .rail-item[data-page='image'] { display: none; }

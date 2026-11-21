@@ -18,7 +18,9 @@ async function open(w, h) {
   const page = await browser.newPage();
   const errs = []; page.on('pageerror', (e) => errs.push(String(e.message)));
   await page.setViewport({ width: w, height: h, isMobile: w < 600, hasTouch: w < 600 });
-  await page.goto(URL_, { waitUntil: 'domcontentloaded', timeout: 180000 });
+  /* 多页外壳(2026-11)之后默认页是主页,编辑器是 ?view=editor;
+   * 这份脚本量的是编辑器几何,必须显式落在编辑器上,否则 #stage 是 hidden(全 0)。 */
+  await page.goto(URL_ + (URL_.includes('?') ? '&' : '?') + 'view=editor', { waitUntil: 'domcontentloaded', timeout: 180000 });
   await page.waitForFunction(() => document.querySelector('#app-loading')?.classList.contains('is-hidden'), { timeout: 240000, polling: 500 });
   await sleep(1500);
   return { page, errs };
@@ -71,9 +73,11 @@ for (const [w, h, name] of [[320, 640, '320'], [360, 740, '360'], [390, 844, '39
   check(name + 'px:无 JS 报错', errs.length === 0, errs.join(' | '));
   check(name + 'px:无横向滚动', s.sw <= s.vw && s.overflow.length === 0, 'sw=' + s.sw + ' vw=' + s.vw + ' ' + s.overflow.slice(0, 3).join(','));
   check(name + 'px:主布局为上下单栏', s.stackDirection === 'column', s.stackDirection);
-  check(name + 'px:舞台未被压塌', s.stage.w >= Math.min(w, 320) - 40 && s.stage.h >= 140, s.stage.w + 'x' + s.stage.h);
+  /* 页面左右各有一条 28px 的版心留白(多页外壳之后),可用宽度 = 视口 - 56;
+   * 断言的是"舞台没有被固定侧栏挤成一条",不是"必须顶满视口"。 */
+  check(name + 'px:舞台未被压塌', s.stage.w >= Math.min(w, 320) - 60 && s.stage.h >= 140, s.stage.w + 'x' + s.stage.h);
   check(name + 'px:动画真的画在舞台里', s.canvasVisible, 'inner' + s.innerScale);
-  check(name + 'px:侧栏占满整宽(不再固定侧栏宽)', s.sideW === s.vw, s.sideW + ' vs ' + s.vw);
+  check(name + 'px:侧栏占满整宽(不再固定侧栏宽)', s.sideW >= s.vw - 60, s.sideW + ' vs ' + s.vw);
   /* 单栏模式下页面本身不滚动,滚动交给侧栏自己(预览固定在视口上半部)。
    * 断言的是"只有一层滚动"而不是"页面必须能滚":页面滚动会让预览跟着跑掉。 */
   check(name + 'px:只有一层滚动(侧栏内部滚,页面不滚)', !s.pageScrolls && s.sideOwnScroll, 'page=' + s.pageScrolls + ' side=' + s.sideOwnScroll);

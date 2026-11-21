@@ -1,7 +1,8 @@
 # 三角洲行动动画编辑器 · Windows + Android
 
 把十套已经做好的游戏动画(Lottie / JSON)变成普通人也能改的东西:预览、改文字、改颜色、换图标、
-调时长,再导出成带音频的 MP4 / AVI。**Windows 端与 Android 端共用同一份前端产物**,
+调时长,再导出成带音频的 MP4 / AVI。另外内置了一个**图片编辑器**:编辑应用自带的结算图 PSD,
+改文字图层的内容 / 颜色 / 透明度,还能从 DFAsset 的 BusinessFiller / Skin 里挑一张名片**手动四角透视对齐**在结算图上,导出 PNG。**Windows 端与 Android 端共用同一份前端产物**,
 平台差异全部收在编译期与运行期分支里(见[两个外壳,一份前端](#两个外壳一份前端))。
 
 | 平台 | 外壳 | 发布形态 | 入口 |
@@ -26,6 +27,7 @@
 - [两个外壳,一份前端](#两个外壳一份前端)
 - [快速上手](#快速上手)
 - [Windows 端比网页版多了什么](#windows-端比网页版多了什么)
+- [图片编辑器(PSD)](#图片编辑器psd)
 - [Android 端(Tauri v2)](#android-端tauri-v2)
 - [构建与打包(维护者)](#构建与打包维护者)
 - [自助工具(双击就能用)](#自助工具双击就能用)
@@ -177,6 +179,54 @@ adb install -r -t src-tauri\gen\android\app\build\outputs\apk\universal\debug\ap
 
 ---
 
+## 图片编辑器(PSD)
+
+应用里的第二个编辑器,与动画编辑器互不干扰:侧边导航轨的「图片编辑器」是独立页面
+(`#viewImage`),手机端不出现(PSD 解析与落盘都是桌面能力,窄屏也不适合对画布调字)。
+
+- **打开方式**:不需要选文件。页面打开时就自动载入内置结算图 `pictures/settlement/settlement.psd`;
+  载入失败会停在空状态并给出「重新载入示例」。
+- **背景**:右侧检查器顶部列出 4 张背景图(来自 [TFR-Studios/DFAsset · settlement](https://gitcode.com/TFR-Studios/DFAsset/tree/main/settlement),
+  已打包进应用,离线可用)。点一张就替换 PSD 的 Settlement_Sp 背景层,手机屏幕里的内容会自动重新对齐;
+  第一张「默认」就是 PSD 自带的那张。「撤销修改」会把背景也一起还原。
+- **名片**:检查器的「名片」区可以从 [BusinessFiller](https://gitcode.com/TFR-Studios/DFAsset/tree/main/Commerical/BusinessFiller)
+  的 147 张人物图与 [Skin](https://gitcode.com/TFR-Studios/DFAsset/tree/main/Commerical/Skin) 的 43 张皮肤图里选一张,
+  作为一层可**等比 / 自由 / 四角透视**的图片盖在结算图上。选择器是 190 张图的懒加载网格:支持搜索、分类(全部 / 名片 / 皮肤)、
+  方向键导航,Esc 或点遮罩关闭;选中项有高亮,重开时自动滚到当前名片。
+  - **素材分层加载**:打包里只有 manifest + 160px 缩略图(约 1.7MB);选中名片时按需从
+    [DFAsset](https://gitcode.com/TFR-Studios/DFAsset) 的 GitCode raw API 拉原图(带 CORS,可直接画进 canvas),
+    按 commit sha 存进 Cache Storage,下次秒开;断网/失败回退本地缩略图。
+    名片区显示来源与原图尺寸(如 `GitCode 原图 · 896×1440`)。原图路径由 `card-remote.ts` 的 `repoPathOf` 推导。
+  - **三种缩放方式**(名片区标题栏切换,默认「透视」):
+    - **等比**:拖四角锁名片原图宽高比;
+    - **自由**:拖四角宽高独立;
+    - **透视**:四个角各自拖动,原图按单应矩阵透视变形,框内拖动整体平移,顶部圆形手柄绕中心旋转(Shift 15° 吸附)。
+  - 读数随模式切换:等比 / 自由显示 `X/Y · 宽×高 · 宽高百分比 · 角度`;透视显示 `TL/TR/BR/BL` 四角坐标。
+  - 默认透视四角(来自实测):`TL 1126,230 · TR 1454,279` / `BR 1369,828 · BL 1030,771`,
+    写在 [src/image-page.ts](src/image-page.ts) 的 `CARD_DEFAULT_QUAD`。
+  - **名片只保留当前背景屏幕挖孔内的像素**:视觉上位于手机边框下层,不会盖住边框 / HUD;导出时同样按挖孔裁切。
+  - 「复位」回到默认透视四角;「恢复默认」清掉名片,回到 PSD 原来的黑屏。名片和背景、文字一样计入「撤销修改」。
+  - 导出前先垫黑底再画名片,回归会检查屏幕中心是名片颜色而不是黑屏。
+  - 缩略图与清单由 `tools/build-card-assets.py` 生成(190 张缩略图约 1.7MB),随构建打包;新增素材时重跑脚本即可
+    (`--fulls` 才会输出 384 宽 WebP,默认不再打包大图):
+    ```bash
+    python tools/build-card-assets.py <DFAsset 仓库根目录>
+    ```
+- **能改什么**:只列**文字图层**,可以改内容、颜色、透明度,单层「恢复原样」或整体「撤销修改」。
+  - 只改颜色时,用 PSD 原始像素的 alpha 当蒙版填新色 —— 字形与抗锯齿边缘一个像素都不动;
+  - 改内容才重新排版,字体按图层记录映射(项目自带 `ProjectDType` 两份字体,其它字体会回退系统字体);
+  - 没改过的图层直接画 PSD 缓存的像素,与 Photoshop 里看到的一致。
+- **画布操作**(与动画编辑器同一套):滚轮以鼠标位置为中心缩放、按住拖动平移、双击复位;
+  右下角有缩放读数与「适应」按钮,选中的图层用虚线框标出,框随缩放 / 平移一起走。
+- **导出**:「导出 PNG」按 PSD 原尺寸合成(整幅不透明;屏幕挖孔的抗锯齿边先垫黑,不留半透明缝),桌面端产物进系统「下载」文件夹并
+  登记下载列表(走主进程的 `dfaeDownloads.save`)。导出中按钮显示「正在导出…」;结束后预览右上角
+  弹出结果卡(文件名 + 「打开文件夹」),顶栏也会保留一个「打开文件夹」入口,点击直接在资源管理器里
+  定位到文件。页面刻意不提供打开其它 PSD、也不提供导出 PSD。
+- **边界**:只编辑文字图层、背景与名片;图层效果(投影 / 描边等)、智能对象、剪贴蒙版按普通图层处理。
+  示例文件放在 `pictures/`,由 Vite 当静态资源输出(带 hash,部署子路径也不失效)。
+
+---
+
 ## Android 端(Tauri v2)
 
 ### 构建前置
@@ -252,7 +302,10 @@ Android 端的导出**不写应用私有目录,而是直接进系统相册**(Med
 - **横屏 或 宽度 ≥ 1024**:面板改成右侧停靠栏,同一个把手改成拖宽度;
 - **画布手势**:单指拖动平移(带惯性滑行)、双指捏合缩放(以两指中点为焦点)、双击在适配与 2.5× 之间切换、长按复位视图、单击播放暂停;
 - 触摸目标一律 ≥ 44px,处理刘海与手势条的安全区,禁掉下拉刷新与页面双击缩放;
-- 手机端**没有「下载列表」**:落点是系统相册,而列表里那套「定位 / 打开 / 重命名」对 `content://` URI 没有对应能力,所以整条通路在移动端关闭,导出完成后**停在原页面**。
+- **底部面板是"真分区"**:芯片切换的是 `.side-panel > [data-df-sec]`,一次只渲染当前分区(改版前只有标记类、没有 `data-df-sec`,五个分区会同时堆成 7000+px);收起档抬到 210/168px,至少露出当前分区的第一行;「一键重置」在手机上降为描边按钮,把实心主操作让给「导出视频」;
+- **画布悬浮层只留"适配"与缩放读数**:播放条离拇指更近,同一个播放动作不再重复;缩放徽标不接指针事件,不再吞画布手势;
+- 手机端**没有「下载列表」**:落点是系统相册,而列表里那套「定位 / 打开 / 重命名」对 `content://` URI 没有对应能力,所以整条通路在移动端关闭(按钮、导航项、面板都拿掉),导出完成后**停在原页面**;成功卡上也不会出现「打开文件夹」;
+- **没有 AAC 编码器也能出带声音的 MP4**:MP4 音轨先试 AAC-LC,本机没有 AAC 时改用 WebCodecs 的 Opus(mp4-muxer 支持 Opus-in-MP4);连 WebCodecs 音频都没有时,兼容录制优先 WebM + Opus。两者都不依赖系统 AAC 编码器。
 
 ### 平板:锁定横屏
 
@@ -571,9 +624,11 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 | `node tools/measure-ui.mjs` | **界面布局审计**:在真实窗口里按 7 档宽度量几何/对齐/对比度,报告写进 `release/measure/` |
 | `node tools/check-downloads.mjs` | 下载列表/下载历史的行为自检(纯 Node,57 项断言) |
 | `node tools/mobile-perf.mjs` | **移动端交互性能探针**:用 CDP 派发真实触摸,量平移 / 捏合 / 拖底部面板 / 拖时间轴四类拖动的帧间隔与样式重算,报告写进 `release/perf/`(支持 `--cpu` / `--dpr` / `--renderer` / `--inject` 做 A/B) |
-| `node tools/verify-mobile-touch.mjs` | **移动端触屏回归**(常驻,27 项):拖把手跟手与吸附、双击、单指平移、双指捏合、单击播放、长按复位、旋转停靠,以及拖动期间的样式重算 / 帧间隔预算 |
+| `node tools/verify-mobile-touch.mjs` | **移动端触屏回归**(常驻,29 项):拖把手跟手与吸附、双击、单指平移、双指捏合、单击播放、长按复位、旋转停靠,以及拖动期间的样式重算 / 帧间隔预算 |
+| `node tools/verify-export-fallback.mjs` | **导出音轨回退回归**(纯 puppeteer,不依赖 ffmpeg):AAC 正常 / 无 AAC(Opus-in-MP4)/ 无 WebCodecs(WebM + Opus)/ 手机端下载列表与「打开文件夹」门禁;导出件会写到 `release/export-fallback/` |
 | 关于页「下载并安装」 | 桌面**安装版**的应用内更新:主进程下载安装包 → 校验(大小 + PE 头 + 站点白名单)→ detached 启动 NSIS 安装器 → 自己退出。便携版 / 手机 / 网页仍走「前往下载」;安装包落在 %TEMP%\dfae-update |
 | `node tools/verify-app-shell.mjs` | **应用外壳回归**(常驻,30 项):默认停在主页、侧边导航轨 / 手机底部标签栏、主页不放动画列表、关于页承载检查更新、切页不销毁编辑器:结构 / 几何 / 文字 / 交互 / 状态,覆盖桌面(带假的主进程桥接)、浅色主题、1024 与 820 窄窗口、390px 手机壳;截图写进 `release/start/` |
+| `node tools/verify-image-editor.mjs` | **图片编辑器回归**(常驻,50 项):导航格存在、内置 PSD 自动载入、文字列表与默认选中、没有打开文件 / 导出 PSD、4 张背景图切换与撤销(换背景后手机屏幕没有透明孔)、滚轮缩放 / 拖动平移 / 双击复位与选中框跟随、改文字/颜色/透明度的重绘与「已改」、导出中按钮忙碌态、导出结果卡与「打开文件夹」/关闭、**名片选择器 190 张 / 分类 / 搜索 / 键盘 / 等比·自由·透视三种模式 / 单角拖动 / 整体平移 / 旋转 / 复位 / 换背景位置不变 / Esc 焦点归还 / 导出整幅不透明且屏幕中心非黑**、撤销全部(含名片)、900px 单列与选择器收进视口、手机端不出现;截图写进 `release/image-editor/` |
 | `npm run build` | 仅构建前端 → `dist/`(类型检查 + Vite) |
 | `npm run icons` | 生成 `build/icon.ico` / `icon.png` |
 | `npm run dist` | 打包:免安装目录 + 便携版 |
@@ -612,13 +667,19 @@ GET https://api.gitcode.com/api/v5/repos/TFR-Studios/DeltaForceAnimation_app/rel
 ├── release/                   # 打包产物 + 自检报告(已 gitignore)
 ├── dist/                      # Vite 构建产物 = 站点本体(已 gitignore)
 ├── src/
-│   ├── main.ts                # 编辑器全部逻辑(513 KB,文件开头有总览)
+│   ├── main.ts                # 动画编辑器全部逻辑(834 KB,文件开头有总览)
+│   ├── psd-document.ts        # 图片编辑器的数据层:ag-psd 解析 / 文字重排 / 图层合成
+│   ├── card-quad.ts           # 名片四角透视:单应矩阵 / 逐像素双线性采样
+│   ├── card-remote.ts         # 名片原图在线加载:GitCode raw API + Cache Storage + 缩略图兜底
+│   ├── image-page.ts/.css     # 图片编辑器页面(按需加载;首次进入才拉 ag-psd 与示例 PSD;背景/名片/文字检查器)
 │   ├── style.css              # 全局样式
 │   └── vite-env.d.ts
 ├── animations/                # 十套动画素材(约 130 MB)
+├── pictures/                  # 图片编辑器素材:示例 PSD、4 张背景图(settlement/backgrounds/)、190 张名片(cards/)
 ├── posters/                   # 动画画廊卡片预览图(由 tools/fit-posters.py 重新构图过)
 ├── tools/                     # 开发/排障脚本(上游带来的,多数非必需)
-│   └── fit-posters.py         # 按内容包围盒重新构图封面(内容太小/偏一边时跑一次)
+│   ├── fit-posters.py         # 按内容包围盒重新构图封面(内容太小/偏一边时跑一次)
+│   └── build-card-assets.py   # 把 DFAsset 的名片 / 皮肤压成 pictures/cards 的 WebP + 清单
 ├── docs/FEATURES.md           # 上游网页版功能说明存档(754 行)
 ├── index.html / vite.config.ts / tsconfig.json / package.json
 ├── LICENSE                    # GPL-3.0
@@ -823,9 +884,16 @@ npm run app:smoke:export       # 再加一次真实的 MP4 导出与落盘校验
 如果那里也没有,先看导出浮层的终态文案:失败会写明原因(编码器、内存、体积上限),它不会自动消失。
 另外模拟器(如 MuMu)常常既没有 H.264 硬编、画布 MediaRecorder 也被禁,编码阶段就会失败 —— 请用真机验。
 
+**Q:手机上没有 AAC 编码器,导出的视频会没有声音吗?**
+不会。音轨先试 AAC-LC;本机没有可用的 AAC 配置时,自动改用 WebCodecs 的 **Opus** 编音轨并封进 MP4
+(mp4-muxer 支持 Opus-in-MP4,仍是逐帧离线编码,不会变慢)。如果连 WebCodecs 音频编码器都没有,
+兼容录制会优先 **WebM + Opus**,不再去试注定失败的 MP4 + AAC。
+两条路都不依赖系统 AAC 编码器;只有「AAC 与 Opus 都编不了、兼容录制也起不来」时才会导出无声 MP4,并在完成提示里写明。
+
 **Q:手机上为什么没有「下载列表」?**
 因为落点是系统相册(MediaStore),不是文件目录;列表里那套「定位 / 打开 / 重命名」对 `content://` URI 没有对应能力,
-摆出来只会是一堆点了没反应的按钮。所以移动端把这条通路整段关掉了,导出完成后停在原页面。
+摆出来只会是一堆点了没反应的按钮。所以移动端把这条通路整段关掉了(顶栏按钮、底栏导航项、面板一起拿掉),
+导出完成后停在原页面,成功卡上也不会出现「打开文件夹」。
 
 **Q:Android 上要给存储权限吗?**
 Android 10 及以上**不需要任何权限** —— 分区存储下应用往 MediaStore 插入自己的媒体项是官方路径。

@@ -1950,6 +1950,9 @@ html[data-theme='light'] .home-logo {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;
 }
+/* 图标大小:复用「居中微调」那一行的排版,滑杆占满剩余宽度 */
+.icon-scale > .timing-name { flex: none; white-space: nowrap; }
+.icon-scale input[type='range'] { flex: 1; min-width: 0; }
 
 .icon-scope {
   display: flex;
@@ -2351,7 +2354,7 @@ html:not([data-page='editor']) .statusbar:not(.error) .statusbar-text { opacity:
   transition: opacity 240ms var(--ease), transform 320ms var(--ease-out), visibility 0s 240ms;
 }
 .export-success[hidden] { display: none; }
-.export-card.is-done .export-progress {
+.export-card:is(.is-done, .is-failed) .export-progress {
   opacity: 0;
   visibility: hidden;
   transform: translateY(-8px) scale(0.97);
@@ -2359,7 +2362,7 @@ html:not([data-page='editor']) .statusbar:not(.error) .statusbar-text { opacity:
   pointer-events: none;
   transition: opacity 180ms var(--ease), transform 220ms var(--ease), filter 220ms var(--ease), visibility 0s 180ms;
 }
-.export-card.is-done .export-success {
+.export-card:is(.is-done, .is-failed) .export-success {
   opacity: 1;
   visibility: visible;
   transform: none;
@@ -2385,7 +2388,7 @@ html:not([data-page='editor']) .statusbar:not(.error) .statusbar-text { opacity:
   transform: scale(0.56);
   opacity: 0;
 }
-.export-card.is-done .export-check::before {
+.export-card:is(.is-done, .is-failed) .export-check::before {
   animation: df-check-pop 480ms var(--ease-out) 120ms both;
 }
 @keyframes df-check-pop {
@@ -2401,7 +2404,7 @@ html:not([data-page='editor']) .statusbar:not(.error) .statusbar-text { opacity:
   border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
   opacity: 0;
 }
-.export-card.is-done .export-check::after {
+.export-card:is(.is-done, .is-failed) .export-check::after {
   animation: df-check-halo 760ms var(--ease-out) 300ms both;
 }
 @keyframes df-check-halo {
@@ -2426,7 +2429,7 @@ html:not([data-page='editor']) .statusbar:not(.error) .statusbar-text { opacity:
   transform: rotate(-90deg);
   transform-origin: 50% 50%;
 }
-.export-card.is-done .export-check-ring circle {
+.export-card:is(.is-done, .is-failed) .export-check-ring circle {
   animation: df-check-ring-draw 560ms var(--ease-out) 140ms forwards;
 }
 @keyframes df-check-ring-draw { to { stroke-dashoffset: 0; } }
@@ -2439,7 +2442,7 @@ html:not([data-page='editor']) .statusbar:not(.error) .statusbar-text { opacity:
   stroke-dasharray: 64;
   stroke-dashoffset: 64;
 }
-.export-card.is-done .export-check-mark path {
+.export-card:is(.is-done, .is-failed) .export-check-mark path {
   animation: df-check-mark-draw 420ms cubic-bezier(0.65, 0, 0.35, 1) 300ms forwards;
 }
 @keyframes df-check-mark-draw { to { stroke-dashoffset: 0; } }
@@ -2472,27 +2475,106 @@ html:not([data-page='editor']) .statusbar:not(.error) .statusbar-text { opacity:
   font-variant-numeric: tabular-nums;
 }
 .export-success-sub.is-warn { color: var(--warn); }
-.export-card.is-done .export-success-title { animation: df-success-rise 380ms var(--ease-out) 220ms both; }
-.export-card.is-done .export-success-name { animation: df-success-rise 380ms var(--ease-out) 300ms both; }
-.export-card.is-done .export-success-sub { animation: df-success-rise 380ms var(--ease-out) 360ms both; }
+.export-card:is(.is-done, .is-failed) .export-success-title { animation: df-success-rise 380ms var(--ease-out) 220ms both; }
+.export-card:is(.is-done, .is-failed) .export-success-name { animation: df-success-rise 380ms var(--ease-out) 300ms both; }
+.export-card:is(.is-done, .is-failed) .export-success-sub { animation: df-success-rise 380ms var(--ease-out) 360ms both; }
+
+/* ---------- 失败态(红叉):与成功对钩共用同一套环 + 笔画描出动画 ----------
+ * 用户要的是「失败也要有丝滑过渡到红叉」,所以这里不新做一套动效:
+ * 只把 .export-check 的主色从 --ok 换成 --danger,再把对勾换成两条对角笔画。
+ * 两条笔画按先后顺序各画 140ms,视觉上就是"一撇再一捺"的叉。 */
+.export-check-cross {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  display: none;
+}
+.export-card.is-failed .export-check { color: var(--danger); }
+.export-card.is-failed .export-check::before {
+  background: radial-gradient(circle at 50% 44%, color-mix(in srgb, var(--danger) 20%, transparent), color-mix(in srgb, var(--danger) 6%, transparent));
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+.export-card.is-failed .export-check::after { border-color: color-mix(in srgb, var(--danger) 44%, transparent); }
+.export-card.is-failed .export-check-ring circle { stroke: color-mix(in srgb, var(--danger) 58%, transparent); }
+.export-card.is-failed .export-check-mark { display: none; }
+.export-card.is-failed .export-check-cross { display: block; }
+.export-check-cross path {
+  fill: none;
+  stroke: var(--danger);
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-dasharray: 40;
+  stroke-dashoffset: 40;
+}
+.export-card.is-failed .export-check-cross path:first-child {
+  animation: df-cross-draw 220ms cubic-bezier(0.65, 0, 0.35, 1) 300ms forwards;
+}
+.export-card.is-failed .export-check-cross path:last-child {
+  animation: df-cross-draw 220ms cubic-bezier(0.65, 0, 0.35, 1) 430ms forwards;
+}
+@keyframes df-cross-draw { to { stroke-dashoffset: 0; } }
+/* 失败标题用危险色,与红叉呼应;正文保持中性色,长错误信息才读得清。 */
+.export-card.is-failed .export-success-title { color: var(--danger); }
+/* 失败原因通常是一整句(可能很长):允许换行,别用成功态那种单行省略。 */
+.export-card.is-failed .export-success-sub {
+  max-width: 46ch;
+  max-height: 7.2em;
+  margin-bottom: 10px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: left;
+  scrollbar-width: thin;
+}
+
+/* ---------- 渲染器日志的「复制」按钮 ----------
+ * 一处放在日志窗口标题栏(导出中就能拿),一处放在导出结束后的出口按钮里。
+ * 都是"安静的小按钮":深色终端里只用边框 + 次级文字色,不抢状态行的注意力。 */
+.render-log-copy {
+  flex: none;
+  padding: 2px 8px;
+  color: var(--term-text-2);
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  line-height: 1.6;
+  background: transparent;
+  border: 1px solid var(--term-line);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: color 140ms var(--ease), border-color 140ms var(--ease), background-color 140ms var(--ease);
+}
+.render-log-copy:hover { color: var(--term-text); border-color: color-mix(in srgb, var(--term-text-2) 50%, transparent); }
+.render-log-copy:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.render-log-copy.is-copied { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 60%, transparent); }
+.render-log-copy.is-failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 60%, transparent); }
+.export-copy-log {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.export-copy-log.is-copied { color: var(--ok); }
+.export-copy-log.is-failed { color: var(--danger); }
+
 @keyframes df-success-rise {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
 }
 /* 头部淡出但保留高度:aria-labelledby 仍指向 #exportTitle,读屏拿到的名字同步变成「导出成功」。 */
-.export-card.is-done .export-head { opacity: 0; pointer-events: none; transition: opacity 180ms var(--ease); }
+.export-card:is(.is-done, .is-failed) .export-head { opacity: 0; pointer-events: none; transition: opacity 180ms var(--ease); }
 /* 日志槽:1fr -> 0fr 由卡片高度过渡一起收;日志本身先淡出,避免最后一行"啪"地消失。 */
 .export-log-slot { display: grid; grid-template-rows: 1fr; }
 .export-log-inner { min-height: 0; overflow: hidden; }
-.export-card.is-done .render-log { transition: opacity 160ms var(--ease); }
+.export-card:is(.is-done, .is-failed) .render-log { transition: opacity 160ms var(--ease); }
 .export-card.is-done:not(.is-log-open) .export-log-slot { grid-template-rows: 0fr; }
 .export-card.is-done:not(.is-log-open) .render-log { opacity: 0; }
 .export-card.is-done.is-log-open .export-log-slot { margin-top: 2px; }
 /* 成功态下文件行收起:文件名与保存结果已经在对勾下方写好。 */
-.export-card.is-done .export-file { display: none; }
+.export-card:is(.is-done, .is-failed) .export-file { display: none; }
 /* 动作与日志开关在成功卡落定后错峰出现,不做无意义的循环。 */
-.export-card.is-done .export-actions { animation: df-success-rise 360ms var(--ease-out) 420ms both; }
-.export-card.is-done .export-warn { display: none; }
+.export-card:is(.is-done, .is-failed) .export-actions { animation: df-success-rise 360ms var(--ease-out) 420ms both; }
+.export-card:is(.is-done, .is-failed) .export-warn { display: none; }
 .export-foot {
   display: flex;
   align-items: center;
@@ -2500,7 +2582,7 @@ html:not([data-page='editor']) .statusbar:not(.error) .statusbar-text { opacity:
   margin-top: 14px;
 }
 .export-foot[hidden] { display: none; }
-.export-card.is-done .export-foot { animation: df-success-rise 320ms var(--ease-out) 520ms both; }
+.export-card:is(.is-done, .is-failed) .export-foot { animation: df-success-rise 320ms var(--ease-out) 520ms both; }
 .export-foot :is(button, fluent-button) {
   min-width: 0;
   min-height: 0;
@@ -3631,6 +3713,8 @@ html:not([data-ui='mobile']) .page.is-entering .logs-bar { animation-delay: 55ms
 .about-btn[disabled] { cursor: progress; color: var(--text-3); }
 .about-btn .bi { width: 14px; height: 14px; flex: none; color: var(--text-3); }
 .about-btn.is-busy .bi { animation: about-spin 900ms linear infinite; }
+/* 复制成功时按钮短暂变绿:文案也写「已复制」,颜色只是让人不读字也知道点到了 */
+.about-btn.is-copied { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line-strong)); }
 @keyframes about-spin { to { transform: rotate(360deg); } }
 .about-path {
   min-width: 0;
@@ -3646,6 +3730,28 @@ html:not([data-ui='mobile']) .page.is-entering .logs-bar { animation-delay: 55ms
 .about-craft .bi { width: 13px; height: 13px; flex: none; color: var(--text-3); }
 .about-craft b { color: var(--text); font-weight: 600; }
 .about-meta { margin: 0 0 4px; color: var(--text-3); font-size: 11.5px; }
+/* 手机端设备快照(src/start-screen.ts 写入):一段"要被复制走"的文本 —— 等宽字体让数字对齐,
+   pre-wrap 保住分组换行,anywhere 让长 UA 在窄屏上折行而不是把卡片撑破。 */
+.about-device {
+  margin: 2px 0 6px;
+  padding-top: 8px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.about-device[hidden] { display: none; }
+/* 复制结果行:role=status 的可见形态。空着时不留高度,但**不 display:none** ——
+   隐藏起来的 live region 读屏不会播报。 */
+.about-device-status { margin: 0 0 6px; font-size: 11.5px; color: var(--text-2); }
+.about-device-status:empty { margin: 0; }
+.about-device-status[data-state='ok'] { color: var(--ok); }
+.about-device-status[data-state='error'] { color: var(--danger); }
+/* 设备行紧挨着快照正文:48px 的最小行高留给上面那些"标签 + 控件"的行就够了 */
+.about-device-row { min-height: 44px; }
 .about-link { color: var(--text-2); text-decoration: none; border-bottom: 1px solid var(--line-accent); }
 .about-link:hover { color: var(--text); }
 
@@ -4818,16 +4924,16 @@ html.is-theme-fading *::after {
   .export-percent.cancel { animation: none; }
   /* 导出成功态:对勾直接是画好的(描边动画取消),文字与动作直接出现;
    * 信息完整,只是没有过程。模糊滤镜一并去掉。 */
-  .export-card.is-done .export-progress { filter: none; }
-  .export-card.is-done .export-check::before { animation: none; transform: none; opacity: 1; }
-  .export-card.is-done .export-check::after { display: none; }
-  .export-card.is-done .export-check-ring circle,
-  .export-card.is-done .export-check-mark path { animation: none; stroke-dashoffset: 0; }
-  .export-card.is-done .export-success-title,
-  .export-card.is-done .export-success-name,
-  .export-card.is-done .export-success-sub,
-  .export-card.is-done .export-actions,
-  .export-card.is-done .export-foot { animation: none; opacity: 1; transform: none; }
+  .export-card:is(.is-done, .is-failed) .export-progress { filter: none; }
+  .export-card:is(.is-done, .is-failed) .export-check::before { animation: none; transform: none; opacity: 1; }
+  .export-card:is(.is-done, .is-failed) .export-check::after { display: none; }
+  .export-card:is(.is-done, .is-failed) .export-check-ring circle,
+  .export-card:is(.is-done, .is-failed) .export-check-mark path { animation: none; stroke-dashoffset: 0; }
+  .export-card:is(.is-done, .is-failed) .export-success-title,
+  .export-card:is(.is-done, .is-failed) .export-success-name,
+  .export-card:is(.is-done, .is-failed) .export-success-sub,
+  .export-card:is(.is-done, .is-failed) .export-actions,
+  .export-card:is(.is-done, .is-failed) .export-foot { animation: none; opacity: 1; transform: none; }
   .ap-card:hover { transform: none; }
   .ap-card:hover .ap-card-cover img { transform: none; }
   /* 开始页:检查更新时那颗转圈图标与扫描条都是"动效承载信息"的例子 ——

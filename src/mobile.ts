@@ -84,14 +84,28 @@ export function initMobileUI(hooks: MobileHooks): void {
 
   root.dataset.ui = 'mobile';
 
-  /* 顶栏「下载列表」按钮:手机端不提供这个功能。
-   * 为什么在这里藏而不是在 main.ts 的 if (isDesktopDownloads) 那一段加条件:
-   * 那一行在模块求值期就执行,而 IS_MOBILE 的声明在文件更靠后的位置(会踩到 TDZ)。
-   * 本模块在 main.ts 模块体末尾运行,此时按钮的显隐已经落定,直接覆盖即可 ——
-   * 而且用户看到的是启动加载层,不存在闪一下的问题。
-   * 打开面板的唯一入口(openDownloads)在 main.ts 里也已经对移动端直接返回。 */
-  const downloadsBtn = document.getElementById('btnDownloads');
-  if (downloadsBtn) downloadsBtn.hidden = true;
+  /* 手机端不提供「下载列表」这一整套功能:落点是系统相册(MediaStore),
+   * 而列表里那套「定位 / 打开 / 重命名」对 content:// URI 没有对应能力。
+   *
+   * 这里不只是 hidden,而是把入口从 DOM 里摘掉:
+   *   · 顶栏「下载列表」按钮(#btnDownloads,mobile.css 之外的地方也会改它);
+   *   · 侧边导航轨对应项(#navDownloads,手机端本来由 CSS 隐藏,摘掉后底栏格数
+   *     与指示条宽度也不再依赖一条 display:none 才能算对);
+   *   · 独立打开的 #downloadsPanel 再加一道 hidden 保险。
+   * main.ts 的 openDownloads() 仍保留 IS_MOBILE 早退 —— 两条路都断掉,
+   * 手机用户就再也找不到一个"点了没反应"的下载入口。
+   *
+   * 为什么在 mobile.ts 而不是 main.ts 里加条件:main.ts 里设置按钮显隐的那行
+   * 在模块求值期就执行,而 IS_MOBILE 的声明在文件更靠后(会踩到 TDZ)。
+   * 本模块在 main.ts 模块体末尾运行,此时显隐已经落定;用户看到的还是启动加载层。 */
+  document.getElementById('btnDownloads')?.remove();
+  document.getElementById('navDownloads')?.remove();
+  const downloadsPanelEl = document.getElementById('downloadsPanel');
+  if (downloadsPanelEl) downloadsPanelEl.hidden = true;
+  /* 导出成功卡上的「打开文件夹」:手机没有资源管理器/下载列表可开,
+   * 落点已经是系统相册。这里再兜一层(main.ts 的 finishExportOverlay 也会按 IS_MOBILE 藏掉),
+   * 免得导出结束那一刻被一段旧逻辑重新亮出来。 */
+  document.getElementById('btnExportOpenDir')?.setAttribute('hidden', '');
 
   /* ========================================================================
    * 〇、底栏选中指示条:一条共享的 2px 条在四格之间滑过去
@@ -640,6 +654,9 @@ export function initMobileUI(hooks: MobileHooks): void {
   grip.className = 'm-grip';
   grip.setAttribute('role', 'separator');
   grip.setAttribute('aria-label', '拖动调整面板大小,双击在收起与半屏之间切换');
+  grip.setAttribute('aria-orientation', 'horizontal');
+  grip.setAttribute('aria-valuemin', '0');
+  grip.setAttribute('aria-valuenow', '0');
   grip.tabIndex = 0;
   panel.insertBefore(grip, panel.firstChild);
 
@@ -692,6 +709,13 @@ export function initMobileUI(hooks: MobileHooks): void {
       }
       if (cur) cur.nodes.push(child);
     }
+    /* 给每个节点打上分区标记:mobile.css 的「只显示当前分区」规则依赖
+     * [data-df-sec]:not(.is-active-sec)。这里必须先写入该标记 ——
+     * 只 toggle .is-active-sec 而从不写 data-df-sec,会让隐藏规则永远不命中,
+     * 五个分区同时堆在面板里(实测面板 7554px 高、芯片点了也不换内容)。 */
+    out.forEach((sec, i) => {
+      for (const n of sec.nodes) n.dataset.dfSec = String(i);
+    });
     return out;
   }
 
@@ -816,7 +840,11 @@ export function initMobileUI(hooks: MobileHooks): void {
   /* ---------- 尺寸:竖屏吸附高度 / 停靠吸附宽度 ---------- */
   function snaps(): number[] {
     const avail = layout.clientHeight || window.innerHeight;
-    const min = Math.min(196, Math.max(120, avail * 0.2));
+    /* 收起档不能只露"把手 + 芯片 + (被切掉的一键重置)" —— 那样用户会以为面板里没有可编辑内容。
+     * 210/168 的下限让 390 宽下露出约 90px 内容、360 宽下约 72px:至少能看到当前分区的第一行。
+     * 多出来的高度吃的是舞台里的空信箱区(16:9 画面宽度受限,上下本来就有空白),
+     * 画面尺寸不变(实测舞台 418px 时画面仍是 374×210)。 */
+    const min = Math.min(210, Math.max(168, avail * 0.34));
     /* 展开档要给预览留够高度:实测 avail-220 时舞台只剩 140px,编辑时看不清效果。
      * 280 的余量刚好够「播放条 + 一行时间轴 + 巴掌大的预览」。 */
     const max = Math.max(min + 40, Math.min(avail * 0.84, avail - 280));
@@ -842,6 +870,10 @@ export function initMobileUI(hooks: MobileHooks): void {
    * 两个轴向各自清掉另一轴的行内值:竖屏行内高度如果留到停靠模式,会把侧栏顶成整屏高。 */
   function setSheet(h: number, snapping: boolean): void {
     panel.classList.toggle('is-snapping', snapping);
+    /* 只写 aria 值,不在拖拽帧里读布局:snaps() 会读 layout.clientHeight,
+     * 每帧读一次就会触发布局,直接违背拖把手"零重排"的纪律(见下方注释)。 */
+    grip.setAttribute('aria-orientation', 'horizontal');
+    grip.setAttribute('aria-valuenow', String(Math.round(h)));
     const px = Math.round(h) + 'px';
     panel.style.width = '';
     panel.style.height = px;
@@ -851,6 +883,8 @@ export function initMobileUI(hooks: MobileHooks): void {
   }
   function setSide(w: number, snapping: boolean): void {
     panel.classList.toggle('is-snapping', snapping);
+    grip.setAttribute('aria-orientation', 'vertical');
+    grip.setAttribute('aria-valuenow', String(Math.round(w)));
     const px = Math.round(w) + 'px';
     panel.style.height = '';
     panel.style.width = px;

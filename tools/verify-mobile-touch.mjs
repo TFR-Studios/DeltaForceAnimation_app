@@ -50,7 +50,8 @@ try {
   page.on('pageerror', (e) => errs.push(String(e.message).slice(0, 160)));
   page.on('console', (m) => { if (m.type() === 'error') errs.push('console: ' + m.text().slice(0, 160)); });
 
-  await page.goto(url + (url.includes('?') ? '&' : '?') + 'ui=mobile', { waitUntil: 'domcontentloaded', timeout: 120000 });
+  /* 多页外壳之后默认页是主页?#stage 在主页是 hidden;手势回归必须显式进编辑器。 */
+  await page.goto(url + (url.includes('?') ? '&' : '?') + 'ui=mobile&view=editor', { waitUntil: 'domcontentloaded', timeout: 120000 });
   await page.waitForFunction(() => !document.getElementById('app-loading') || document.getElementById('app-loading').classList.contains('is-hidden'), { timeout: 120000, polling: 100 });
   await page.waitForFunction(() => window.__anim && window.__anim.isLoaded, { timeout: 120000, polling: 100 }).catch(() => {});
   await sleep(800);
