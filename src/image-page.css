@@ -1302,13 +1302,170 @@
   .imged-layers { flex: 0 0 auto; max-height: 30vh; }
   .imged-stage { min-height: 46vh; }
 }
-@media (max-width: 720px) {
-  .imged-bar { flex-wrap: wrap; min-height: 0; }
-  .imged-actions { margin-left: 0; width: 100%; justify-content: flex-start; }
+@media (max-width: 720px), (orientation: landscape) and (max-height: 619px) {
+  /* 参照手机动画编辑器:顶栏让位,舞台 → 控制行 → 可拖拽底部面板(chips) */
+  .imged-bar { display: none; }
+  .imged-mobile-row {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: 6px var(--sp-3);
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+  }
+  .imged-mobile-row .imged-m-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .imged-mobile-row .imged-actions {
+    margin-left: auto;
+    width: auto;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+  }
+  .imged-mobile-row .imged-actions-sep { display: none; }
+  .imged-btn { height: 40px; padding: 0 var(--sp-3); font-size: 13px; }
+  .imged-actions [data-imged="export-png"] { height: 40px; min-width: 96px; }
+
+  /* 高度分配:面板高度由拉条写 --imged-sheet,舞台吃掉剩下的高度 */
   .imged-grid { grid-template-columns: 1fr; }
-  .imged-stage { padding: var(--sp-2); }
-  .imged-status { left: var(--sp-2); bottom: var(--sp-2); }
+  .imged-stage { flex: 1 1 auto; min-height: 120px; height: auto; padding: var(--sp-2); }
+  .imged-panel {
+    flex: 0 0 auto;
+    height: var(--imged-sheet, 44dvh);
+    max-height: none;
+    min-height: 0;
+  }
+  .imged-panel.is-snapping { transition: height 220ms var(--ease-out); }
+  .imged-panel.is-dragging { transition: none; }
+  .imged-layers { flex: none; max-height: none; overflow: visible; }
+
+  /* 拖拽拉条(参考动画编辑器 .m-grip):上拖展开、下拖收起、双击切换 */
+  .imged-m-grip {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 22px;
+    background: var(--surface);
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+  }
+  .imged-m-grip span {
+    width: 38px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--line-strong);
+    transition: width 160ms var(--ease), background-color 160ms var(--ease);
+  }
+  .imged-panel.is-dragging .imged-m-grip span,
+  .imged-m-grip:active span { width: 56px; background: var(--text-3); }
+  .imged-m-grip:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+  /* 吸顶分区 chips:横向可滚,与面板一起滚动时贴在拉条下 */
+  .imged-m-chips {
+    position: sticky;
+    top: 22px;
+    z-index: 2;
+    flex: none;
+    display: flex;
+    gap: var(--sp-2);
+    margin: 0;
+    padding: 6px var(--sp-4);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    scrollbar-width: none;
+  }
+  .imged-m-chips::-webkit-scrollbar { display: none; }
+  .imged-m-chip {
+    flex: none;
+    height: 32px;
+    padding: 0 var(--sp-3);
+    color: var(--text-2);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      color var(--dur-fast) var(--ease),
+      background-color var(--dur-fast) var(--ease),
+      border-color var(--dur-fast) var(--ease);
+  }
+  .imged-m-chip:active { background: var(--surface-3); }
+  .imged-m-chip[aria-current='true'] {
+    color: var(--on-brand);
+    background: var(--brand);
+    border-color: transparent;
+    font-weight: 600;
+  }
+  .imged-m-chip:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  /* 状态条移到舞台左上,不再与右下缩放条重叠 */
+  .imged-status {
+    left: var(--sp-2);
+    right: auto;
+    top: var(--sp-2);
+    bottom: auto;
+    max-width: calc(100% - 2 * var(--sp-2));
+    font-size: 10.5px;
+  }
   .imged-result { top: var(--sp-2); right: var(--sp-2); width: calc(100% - 2 * var(--sp-2)); }
+
+  /* 缩放条:触控目标 ≥ 34px */
+  .imged-zoom { right: var(--sp-2); bottom: var(--sp-2); gap: 3px; padding: 3px; }
+  .imged-zoom-btn,
+  .imged-zoom-fit { height: 34px; padding: 0 10px; font-size: 12.5px; }
+  .imged-zoom-btn { width: 38px; }
+  .imged-zoom-btn svg { width: 16px; height: 16px; }
+  .imged-zoom-value { min-width: 46px; font-size: 12.5px; }
+
+  /* 触控目标 ≥ 44px:图层行 / 滑杆 / 名片分段按钮 */
+  .imged-layer { min-height: 48px; padding: 8px var(--sp-2); }
+  /* style.css 的 input[type='range'] 是 (0,1,1),比 .imged-range 更具体,必须加类型选择器抬上去 */
+  input[type='range'].imged-range { height: 32px; }
+  input[type='range'].imged-range::-webkit-slider-runnable-track { height: 5px; }
+  input[type='range'].imged-range::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -9.5px; }
+  input[type='range'].imged-range::-moz-range-track { height: 5px; }
+  input[type='range'].imged-range::-moz-range-thumb { width: 24px; height: 24px; }
+  .imged-card-mode { height: 34px; padding: 0 10px; font-size: 12px; }
+  .imged-card-reset { height: 34px; width: 34px; }
+  .imged-card-go { height: 40px; padding: 0 var(--sp-3); }
+  /* 名片四角透视是手指直接拖的:12px 手柄在触屏上太小,放大到 18/24px 并禁用滚动手势 */
+  .imged-card-quad,
+  .imged-card-quad-fill,
+  .imged-card-corner,
+  .imged-card-rotate-handle { touch-action: none; }
+  .imged-card-corner { r: 9px; stroke-width: 2; }
+  .imged-card-rotate-handle { r: 12px; }
+
+  /* iOS 聚焦不缩放:输入类字号 ≥ 16px */
+  .imged-panel input[type='text'],
+  .imged-panel input[type='search'],
+  .imged-panel textarea,
+  .imged-picker input[type='text'],
+  .imged-picker input[type='search'] { font-size: 16px; }
+
+  /* 名片选择器 */
   .imged-picker {
     width: calc(100vw - 2 * var(--sp-3));
     max-height: 92dvh;
@@ -1316,8 +1473,37 @@
   .imged-picker-head { padding: var(--sp-3); }
   .imged-picker-tools { padding: var(--sp-2) var(--sp-3); }
   .imged-picker-body { padding: var(--sp-3); }
-  .imged-picker-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+  .imged-picker-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: var(--sp-2); }
+  .imged-card-item { min-height: 44px; }
   .imged-picker-count { display: none; }
+}
+
+/* ---------- 手机横屏:编辑区停靠右侧,纵向全部让给舞台 ---------- */
+@media (orientation: landscape) and (max-height: 619px) {
+  .imged-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 42vw);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .imged-stage {
+    grid-column: 1;
+    grid-row: 1 / 3;
+    height: auto;
+    min-height: 0;
+  }
+  .imged-mobile-row {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .imged-panel {
+    grid-column: 2;
+    grid-row: 2;
+    height: auto;
+    max-height: none;
+    min-height: 0;
+  }
+  .imged-m-grip { display: none; }
+  .imged-m-chips { top: 0; }
 }
 
 /* 减少动效:所有过渡 / 动画退化,功能不受影响 */

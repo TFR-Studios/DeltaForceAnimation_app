@@ -51,7 +51,7 @@ html[data-ui='mobile'] {
   --m-craft-h: 24px;
   /* 底栏选中指示条:位置由 mobile.ts 写入(格数 / 当前页序号)。
    * 这里给首帧一个合法初值(主页、4 格),JS 没跑时也不会指向不存在的格子。 */
-  --m-nav-count: 4;
+  --m-nav-count: 5;
   --m-nav-i: 0;
 }
 
@@ -772,15 +772,17 @@ html[data-ui='mobile'] .rail-items::before {
   top: 0;
   left: 0;
   z-index: 1;
-  width: calc(100% / var(--m-nav-count, 4));
+  /* 位置与宽度由 mobile.ts 按选中格真实 rect 写入(--m-nav-x / --m-nav-w),
+   * 不再用 1/格数 假设等宽 —— 五格 + 中文标签在窄屏/大字号下可能不等宽。 */
+  width: var(--m-nav-w, calc(100% / var(--m-nav-count, 5)));
   height: 2px;
   border-radius: 0 0 2px 2px;
-  /* 25% 宽的槽里只画中间 40%:视觉上仍是一小截 2px 条,位移却按整格走 */
+  /* 只在格子中间 40% 画实线:视觉上仍是一小截 2px 条,位移按真实格子走 */
   background: linear-gradient(90deg,
     transparent 0 30%,
     var(--brand) 30% 70%,
     transparent 70% 100%);
-  transform: translateX(calc(var(--m-nav-i, 0) * 100%));
+  transform: translateX(var(--m-nav-x, calc(var(--m-nav-i, 0) * 100%)));
   pointer-events: none;
 }
 html[data-ui='mobile'] .rail-items[data-nav-ready]::before {
@@ -794,11 +796,15 @@ html[data-ui='mobile'] .rail-items.has-indicator .rail-item.is-active { backgrou
 html[data-ui='mobile'] .rail-item {
   position: relative;
   flex: 1 1 0;
+  /* 五格后必须允许收缩:min-width:auto 会让长标签把格子撑宽,指示条就对不上 */
+  min-width: 0;
   height: 100%;
   flex-direction: column;
+  align-items: center;
   justify-content: center;
   gap: 3px;
   padding: 0;
+  text-align: center;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -813,7 +819,15 @@ html[data-ui='mobile'] .rail-item {
 }
 /* 图标在上、文字在下:宿主上的 flex-direction 进不了 Fluent 按钮的 .content,
  * 必须用 ::part(content) 接管(否则是图标与文字并排)。 */
-html[data-ui='mobile'] .rail-item::part(content) { flex-direction: column; gap: 3px; }
+/* Fluent 按钮的 slot 内容在 shadow DOM 的 .content 里:只改宿主 flex-direction 进不去。
+ * 必须同时把 .content 的 align-items 设成 center,否则 19px 图标会贴在文字列左边,
+ * 而文字本身是居中的 —— 看上去就是"图标和文字没有相对居中"。 */
+html[data-ui='mobile'] .rail-item::part(content) {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
 html[data-ui='mobile'] .rail-item .bi {
   width: 19px;
   height: 19px;
@@ -825,7 +839,14 @@ html[data-ui='mobile'] .rail-item:hover { background: transparent; border: none;
 html[data-ui='mobile'] .rail-item:active { background: var(--surface-hover); transform: none; }
 html[data-ui='mobile'] .rail-item:active .bi { transform: scale(0.9); }
 /* 文字在手机上不参与折叠逻辑:直接恢复常显 */
-html[data-ui='mobile'] .rail-item span { max-width: none; opacity: 1; }
+html[data-ui='mobile'] .rail-item span {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 1;
+}
 /* 选中态:手机上不用"实心浅底"那块(会变成一条突兀的色块),只用图文提亮 + 顶部 2px 指示条。
  * 颜色过渡 180ms、指示条 220ms:一个"亮起来"、一个"滑过去",同一组状态变化里两种速度。 */
 html[data-ui='mobile'] .rail-item.is-active {
@@ -833,9 +854,9 @@ html[data-ui='mobile'] .rail-item.is-active {
   border: none;
   color: var(--text);
 }
-html[data-ui='mobile'] .rail-item.is-active .bi { color: var(--text); transform: translateY(-1px); }
-/* 选中的格子被按下:保留"抬 1px",同时缩到 0.9 —— 两个 transform 合并,不打架 */
-html[data-ui='mobile'] .rail-item.is-active:active .bi { transform: translateY(-1px) scale(0.9); }
+/* 选中只提亮,不抬高图标:1px 位移会让选中的图标偏离文字中线 */
+html[data-ui='mobile'] .rail-item.is-active .bi { color: var(--text); transform: none; }
+html[data-ui='mobile'] .rail-item.is-active:active .bi { transform: scale(0.9); }
 html[data-ui='mobile'] .rail-foot { display: none; }
 /* 底部标签栏没有"收起"这个概念;手机端整条 .rail-head 不出现 */
 html[data-ui='mobile'] .rail-head { display: none; }
@@ -1323,6 +1344,4 @@ html[data-ui='mobile'] .export-file .dw-meta {
 
 /* 音频提取依赖主进程读 pak / Oodle 解压,手机端没有这套能力,导航项直接不出现。 */
 html[data-ui='mobile'] .rail-item[data-page='audio'] { display: none; }
-/* 图片编辑器(PSD)同样只开放桌面端:11MB 起步的 PSD 解析 + 导出落盘都指望桌面环境,
- * 手机上那块窄屏也不适合对着画布调文字。页面仍在,?view=image 可以直接看。 */
-html[data-ui='mobile'] .rail-item[data-page='image'] { display: none; }
+/* 图片编辑器在手机端开放:底栏第五格进入 #viewImage,页面内部用手机专用控制条 + 分区 chips。 */

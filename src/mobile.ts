@@ -131,14 +131,29 @@ export function initMobileUI(hooks: MobileHooks): void {
       const items = visibleNavItems();
       if (!items.length) return;
       const idx = Math.max(0, items.findIndex((el) => el.dataset.page === (root.dataset.page || 'home')));
+      /* 不再假设每格等宽:按当前选中格的真实 rect 写指示条位置/宽度。
+       * 五格底栏 + 中文标签在窄屏/字体放大时可能不等宽,按 1/格数 算会歪。 */
+      const railRect = railItems.getBoundingClientRect();
+      const activeRect = items[idx].getBoundingClientRect();
+      if (!railRect.width || !activeRect.width) return;
       railItems.style.setProperty('--m-nav-count', String(items.length));
       railItems.style.setProperty('--m-nav-i', String(idx));
+      railItems.style.setProperty('--m-nav-x', Math.round(activeRect.left - railRect.left) + 'px');
+      railItems.style.setProperty('--m-nav-w', Math.round(activeRect.width) + 'px');
     };
     syncNavIndicator();
     /* 下一帧再挂过渡:首帧那次定位必须"本来就在那儿"(见上)。 */
     requestAnimationFrame(() => railItems.setAttribute('data-nav-ready', ''));
     /* showPage 已经先改完 data-page 与 .is-active 再广播,所以这里只读状态、不推断方向 */
     window.addEventListener('dfae:viewchange', syncNavIndicator);
+    /* CSS 晚到 / 字体加载 / 横竖屏切换都会改变格子宽度,重算一次避免停在旧位置 */
+    window.addEventListener('resize', syncNavIndicator);
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => syncNavIndicator()).observe(railItems);
+    }
+    if (document.fonts && document.fonts.ready) {
+      void document.fonts.ready.then(() => syncNavIndicator()).catch(() => undefined);
+    }
   }
 
   /* ========================================================================

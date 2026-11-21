@@ -2,7 +2,7 @@
 
 ## Project
 - 纯静态前端(Vite 7 + TypeScript 5.8 + lottie-web,无后端、无框架),把 10 套游戏 Lottie 动画变成可改文案 / 颜色族 / 图标 / 时长 / 不透明度并导出 MP4 或透明 AVI 的工具。
-- 同一份产物里还有第二个编辑器「图片编辑器」:编辑应用内置的结算图 PSD(pictures/settlement),改文字图层的内容 / 颜色 / 透明度,从 190 张名片素材里选一张,支持等比 / 自由 / 四角透视三种缩放方式,导出 PNG(桌面端专用)。
+- 同一份产物里还有第二个编辑器「图片编辑器」:编辑应用内置的结算图 PSD(pictures/settlement),改文字图层的内容 / 颜色 / 透明度,从 190 张名片素材里选一张,支持等比 / 自由 / 四角透视三种缩放方式,导出 PNG(桌面与手机壳按平台落盘)。
 - 同一份 `dist/` 套两层壳:Windows 用 Electron 31.7.7(主推发布形态),Android 用 Tauri v2 + 系统 WebView;平台差异只在编译期 cfg、`src/mobile.ts` 与落盘路径。
 - 版本真源是 `package.json`,但发版时 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 三处必须一致,且 tag `vX.Y.Z` 必须等于它(`scripts/check-version.mjs`,CI 第一道闸)。
 - 编辑结果不落盘:只有"最近使用的动画"记在 localStorage,刷新即还原。
@@ -71,7 +71,7 @@ README.md             维护手册:安装、打包、发版、外壳实现、FAQ
 - `node tools/verify-export-fallback.mjs` AAC / Opus / 无 WebCodecs / 移动端下载门禁
 - `node tools/verify-export-resilience.mjs` 探测挂死、编码器报错、透明 AVI 内存护栏后按钮锁复位
 - `node tools/verify-render-log.mjs` 导出浮层里的渲染器日志(卡片边界、无横向溢出)
-- `node tools/verify-image-editor.mjs` 图片编辑器:内置 PSD 载入 / 4 张背景图切换与撤销(换背景后屏幕无透明孔)/ 滚轮缩放+拖动平移+双击复位 / 改字改色改透明度 / 名片选择器(190 张、分类、搜索、方向键、等比/自由/透视三种模式、单角拖动、整体平移、旋转、复位、换背景位置不变、来源标注、Esc 焦点归还)/ 导出 PNG(含忙碌态、结果卡、「打开文件夹」/整幅不透明且屏幕中心非黑)/ 撤销(含名片)/ 窄屏 / 手机端不出现
+- `node tools/verify-image-editor.mjs` 图片编辑器:内置 PSD 载入 / 4 张背景图切换与撤销(换背景后屏幕无透明孔)/ 滚轮缩放+拖动平移+双击复位 / 改字改色改透明度 / 名片选择器(190 张、分类、搜索、方向键、等比/自由/透视三种模式、单角拖动、整体平移、旋转、复位、换背景位置不变、来源标注、Esc 焦点归还)/ 导出 PNG(含忙碌态、结果卡、「打开文件夹」/整幅不透明且屏幕中心非黑)/ 撤销(含名片)/ 窄屏 / 手机底栏入口 + 舞台下控制条 + 分区 chips 跳转 + 双指捏合缩放 / 编辑区拉条折叠 / 名片触屏缩放 / 横屏左右分栏
 - `node tools/verify-logs.mjs`、`tools/verify-devlog.mjs`、`tools/verify-ux-motion.mjs` 用户日志 / 开发者日志 / 动效
 - `node tools/mobile-perf.mjs` 移动端交互性能探针(非断言型)
 
@@ -127,6 +127,7 @@ README.md             维护手册:安装、打包、发版、外壳实现、FAQ
 - `.bat` 里的中文按**当前控制台代码页**解码:文件存 GBK、开头 `chcp 936`;`more` 和部分外部命令会把代码页切成 65001,之后 cmd 按 UTF-8 解批处理里的 GBK,中文全变「锟斤拷」。回放日志用 `type`,并在每条外部命令之后补 `chcp 936 >nul`。
 - `.bat` 里把右括号转义成 `^)`(如 `(echo ...^)>> 日志`)会让 cmd 找不到收尾括号、一路读到文件尾并以退出码 255 中止整批,后面的 `pause` 不执行——构建一失败窗口就瞬间关闭。写日志改用 `>> "文件" echo ...`,或右括号不转义。
 - `tools/` 里 200+ 脚本多为一次性排障;复用前先看文件头是否标「常驻」,别把一次性诊断当回归。
+- 手机底栏指示条按选中格真实 rect 写 `--m-nav-x/--m-nav-w`,不要用 1/格数 假设等宽:五格 + 中文标签在窄屏 / 字体放大下会不等宽,按比例算会歪;格子必须 `min-width: 0` 允许收缩。底栏是 Fluent 按钮,图标/文字在 shadow DOM 的 `.content` 里:`::part(content)` 必须同时设 `align-items: center`(只改 flex-direction 不够),否则 19px 图标贴左、文字居中,看起来图标和文字不在一条中线上。
 - 图片编辑器舞台的 `pointerdown` 会 `preventDefault()` + `setPointerCapture()`,浮层控件(导出结果卡、缩放条、空状态)只要没在 `isStageUi()` 里放行,里面的按钮就永远收不到 click;这类回归必须用 `page.mouse.click` 真实点,脚本 `.click()` 绕过 pointerdown 查不出来。
 - `tools/check-downloads.mjs` 头部用法行写的是旧文件名 `verify-download-history.mjs`,以实际文件名为准。
 

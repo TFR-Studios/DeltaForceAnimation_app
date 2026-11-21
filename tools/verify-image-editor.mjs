@@ -9,7 +9,7 @@
  *      选中框随缩放/平移一起走;
  *   5) 改内容 / 颜色 / 透明度后画面真的重绘(旧颜色像素清掉),撤销能回到原值;
  *   6) 导出 PNG(走假的主进程桥,拿到字节数);
- *   7) 900px 单列;手机端导航不出现这一格(桌面能力)。
+ *   7) 900px 单列;手机端底栏入口 + 控制条 / 分区 chips。
  * 退出码 0 = 全绿。
  */
 import fs from 'node:fs';
@@ -690,7 +690,7 @@ const parseNormal = (meta) => {
   await page.close();
 }
 
-/* ---------- 手机:导航里不出现(桌面能力) ---------- */
+/* ---------- 手机:底栏入口 + 参照动画编辑器的控制条 / 分区 chips ---------- */
 {
   const page = await browser.newPage();
   const errs = [];
@@ -703,8 +703,144 @@ const parseNormal = (meta) => {
     icon: (() => { const el = document.querySelector('.rail-item[data-page="image"]'); return el ? getComputedStyle(el).display : 'missing'; })(),
     nav: [...document.querySelectorAll('.rail-item')].filter((b) => b.getClientRects().length > 0).map((b) => b.dataset.page),
   }));
-  check('手机:导航轨不出现图片编辑器', mobile.icon === 'none' && !mobile.nav.includes('image'), JSON.stringify(mobile));
+  check('手机:底栏出现图片编辑器入口', mobile.icon !== 'none' && mobile.nav.includes('image'), JSON.stringify(mobile));
+  await page.evaluate(() => document.querySelector('.rail-item[data-page="image"]').click());
+  await page.waitForFunction(() => { const p = document.getElementById('viewImage'); return p && !p.hidden; }, { timeout: 30000 });
+  await page.waitForFunction(() => { const p = document.querySelector('.imged-panel'); return p && !p.hidden; }, { timeout: 120000, polling: 300 }).catch(() => {});
+  await sleep(2500);
+  const layout = await page.evaluate(() => {
+    const visible = (el) => !!el && el.getClientRects().length > 0;
+    const row = document.querySelector('.imged-mobile-row');
+    /* 底栏指示条必须落在选中格中心:按真实 rect 算,不再假设五等分 */
+    const rail = document.querySelector('.rail-items');
+    const railRect = rail.getBoundingClientRect();
+    const active = [...rail.querySelectorAll('.rail-item')].find((b) => b.classList.contains('is-active'));
+    const activeRect = active.getBoundingClientRect();
+    const cs = getComputedStyle(rail);
+    const indCenter = (parseFloat(cs.getPropertyValue('--m-nav-x')) || 0) + (parseFloat(cs.getPropertyValue('--m-nav-w')) || 0) / 2;
+    const itemCenter = activeRect.x + activeRect.width / 2 - railRect.x;
+    const iconRect = active.querySelector('svg').getBoundingClientRect();
+    const labelRect = active.querySelector('span').getBoundingClientRect();
+    return {
+      iconDelta: Math.round(Math.abs(iconRect.x + iconRect.width / 2 - (activeRect.x + activeRect.width / 2))),
+      textDelta: Math.round(Math.abs(labelRect.x + labelRect.width / 2 - (activeRect.x + activeRect.width / 2))),
+      barDisplay: getComputedStyle(document.querySelector('.imged-bar')).display,
+      rowVisible: visible(row),
+      rowButtons: [...document.querySelectorAll('.imged-mobile-row [data-imged]')].filter(visible).map((el) => el.dataset.imged),
+      chips: [...document.querySelectorAll('.imged-m-chip')].map((el) => el.textContent),
+      chipsVisible: visible(document.querySelector('.imged-m-chips')),
+      navDelta: Math.round(Math.abs(indCenter - itemCenter)),
+      ox: document.documentElement.scrollWidth - innerWidth,
+    };
+  });
+  check('手机:图片编辑器控制条 + 分区 chips(参照动画编辑器)',
+    layout.barDisplay === 'none' && layout.rowVisible && layout.chipsVisible
+      && layout.chips.join('|') === '背景|名片|文字图层'
+      && layout.rowButtons.includes('reset') && layout.rowButtons.includes('export-png') && layout.ox <= 0
+      && layout.navDelta <= 1 && layout.iconDelta <= 1 && layout.textDelta <= 1,
+    JSON.stringify(layout));
+  /* 编辑区拉条:下拖收起、点按展开(与动画编辑器的底部面板同一套手感) */
+  const panelHeight = () => page.evaluate(() => Math.round(document.querySelector('.imged-panel').getBoundingClientRect().height));
+  const gripCenter = () => page.evaluate(() => {
+    const r = document.querySelector('.imged-m-grip').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  const sheetH0 = await panelHeight();
+  let grip = await gripCenter();
+  await page.mouse.move(grip.x, grip.y);
+  await page.mouse.down();
+  await page.mouse.move(grip.x, grip.y + 160, { steps: 10 });
+  await page.mouse.up();
+  await sleep(450);
+  const sheetH1 = await panelHeight();
+  grip = await gripCenter();
+  await page.mouse.click(grip.x, grip.y);
+  await sleep(450);
+  const sheetH2 = await panelHeight();
+  check('手机:编辑区拉条下拖收起、点按展开',
+    sheetH1 < sheetH0 - 80 && sheetH2 > sheetH1 + 80,
+    JSON.stringify({ half: sheetH0, collapsed: sheetH1, expanded: sheetH2 }));
+
+  const pinchBefore = await page.evaluate(() => document.querySelector('.imged-zoom-value').textContent);
+  const stageCenter = await page.evaluate(() => {
+    const r = document.querySelector('.imged-stage').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  const cdp = await page.createCDPSession();
+  const two = (x1, x2, y) => [{ x: x1, y, id: 1 }, { x: x2, y, id: 2 }];
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: two(stageCenter.x - 50, stageCenter.x + 50, stageCenter.y) });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: two(stageCenter.x - 80, stageCenter.x + 80, stageCenter.y) });
+  await sleep(220);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await sleep(300);
+  const pinchAfter = await page.evaluate(() => document.querySelector('.imged-zoom-value').textContent);
+  check('手机:双指捏合缩放画面', pinchBefore !== pinchAfter, JSON.stringify({ before: pinchBefore, after: pinchAfter }));
+
+  await page.evaluate(() => document.querySelector('[data-imged-jump="card"]').click());
+  await sleep(800);
+  const jump = await page.evaluate(() => {
+    const panel = document.querySelector('.imged-panel');
+    const target = document.querySelector('[data-imged-sec="card"]');
+    return {
+      active: document.querySelector('[data-imged-jump="card"]').getAttribute('aria-current'),
+      top: Math.round(target.getBoundingClientRect().top - panel.getBoundingClientRect().top),
+    };
+  });
+  check('手机:点击 chips 跳转到对应分区并高亮', jump.active === 'true' && jump.top >= -8 && jump.top < 180, JSON.stringify(jump));
+  /* 触屏名片:四角手柄要能直接拖,不能只支持鼠标 */
+  await page.evaluate(() => document.querySelector('[data-imged="pick-card"]').click());
+  await page.waitForFunction(() => document.querySelector('.imged-picker').open, { timeout: 10000 });
+  await page.evaluate(() => document.querySelector('[data-card-id="business/Ma1/Card_Ma1_vx_4i_Bit_B"]').click());
+  await page.waitForFunction(() => document.querySelector('.imged-card-name').textContent === 'Bit B', { timeout: 30000 });
+  await sleep(700);
+  const cardTouchBefore = parseQuad(await page.evaluate(() => document.querySelector('.imged-card-meta').textContent));
+  const handle = await page.evaluate(() => {
+    const c = document.querySelector('[data-card-corner="1"]');
+    const r = c.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2, r: Number(c.getAttribute('r')) };
+  });
+  const touch = await page.createCDPSession();
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: handle.x, y: handle.y, id: 1 }] });
+  for (let i = 1; i <= 6; i++) {
+    await touch.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x: handle.x + (36 * i) / 6, y: handle.y + (18 * i) / 6, id: 1 }],
+    });
+    await sleep(30);
+  }
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await sleep(500);
+  const cardTouchAfter = parseQuad(await page.evaluate(() => document.querySelector('.imged-card-meta').textContent));
+  check('手机:名片四角手柄可触屏拖动(手柄已放大)',
+    !!cardTouchBefore && !!cardTouchAfter && handle.r >= 9
+      && !samePoint(cardTouchAfter.tr, cardTouchBefore.tr)
+      && samePoint(cardTouchAfter.tl, cardTouchBefore.tl)
+      && samePoint(cardTouchAfter.br, cardTouchBefore.br)
+      && samePoint(cardTouchAfter.bl, cardTouchBefore.bl),
+    JSON.stringify({ radius: handle.r, before: cardTouchBefore, after: cardTouchAfter }));
+
+  /* 横屏:舞台在左、编辑区停靠右侧,底部面板不再挤占高度 */
+  await page.setViewport({ width: 844, height: 390, isMobile: true, hasTouch: true });
+  await sleep(800);
+  const land = await page.evaluate(() => {
+    const stage = document.querySelector('.imged-stage').getBoundingClientRect();
+    const panel = document.querySelector('.imged-panel').getBoundingClientRect();
+    return {
+      display: getComputedStyle(document.querySelector('.imged-body')).display,
+      stage: { x: Math.round(stage.x), w: Math.round(stage.width), h: Math.round(stage.height) },
+      panel: { x: Math.round(panel.x), w: Math.round(panel.width), h: Math.round(panel.height) },
+      grip: getComputedStyle(document.querySelector('.imged-m-grip')).display,
+      ox: document.documentElement.scrollWidth - innerWidth,
+    };
+  });
+  check('手机横屏:舞台左 / 编辑区右停靠、无横向溢出',
+    land.display === 'grid' && land.stage.x === 0 && land.panel.x >= land.stage.w - 1
+      && land.panel.w >= 260 && land.stage.h >= 150 && land.grip === 'none' && land.ox <= 0,
+    JSON.stringify(land));
+  await page.screenshot({ path: path.join(OUT, 'verify-mobile-landscape.png') });
+
   check('手机:外壳无 JS 报错', errs.length === 0, errs.slice(0, 2).join(' | '));
+  await page.screenshot({ path: path.join(OUT, 'verify-mobile.png') });
   await page.close();
 }
 

@@ -257,6 +257,17 @@ let panStartX = 0;
 let panStartY = 0;
 let panOrigX = 0;
 let panOrigY = 0;
+/* 触屏:双指捏合缩放(与动画编辑器的手势同一套视图模型) */
+const stagePointers = new Map<number, { x: number; y: number }>();
+type Pinch = {
+  startDist: number;
+  startZoom: number;
+  startPanX: number;
+  startPanY: number;
+  startMidX: number;
+  startMidY: number;
+};
+let pinch: Pinch | null = null;
 
 function esc(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;'));
@@ -294,6 +305,195 @@ function cardPickerItemsHtml(): string {
 }
 
 /* ==================== 页面骨架 ==================== */
+
+/**
+ * 手机端布局:参照动画编辑器的「舞台 → 控制行 → 可拖拽底部面板(chips)」结构。
+ *  · 顶栏(#imged-bar)在手机断点隐藏,撤销/导出搬到舞台下方控制行;
+ *  · 面板顶部是可拖拽拉条 + 吸顶分区 chips(背景 / 名片 / 文字图层);
+ *  · 拉条上拖展开、下拖收起,双击在手风琴最小档与半开之间切换;
+ *  · 横屏(高度 ≤619px)面板停靠右侧,拉条隐藏,舞台与面板左右分栏;
+ *  · 断点用 matchMedia,桌面布局零改动。
+ */
+const IMGED_MOBILE_MQ = '(max-width: 720px), (orientation: landscape) and (max-height: 619px)';
+const IMGED_DOCKED_MQ = '(orientation: landscape) and (max-height: 619px)';
+
+function setupMobileLayout(mount: HTMLElement): void {
+  const row = mount.querySelector<HTMLElement>('.imged-mobile-row');
+  const bar = mount.querySelector<HTMLElement>('.imged-bar');
+  const actions = mount.querySelector<HTMLElement>('.imged-actions');
+  const panel = mount.querySelector<HTMLElement>('.imged-panel');
+  const chips = mount.querySelector<HTMLElement>('.imged-m-chips');
+  const grip = mount.querySelector<HTMLElement>('.imged-m-grip');
+  if (!row || !bar || !actions || !panel || !chips || !grip) return;
+  const mq = window.matchMedia(IMGED_MOBILE_MQ);
+  const dockedMq = window.matchMedia(IMGED_DOCKED_MQ);
+  const chipButtons = [...chips.querySelectorAll<HTMLButtonElement>('[data-imged-jump]')];
+  const targetOf = (key: string): HTMLElement | null =>
+    mount.querySelector<HTMLElement>('[data-imged-sec="' + key + '"]');
+
+  /* 触屏把四角手柄改大:12px 的圆点在手机上几乎点不中(渲染仍是同一套 SVG) */
+  if (window.matchMedia('(pointer: coarse)').matches) {
+    for (const c of mount.querySelectorAll<SVGCircleElement>('.imged-card-corner')) c.setAttribute('r', '9');
+    mount.querySelector<SVGCircleElement>('.imged-card-rotate-handle')?.setAttribute('r', '12');
+  }
+
+  const setActive = (key: string): void => {
+    for (const b of chipButtons) {
+      b.setAttribute('aria-current', b.dataset.imgedJump === key ? 'true' : 'false');
+    }
+  };
+  const syncChips = (): void => {
+    /* 面板在 PSD 载入前是 hidden:这时所有分区 rect 都是 0,会把最后一格误判成当前项 */
+    if (!mq.matches || panel.hidden) return;
+    const top = panel.getBoundingClientRect().top + grip.offsetHeight + chips.offsetHeight + 12;
+    let current = chipButtons[0]?.dataset.imgedJump || 'bg';
+    for (const b of chipButtons) {
+      const target = targetOf(b.dataset.imgedJump || '');
+      if (target && target.getBoundingClientRect().top <= top) current = b.dataset.imgedJump || current;
+    }
+    setActive(current);
+  };
+
+  /* ---------- 可拖拽 / 可折叠的编辑区 ---------- */
+  let snapIdx = 1;
+  const sheetSnaps = (): number[] => {
+    const body = panel.parentElement;
+    const avail = body ? body.clientHeight : window.innerHeight;
+    const peek = Math.round(Math.min(104, Math.max(80, avail * 0.16)));
+    const half = Math.round(Math.max(peek + 110, avail * 0.42));
+    const full = Math.round(Math.max(half + 60, avail * 0.72));
+    return [peek, Math.min(half, Math.max(peek + 90, avail - 140)), Math.min(full, Math.max(peek + 140, avail - 96))];
+  };
+  const applySheet = (px: number, animate: boolean): void => {
+    panel.style.setProperty('--imged-sheet', Math.round(px) + 'px');
+    grip.setAttribute('aria-valuenow', String(Math.round(px)));
+    panel.classList.toggle('is-snapping', animate);
+    if (animate) window.setTimeout(() => panel.classList.remove('is-snapping'), 260);
+    /* 面板高度变了,舞台跟着变高/变矮;画布要按新的舞台重新 contain */
+    requestAnimationFrame(() => updateViewTransform());
+  };
+  const clearSheet = (): void => {
+    panel.style.removeProperty('--imged-sheet');
+    panel.classList.remove('is-snapping', 'is-dragging');
+    grip.removeAttribute('aria-valuenow');
+    requestAnimationFrame(() => updateViewTransform());
+  };
+  const snapTo = (idx: number, animate: boolean): void => {
+    const list = sheetSnaps();
+    snapIdx = Math.max(0, Math.min(list.length - 1, idx));
+    grip.setAttribute('aria-valuemax', String(list[list.length - 1]));
+    grip.setAttribute('aria-valuemin', String(list[0]));
+    applySheet(list[snapIdx], animate);
+  };
+
+  type GripDrag = { id: number; startY: number; startH: number; startT: number; lastY: number; lastT: number; v: number; moved: boolean; list: number[] };
+  let gripDrag: GripDrag | null = null;
+  grip.addEventListener('pointerdown', (ev) => {
+    if (!mq.matches || dockedMq.matches) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    try { grip.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
+    gripDrag = {
+      id: ev.pointerId,
+      startY: ev.clientY,
+      startH: panel.getBoundingClientRect().height,
+      startT: performance.now(),
+      lastY: ev.clientY,
+      lastT: performance.now(),
+      v: 0,
+      moved: false,
+      list: sheetSnaps(),
+    };
+    panel.classList.add('is-dragging');
+    panel.classList.remove('is-snapping');
+  });
+  grip.addEventListener('pointermove', (ev) => {
+    const d = gripDrag;
+    if (!d || ev.pointerId !== d.id) return;
+    ev.preventDefault();
+    const now = performance.now();
+    if (Math.abs(ev.clientY - d.startY) > 5) d.moved = true;
+    if (now > d.lastT) d.v = (ev.clientY - d.lastY) / (now - d.lastT);
+    d.lastY = ev.clientY;
+    d.lastT = now;
+    const lo = d.list[0] - 36;
+    const hi = d.list[d.list.length - 1] + 36;
+    const h = Math.max(lo, Math.min(hi, d.startH + (d.startY - ev.clientY)));
+    panel.style.setProperty('--imged-sheet', Math.round(h) + 'px');
+    grip.setAttribute('aria-valuenow', String(Math.round(h)));
+    requestAnimationFrame(() => updateViewTransform());
+  });
+  const endGrip = (ev: PointerEvent): void => {
+    const d = gripDrag;
+    if (!d || ev.pointerId !== d.id) return;
+    gripDrag = null;
+    panel.classList.remove('is-dragging');
+    try { grip.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+    /* 没位移 = 点按:直接在手风琴最小档与半开之间切换,触屏比双击可靠 */
+    if (!d.moved && performance.now() - d.startT < 450) {
+      snapTo(snapIdx === 0 ? 1 : 0, true);
+      return;
+    }
+    const list = sheetSnaps();
+    const cur = panel.getBoundingClientRect().height;
+    let best = 0;
+    for (let i = 1; i < list.length; i++) if (Math.abs(list[i] - cur) < Math.abs(list[best] - cur)) best = i;
+    /* 往上甩直接再开一档,往下甩退一档:只按距离判会让"想展开"弹回原处 */
+    if (d.v < -0.35) best = Math.min(list.length - 1, Math.max(best, snapIdx + 1));
+    else if (d.v > 0.35) best = Math.max(0, Math.min(best, snapIdx - 1));
+    snapTo(best, true);
+  };
+  grip.addEventListener('pointerup', endGrip);
+  grip.addEventListener('pointercancel', endGrip);
+  grip.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowUp') { snapTo(snapIdx - 1, true); ev.preventDefault(); }
+    if (ev.key === 'ArrowDown') { snapTo(snapIdx + 1, true); ev.preventDefault(); }
+  });
+
+  for (const btn of chipButtons) {
+    btn.addEventListener('click', () => {
+      /* 编辑区收成一条时,点分区先展开再跳 */
+      if (mq.matches && !dockedMq.matches && panel.getBoundingClientRect().height <= sheetSnaps()[0] + 8) {
+        snapTo(1, true);
+      }
+      const target = targetOf(btn.dataset.imgedJump || '');
+      if (!target) return;
+      setActive(btn.dataset.imgedJump || 'bg');
+      const panelRect = panel.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      panel.scrollTo({
+        top: panel.scrollTop + targetRect.top - panelRect.top - grip.offsetHeight - chips.offsetHeight - 4,
+        behavior: reduce ? 'auto' : 'smooth',
+      });
+    });
+  }
+  panel.addEventListener('scroll', () => {
+    if (mq.matches) requestAnimationFrame(syncChips);
+  }, { passive: true });
+
+  const apply = (): void => {
+    const mobile = mq.matches;
+    const docked = dockedMq.matches;
+    row.hidden = !mobile;
+    chips.hidden = !mobile;
+    grip.hidden = !mobile || docked;
+    if (mobile && actions.parentElement !== row) row.appendChild(actions);
+    if (!mobile && actions.parentElement !== bar) bar.appendChild(actions);
+    if (!mobile || docked) clearSheet();
+    else snapTo(snapIdx, false);
+    if (mobile) syncChips();
+    requestAnimationFrame(() => updateViewTransform());
+  };
+  mq.addEventListener('change', apply);
+  dockedMq.addEventListener('change', apply);
+  window.addEventListener('resize', () => {
+    if (!mq.matches) return;
+    if (dockedMq.matches) clearSheet();
+    else snapTo(snapIdx, false);
+  });
+  apply();
+}
 
 export function initImagePage(): void {
   if (initialized) return;
@@ -383,8 +583,20 @@ export function initImagePage(): void {
           '</div>' +
           '<p class="imged-status" role="status" aria-live="polite" hidden></p>' +
         '</section>' +
+        /* 手机专用:把顶栏操作搬到舞台下方的控制条里(与移动端动画编辑器的播放/导出控制行同构) */
+        '<div class="imged-mobile-row" hidden>' +
+          '<span class="imged-m-title">图片编辑器</span>' +
+        '</div>' +
         '<aside class="imged-panel" aria-label="背景、名片与文字图层" hidden>' +
-          '<div class="imged-bg">' +
+          /* 手机专用:可拖拽的编辑区拉条 + 吸顶分区 chips */
+          '<div class="imged-m-grip" role="separator" aria-orientation="horizontal" aria-label="拖动调整编辑区,双击展开或收起" tabindex="0" hidden><span></span></div>' +
+          /* 手机专用:吸顶分区 chips,对应下面的背景 / 名片 / 文字图层三段 */
+          '<div class="imged-m-chips" hidden aria-label="编辑分区">' +
+            '<button type="button" class="imged-m-chip" data-imged-jump="bg" aria-current="true">背景</button>' +
+            '<button type="button" class="imged-m-chip" data-imged-jump="card">名片</button>' +
+            '<button type="button" class="imged-m-chip" data-imged-jump="layers">文字图层</button>' +
+          '</div>' +
+          '<div class="imged-bg" data-imged-sec="bg">' +
             '<div class="imged-bg-head"><span>背景</span><span class="imged-bg-note">DFAsset · settlement</span></div>' +
             '<div class="imged-bg-grid" role="group" aria-label="背景图片">' +
               BACKGROUNDS.map((bg, i) =>
@@ -394,7 +606,7 @@ export function initImagePage(): void {
                 '</button>').join('') +
             '</div>' +
           '</div>' +
-          '<div class="imged-card">' +
+          '<div class="imged-card" data-imged-sec="card">' +
             '<div class="imged-card-head"><span>名片</span><span class="imged-bg-note">DFAsset</span>' +
               '<div class="imged-card-modes" role="group" aria-label="名片缩放方式" hidden>' +
                 '<button type="button" class="imged-card-mode" data-card-mode="proportional" aria-pressed="false">等比</button>' +
@@ -414,7 +626,7 @@ export function initImagePage(): void {
               '<span class="imged-card-go">选择</span>' +
             '</button>' +
           '</div>' +
-          '<div class="imged-panel-head"><span>文字图层</span><span class="imged-count">0</span></div>' +
+          '<div class="imged-panel-head" data-imged-sec="layers"><span>文字图层</span><span class="imged-count">0</span></div>' +
           '<ul class="imged-layers"></ul>' +
           '<div class="imged-inspector" hidden>' +
             '<div class="imged-inspector-head">' +
@@ -427,7 +639,7 @@ export function initImagePage(): void {
               '<label class="imged-field"><span class="imged-label">透明度 <b class="imged-pct">100%</b></span><input type="range" class="imged-range" min="0" max="100" step="1" /></label>' +
             '</div>' +
           '</div>' +
-          '<p class="imged-hint">滚轮缩放 · 拖动平移 · 双击复位。只改颜色保留原始字形边缘;改内容按图层字体重排。</p>' +
+          '<p class="imged-hint">拖动平移 · 双指 / 滚轮缩放 · 双击复位。只改颜色保留原始字形边缘;改内容按图层字体重排。</p>' +
         '</aside>' +
       '</div>' +
       '<dialog class="imged-picker" id="imgedPicker" aria-labelledby="imgedPickerTitle">' +
@@ -534,6 +746,7 @@ export function initImagePage(): void {
   };
 
   bindEvents(els);
+  setupMobileLayout(mount);
   updateCardSection();
   updateCardPickerSelection();
   applyCardFilter();
@@ -655,6 +868,24 @@ function bindEvents(e: El): void {
     updateViewTransform();
   }, { passive: false });
 
+  const pinchStart = (): void => {
+    const pts = [...stagePointers.values()];
+    if (pts.length !== 2) return;
+    const rect = e.stage.getBoundingClientRect();
+    const midX = (pts[0].x + pts[1].x) / 2;
+    const midY = (pts[0].y + pts[1].y) / 2;
+    pinch = {
+      startDist: Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)),
+      startZoom: viewZoom,
+      startPanX: viewPanX,
+      startPanY: viewPanY,
+      startMidX: midX - rect.left - rect.width / 2,
+      startMidY: midY - rect.top - rect.height / 2,
+    };
+    panning = false;
+    e.stage.classList.remove('is-panning');
+  };
+
   e.stage.addEventListener('pointerdown', (ev) => {
     if (!doc) return;
     /* 舞台上的浮层控件不参与拖画布。必须在这里就放行:一旦走到底下的
@@ -663,21 +894,52 @@ function bindEvents(e: El): void {
     if (isStageUi(ev.target)) return;
     if (ev.pointerType === 'mouse' && ev.button !== 0) return;
     ev.preventDefault();
+    stagePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    e.stage.setPointerCapture(ev.pointerId);
+    if (stagePointers.size === 2) {
+      pinchStart();
+      return;
+    }
+    if (stagePointers.size > 2) return;
     panning = true;
     panStartX = ev.clientX;
     panStartY = ev.clientY;
     panOrigX = viewPanX;
     panOrigY = viewPanY;
-    e.stage.setPointerCapture(ev.pointerId);
     e.stage.classList.add('is-panning');
   });
   e.stage.addEventListener('pointermove', (ev) => {
+    if (!stagePointers.has(ev.pointerId)) return;
+    stagePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (pinch && stagePointers.size === 2) {
+      const pts = [...stagePointers.values()];
+      const rect = e.stage.getBoundingClientRect();
+      const dist = Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
+      const nextZoom = Math.min(50, Math.max(0.05, pinch.startZoom * (dist / pinch.startDist)));
+      const z = nextZoom / pinch.startZoom;
+      const midX = (pts[0].x + pts[1].x) / 2 - rect.left - rect.width / 2;
+      const midY = (pts[0].y + pts[1].y) / 2 - rect.top - rect.height / 2;
+      /* 让捏合起点下的那个文档点跟住当前中点: p1 = d1 - z·d0 + z·p0 */
+      viewPanX = midX - z * pinch.startMidX + z * pinch.startPanX;
+      viewPanY = midY - z * pinch.startMidY + z * pinch.startPanY;
+      viewZoom = nextZoom;
+      updateViewTransform();
+      return;
+    }
     if (!panning) return;
     viewPanX = panOrigX + (ev.clientX - panStartX);
     viewPanY = panOrigY + (ev.clientY - panStartY);
     updateViewTransform();
   });
-  const endPan = (): void => {
+  const endPan = (ev?: PointerEvent): void => {
+    if (ev) stagePointers.delete(ev.pointerId);
+    if (pinch && stagePointers.size < 2) {
+      pinch = null;
+      /* 还剩一根手指时不接着平移,避免捏合结束瞬间跳一下 */
+      panning = false;
+      e.stage.classList.remove('is-panning');
+      return;
+    }
     if (!panning) return;
     panning = false;
     e.stage.classList.remove('is-panning');
