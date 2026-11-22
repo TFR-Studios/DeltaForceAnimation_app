@@ -513,6 +513,10 @@ export function initImagePage(): void {
             '<span>打开文件夹</span>' +
           '</button>' +
           '<span class="imged-actions-sep" aria-hidden="true"></span>' +
+          '<button type="button" class="imged-btn imged-btn-quiet imged-reload" data-imged="reload-psd" title="重新读取 PSD(修改文件后点这里)" aria-label="重新载入 PSD">' +
+            '<svg class="imged-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>' +
+            '<span class="imged-reload-text">重载 PSD</span>' +
+          '</button>' +
           '<button type="button" class="imged-btn" data-imged="reset" disabled>撤销修改</button>' +
           '<button type="button" class="imged-btn imged-btn-primary" data-imged="export-png" disabled>' +
             '<span class="imged-btn-spinner" aria-hidden="true"></span>' +
@@ -763,7 +767,7 @@ function bindEvents(e: El): void {
     const btn = (ev.target as HTMLElement | null)?.closest<HTMLElement>('[data-imged]');
     if (!btn) return;
     const act = btn.dataset.imged;
-    if (act === 'sample') void loadSample();
+    if (act === 'sample' || act === 'reload-psd') reloadPsd();
     else if (act === 'reset') resetAll();
     else if (act === 'restore') restoreSelected();
     else if (act === 'export-png') void exportImage();
@@ -1769,6 +1773,14 @@ function currentState(): TextEditState | null {
 
 /* ==================== 载入 ==================== */
 
+function reloadPsd(): void {
+  if (loading) return;
+  if (doc && (anyEdited() || !!selectedCardId || bgIndex !== DEFAULT_BG_INDEX)) {
+    if (!window.confirm('重新载入 PSD 会丢弃当前文字、背景和名片的修改,继续?')) return;
+  }
+  void loadSample();
+}
+
 async function loadSample(): Promise<void> {
   if (loading) return;
   loading = true;
@@ -1776,10 +1788,13 @@ async function loadSample(): Promise<void> {
   const seq = ++loadSeq;
   showLoading('正在读取内置示例…', 0);
   try {
-    const buf = await fetchBuffer(samplePsdUrl, (p) => {
+    /* 开发态必须绕开 HTTP 缓存:PSD 改完刷新还可能命中旧的 11MB 响应 */
+    const dev = import.meta.env.DEV;
+    const url = dev ? samplePsdUrl + (samplePsdUrl.includes('?') ? '&' : '?') + 'v=' + Date.now() : samplePsdUrl;
+    const buf = await fetchBuffer(url, (p) => {
       if (seq !== loadSeq) return;
       setLoadingProgress(p * 0.6);
-    });
+    }, dev ? 'no-store' : 'default');
     if (seq !== loadSeq) return;
     parseBuffer(buf, seq);
   } catch (err) {
@@ -1858,8 +1873,8 @@ function eSetMeta(): void {
   els.barMeta.textContent = doc.width + '×' + doc.height + ' · ' + doc.textLayers.length + ' 个文字图层 · ' + fmtBytes(doc.bytes);
 }
 
-async function fetchBuffer(url: string, onProgress: (p: number) => void): Promise<ArrayBuffer> {
-  const res = await fetch(url, { cache: 'force-cache' });
+async function fetchBuffer(url: string, onProgress: (p: number) => void, cacheMode: RequestCache = 'default'): Promise<ArrayBuffer> {
+  const res = await fetch(url, { cache: cacheMode });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const total = Number(res.headers.get('content-length') || 0);
   if (!res.body) return res.arrayBuffer();
@@ -2314,7 +2329,7 @@ function refreshButtons(): void {
   els.cardCurrent.disabled = !hasDoc || blocked;
   els.cardClear.disabled = !hasDoc || blocked;
   els.cardResetRect.disabled = !hasDoc || blocked || !selectedCardId;
-  for (const b of els.mount.querySelectorAll<HTMLButtonElement>('[data-imged="sample"]')) b.disabled = blocked;
+  for (const b of els.mount.querySelectorAll<HTMLButtonElement>('[data-imged="sample"], [data-imged="reload-psd"]')) b.disabled = blocked;
 }
 
 function showLoading(text: string, progress: number): void {

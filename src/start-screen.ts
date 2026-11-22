@@ -27,7 +27,7 @@ import { logs } from './logs';
 /* 开发者日志:更新检查的请求源 / 版本 / 失败原因也进原始流 */
 import { devEvent } from './devlog';
 
-export type PageId = 'home' | 'editor' | 'image' | 'about' | 'logs' | 'audio';
+export type PageId = 'home' | 'editor' | 'image' | 'about' | 'logs' | 'audio' | 'icons';
 
 export type AppShellHooks = {
   /** 手机 / 平板(与 mobile.ts 同一套判定,由 main.ts 的 IS_MOBILE 传进来) */
@@ -96,6 +96,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   const viewAbout = document.getElementById('viewAbout');
   const viewLogs = document.getElementById('viewLogs');
   const viewAudio = document.getElementById('viewAudio');
+  const viewIcons = document.getElementById('viewIcons');
   const viewEditor = document.querySelector<HTMLElement>('.layout');
   const viewImage = document.getElementById('viewImage');
   const rail = document.getElementById('appRail');
@@ -160,7 +161,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   const btnOpenDir = document.getElementById('btnOpenDir') as HTMLButtonElement | null;
   const aboutPath = document.getElementById('aboutPath');
 
-  const pages: Record<PageId, HTMLElement | null> = { home: viewHome, editor: viewEditor, image: viewImage, about: viewAbout, logs: viewLogs, audio: viewAudio };
+  const pages: Record<PageId, HTMLElement | null> = { home: viewHome, editor: viewEditor, image: viewImage, about: viewAbout, logs: viewLogs, audio: viewAudio, icons: viewIcons };
   /* 「跑在桌面客户端里」与「用的是手机 UI」是两件事,判定必须**移动端优先**。
    * 安卓 APK 里挂着同一个 window.dfaeDesktop 桥接层(它本来就叫这个名字,提供的是"能落盘 /
    * 能开系统浏览器"这一层能力),所以 isDesktopApp 在手机上同样成立 —— 只看它,关于页就会
@@ -266,7 +267,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
   window.addEventListener('popstate', (e) => {
     if (!wantHistory) return;
     const raw = e.state && e.state.dfaePage;
-    const page: PageId = raw === 'editor' || raw === 'image' || raw === 'about' || raw === 'logs' || raw === 'audio' ? raw : 'home';
+    const page: PageId = raw === 'editor' || raw === 'image' || raw === 'about' || raw === 'logs' || raw === 'audio' || raw === 'icons' ? raw : 'home';
     suppressHistory = true;
     showPage(page, { history: 'none' });
     suppressHistory = false;
@@ -280,7 +281,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     const changed = current !== page;
     current = page;
     root.dataset.page = page;
-    for (const id of ['home', 'editor', 'image', 'about', 'logs', 'audio'] as PageId[]) {
+    for (const id of ['home', 'editor', 'image', 'about', 'logs', 'audio', 'icons'] as PageId[]) {
       const el = pages[id];
       if (!el) continue;
       const on = id === page;
@@ -311,6 +312,9 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
     /* 图片编辑器整页由 src/image-page.ts 在第一次进入时搭建(动态 import,
      * 让 ag-psd 与那张 PSD 示例只在真正用到时才下载)。 */
     if (page === 'image') ensureImagePage();
+    /* UI 图标提取页同理按需加载:整页 DOM 与交互都在 src/icons-page.ts,
+     * 不进动画编辑器首屏。 */
+    if (page === 'icons') ensureIconsPage();
     /* 旧事件名保留:mobile.ts 的首次手势提示等的是「进编辑器」这一刻。
      * 语义映射:编辑器 = 'editor',其它页 = 'home'(提示只关心"是否在编辑器里")。 */
     try {
@@ -331,6 +335,21 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
       .catch((err) => {
         imagePageBooted = false;
         console.warn('[图片编辑器] 模块加载失败:', err);
+      });
+  }
+
+  /* ---------- UI 图标提取页:按需加载 ----------
+   * 与图片编辑器同一套策略:整页 DOM/交互都在 src/icons-page.ts,第一次进入
+   * 才下载;加载失败允许下次重试,页面本身只是个空挂载点。 */
+  let iconsPageBooted = false;
+  function ensureIconsPage(): void {
+    if (iconsPageBooted) return;
+    iconsPageBooted = true;
+    void import('./icons-page')
+      .then((mod) => mod.initIconsPage())
+      .catch((err) => {
+        iconsPageBooted = false;
+        console.warn('[图标提取] 模块加载失败:', err);
       });
   }
 
@@ -889,7 +908,7 @@ export function initAppShell(hooks: AppShellHooks): AppShellApi {
       hooks.openDownloads();
       return;
     }
-    if (page !== 'home' && page !== 'editor' && page !== 'image' && page !== 'about' && page !== 'logs' && page !== 'audio') return;
+    if (page !== 'home' && page !== 'editor' && page !== 'image' && page !== 'about' && page !== 'logs' && page !== 'audio' && page !== 'icons') return;
     /* 同一页再点一次:手机上按惯例是"回到顶部"(而不是什么都不发生) */
     if (page === current) {
       if (hooks.isMobile) pages[page]?.scrollTo({ top: 0, behavior: 'smooth' });

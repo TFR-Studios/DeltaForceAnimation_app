@@ -1,5 +1,5 @@
 /* ============================================================================
- * Android:把导出的视频写进系统相册
+ * Android:把导出的视频 / 图片写进系统相册
  *
  * 为什么必须走 MediaStore
  * ----------------------
@@ -31,9 +31,10 @@ use jni::objects::{JObject, JString, JValue};
 use jni::sys::jobject;
 use jni::JavaVM;
 
-/** 相册里的归属文件夹。放 Movies/ 下:系统图库与国内 ROM 都会扫到,
+/** 相册里的归属文件夹:视频放 Movies/、图片放 Pictures/,系统图库与国内 ROM 都会扫到,
  *  又不会和用户自己的 DCIM 混在一起。 */
-const ALBUM: &str = "Movies/三角洲行动动画编辑器";
+const VIDEO_ALBUM: &str = "Movies/三角洲行动动画编辑器";
+const IMAGE_ALBUM: &str = "Pictures/三角洲行动动画编辑器";
 
 /** MediaStore 接受之后的结果(显示名可能被系统改过,所以读回来)。 */
 pub struct Saved {
@@ -147,7 +148,9 @@ fn query_display_name(env: &mut jni::JNIEnv<'_>, resolver: &JObject<'_>, uri: &J
 }
 
 /**
- * 把一份视频字节写进系统相册,返回被系统接受的显示名与 content URI。
+ * 把一份媒体字节(视频或图片)写进系统相册,返回被系统接受的显示名与 content URI。
+ * 图片必须进 Images 集合 + Pictures 目录,否则 MediaStore 会按 video/mp4 归类并
+ * 把 `.png` 后面再补一个 `.mp4`(导 PNG 得到 `xxx.png.mp4` 的根因)。
  * 失败一律回可读原因:调用方(ipc.rs)会把它原样透到界面。
  */
 pub fn save(display_name: &str, mime: &str, data: &[u8]) -> Result<Saved, String> {
@@ -177,9 +180,10 @@ pub fn save(display_name: &str, mime: &str, data: &[u8]) -> Result<Saved, String
         Ok(v) => v,
         Err(e) => return Err(failed(&mut env, "构造 ContentValues", e)),
     };
+    let is_image = mime.starts_with("image/");
     put_string(&mut env, &values, "_display_name", display_name)?;
     put_string(&mut env, &values, "mime_type", mime)?;
-    put_string(&mut env, &values, "relative_path", ALBUM)?;
+    put_string(&mut env, &values, "relative_path", if is_image { IMAGE_ALBUM } else { VIDEO_ALBUM })?;
     put_int(&mut env, &values, "is_pending", 1)?;
 
     /* ---- 2) resolver.insert(Video.EXTERNAL_CONTENT_URI, values) ---- */
@@ -192,13 +196,18 @@ pub fn save(display_name: &str, mime: &str, data: &[u8]) -> Result<Saved, String
         Ok(v) => match v.l() { Ok(x) => x, Err(e) => return Err(failed(&mut env, "取 ContentResolver", e)) },
         Err(e) => return Err(failed(&mut env, "调 getContentResolver", e)),
     };
+    let collection_class = if is_image {
+        "android/provider/MediaStore$Images$Media"
+    } else {
+        "android/provider/MediaStore$Video$Media"
+    };
     let collection = match env.get_static_field(
-        "android/provider/MediaStore$Video$Media",
+        collection_class,
         "EXTERNAL_CONTENT_URI",
         "Landroid/net/Uri;",
     ) {
-        Ok(v) => match v.l() { Ok(x) => x, Err(e) => return Err(failed(&mut env, "取 Video 集合 Uri", e)) },
-        Err(e) => return Err(failed(&mut env, "读 MediaStore.Video.Media", e)),
+        Ok(v) => match v.l() { Ok(x) => x, Err(e) => return Err(failed(&mut env, "取媒体集合 Uri", e)) },
+        Err(e) => return Err(failed(&mut env, "读 MediaStore 集合", e)),
     };
     let uri = match env.call_method(
         &resolver,

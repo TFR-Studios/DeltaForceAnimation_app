@@ -46,6 +46,8 @@ const { createLogs, logDebug, logInfo, logWarn, logError } = require('./logs.cjs
 /* 音频提取:读游戏 pak -> 抽 Wwise 音频 -> vgmstream 解码试听。见 electron/audio/。
  * 与本文件其余部分一样,只暴露具名 IPC,不给渲染进程任何文件系统能力。 */
 const { createAudioService } = require('./audio/service.cjs');
+/* UI 图标提取:从游戏 pak 里解 PaperSprite + BC7 图集裁出 PNG。见 electron/icons/。 */
+const { createIconsService } = require('./icons/service.cjs');
 
 /* ---------------------------------------------------------------------------
  * 0. 运行期常量与命令行开关
@@ -82,6 +84,8 @@ let downloads = null;
 let logs = null;
 /* 音频提取服务(见 electron/audio/service.cjs);ready 之后在 bootstrap 里创建。 */
 let audioService = null;
+/* UI 图标提取服务(见 electron/icons/service.cjs);同样在 bootstrap 里创建。 */
+let iconsService = null;
 
 /**
  * 主进程事件日志的便捷写法,形如 mlog('warn', '消息', '多行细节')。
@@ -561,6 +565,15 @@ async function bootstrap() {
   } catch (e) {
     audioService = null;
     console.error('[audio] 初始化失败:', e);
+  }
+
+  /* UI 图标提取服务:与音频提取同一套基建(pak 读取 / 密钥 / Oodle),独立成模块。
+   * 失败不阻塞启动 —— 图标页只会显示为不可用。 */
+  try {
+    iconsService = createIconsService({ userData: app.getPath('userData'), getWindow: () => mainWindow });
+  } catch (e) {
+    iconsService = null;
+    console.error('[icons] 初始化失败:', e);
   }
 
   /* 进程级异常:以前这些只在开发者工具的终端里一闪而过,打包版连终端都没有。
@@ -1244,6 +1257,42 @@ ipcMain.handle('dfae:audio-build-index', async () => {
   return audioSvc().buildIndex((p) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       try { mainWindow.webContents.send('dfae:audio-progress', p); } catch (e) {}
+    }
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * 6d. UI 图标提取(渲染进程的 window.dfaeIcons)
+ *
+ * 能力全部在 electron/icons/ 里:sprite 解析、图集定位、BC7 局部解码、PNG 编码。
+ * 这里与音频段一样只做三件事:接 IPC、转发索引进度、未就绪时统一 ok:false。
+ * 红线相同:渲染进程只传图标 id / 查询条件 / 染色键,不能传路径读任意文件。
+ * ------------------------------------------------------------------------- */
+
+const iconsSvc = () => iconsService;
+const iconsNotReady = { ok: false, error: '图标服务尚未就绪' };
+
+ipcMain.handle('dfae:icons-detect-dir', () => (iconsSvc() ? iconsSvc().detectGameDir() : iconsNotReady));
+ipcMain.handle('dfae:icons-get-dir', () => (iconsSvc() ? iconsSvc().getGameDir() : { dir: null, valid: false }));
+ipcMain.handle('dfae:icons-pick-dir', () => (iconsSvc() ? iconsSvc().pickGameDir() : iconsNotReady));
+ipcMain.handle('dfae:icons-set-dir', (_e, dir) => (iconsSvc() ? iconsSvc().setGameDir(String(dir || '')) : iconsNotReady));
+ipcMain.handle('dfae:icons-index-state', () => (iconsSvc() ? iconsSvc().getIndexState() : { ready: false, count: 0, building: false }));
+ipcMain.handle('dfae:icons-search', (_e, opts) => (iconsSvc() ? iconsSvc().search(opts || {}) : { total: 0, items: [] }));
+ipcMain.handle('dfae:icons-categories', () => (iconsSvc() ? iconsSvc().getCategories() : { items: [] }));
+ipcMain.handle('dfae:icons-preview', (_e, opts) => {
+  if (!iconsSvc()) return iconsNotReady;
+  const o = opts || {};
+  return iconsSvc().preview(String(o.id || ''), String(o.tint || 'none'));
+});
+ipcMain.handle('dfae:icons-export', (_e, opts) => (iconsSvc() ? iconsSvc().exportIcons(opts || {}) : iconsNotReady));
+ipcMain.handle('dfae:icons-export-dir', () => (iconsSvc() ? iconsSvc().getExportDir() : { dir: '' }));
+ipcMain.handle('dfae:icons-pick-export-dir', () => (iconsSvc() ? iconsSvc().pickExportDir() : iconsNotReady));
+
+ipcMain.handle('dfae:icons-build-index', async () => {
+  if (!iconsSvc()) return iconsNotReady;
+  return iconsSvc().buildIndex((p) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try { mainWindow.webContents.send('dfae:icons-progress', p); } catch (e) {}
     }
   });
 });

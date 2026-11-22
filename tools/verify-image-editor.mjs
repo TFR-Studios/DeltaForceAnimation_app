@@ -99,8 +99,10 @@ const parseNormal = (meta) => {
   check('桌面:内置结算图自动载入(1920×1066 / 13 个文字图层)',
     loaded.w === 1920 && loaded.h === 1066 && loaded.layers === 13, JSON.stringify(loaded));
   check('桌面:默认选中字号最大的标题(撤离成功)', loaded.selected === '撤离成功', loaded.selected);
-  check('桌面:只有「撤销修改 / 导出 PNG」,没有打开文件与导出 PSD',
-    loaded.btnTexts.length === 2 && !loaded.hasFileInput && !loaded.hasPsdExport, JSON.stringify(loaded));
+  check('桌面:顶栏只有重载 PSD / 撤销 / 导出,没有打开文件与导出 PSD',
+    loaded.btnTexts.length === 3 && loaded.btnTexts.includes('重载 PSD')
+      && loaded.btnTexts.includes('撤销修改') && loaded.btnTexts.includes('导出 PNG')
+      && !loaded.hasFileInput && !loaded.hasPsdExport, JSON.stringify(loaded));
 
   /* ---- 背景选择(DFAsset/settlement) ---- */
   const bgInitial = await page.evaluate(() => {
@@ -736,7 +738,8 @@ const parseNormal = (meta) => {
   check('手机:图片编辑器控制条 + 分区 chips(参照动画编辑器)',
     layout.barDisplay === 'none' && layout.rowVisible && layout.chipsVisible
       && layout.chips.join('|') === '背景|名片|文字图层'
-      && layout.rowButtons.includes('reset') && layout.rowButtons.includes('export-png') && layout.ox <= 0
+      && layout.rowButtons.includes('reload-psd') && layout.rowButtons.includes('reset')
+      && layout.rowButtons.includes('export-png') && layout.ox <= 0
       && layout.navDelta <= 1 && layout.iconDelta <= 1 && layout.textDelta <= 1,
     JSON.stringify(layout));
   /* 编辑区拉条:下拖收起、点按展开(与动画编辑器的底部面板同一套手感) */

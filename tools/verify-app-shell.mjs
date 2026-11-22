@@ -116,7 +116,7 @@ const probe = () => {
   /* 默认是收起态(56px),所以这里只断言"贴左 + 在顶栏之下 + 在 56~176 之间",
    * 具体宽度的行为由下面「侧边栏:默认收起 + 展开动画」那一组负责。 */
   check('桌面:左侧导航轨贴左、位于顶栏之下', s.rail && s.rail.x === 0 && s.rail.y <= 60 && s.rail.w >= 56 && s.rail.w <= 176, JSON.stringify(s.rail));
-  check('桌面:导航含 主页/动画编辑器/图片编辑器/音频/日志/下载列表/关于', JSON.stringify(s.railItems) === JSON.stringify(['home', 'editor', 'image', 'audio', 'logs', 'downloads', 'about']), JSON.stringify(s.railItems));
+  check('桌面:导航含 主页/动画编辑器/图片编辑器/音频/图标提取/日志/下载列表/关于', JSON.stringify(s.railItems) === JSON.stringify(['home', 'editor', 'image', 'audio', 'icons', 'logs', 'downloads', 'about']), JSON.stringify(s.railItems));
   check('桌面:主页**没有**动画卡片', s.animCards === 0, s.animCards);
   check('桌面:主页标题文案已换', /把游戏动画/.test(s.homeTitle), s.homeTitle);
   check('桌面:主页主按钮 36px 不换行', s.primaryH === 36 && s.primaryW > 100, JSON.stringify({ h: s.primaryH, w: s.primaryW }));
@@ -220,7 +220,7 @@ for (const w of [1024, 900]) {
   const s = await page.evaluate(probe);
   check('手机:data-ui=mobile(原生信号生效)', s.ui === 'mobile', s.ui);
   check('手机:导航轨变底部标签栏', s.rail && s.rail.w >= 380 && Math.abs(s.rail.bottom - s.vh) <= 2, JSON.stringify(s.rail));
-  check('手机:导航含 主页/编辑器/日志/关于(无下载列表)', JSON.stringify(s.railItems) === JSON.stringify(['home', 'editor', 'logs', 'about']), JSON.stringify(s.railItems));
+  check('手机:导航含 主页/编辑器/图片/日志/关于(无下载列表与图标提取)', JSON.stringify(s.railItems) === JSON.stringify(['home', 'editor', 'image', 'logs', 'about']), JSON.stringify(s.railItems));
   check('手机:主页主按钮通栏 48px', s.primaryH === 48 && s.primaryW > 300, JSON.stringify({ h: s.primaryH, w: s.primaryW }));
   check('手机:主页没有动画卡片', s.animCards === 0, s.animCards);
   check('手机:无横向滚动', s.overflowX <= 0, s.overflowX);

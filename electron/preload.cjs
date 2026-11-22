@@ -181,3 +181,47 @@ contextBridge.exposeInMainWorld('dfaeAudio', {
   /** 选择导出目录。返回 { ok, dir } 或 { ok:false, canceled? }。 */
   pickExportDir: () => ipcRenderer.invoke('dfae:audio-pick-export-dir'),
 });
+
+/* ---------------------------------------------------------------------------
+ * UI 图标提取(window.dfaeIcons)
+ *
+ * 从游戏 pak 里按名字提取 UI 图标(PaperSprite -> BC7 图集裁剪 -> 透明底 PNG)。
+ * 磁盘动作全在主进程(见 electron/icons/),这里只暴露具名方法,红线与 dfaeAudio
+ * 一致:页面传的是图标 id / 查询条件 / 染色键,不是文件路径。
+ * ------------------------------------------------------------------------- */
+contextBridge.exposeInMainWorld('dfaeIcons', {
+  /** 固定为 true:页面据此判断图标提取页是否运行在桌面端。 */
+  isDesktop: true,
+  /** 自动定位游戏目录。返回 { ok, dir, source } 或 { ok:false, error }。 */
+  detectGameDir: () => ipcRenderer.invoke('dfae:icons-detect-dir'),
+  /** 当前设置的游戏目录。返回 { dir, valid }。 */
+  getGameDir: () => ipcRenderer.invoke('dfae:icons-get-dir'),
+  /** 弹目录选择框并校验。返回 { ok, valid, dir, pakCount } 或 { ok:false, error, canceled? }。 */
+  pickGameDir: () => ipcRenderer.invoke('dfae:icons-pick-dir'),
+  /** 直接设置一个目录(与音频提取共用同一份设置)。 */
+  setGameDir: (dir) => ipcRenderer.invoke('dfae:icons-set-dir', String(dir == null ? '' : dir)),
+  /** 索引状态。返回 { ready, count, builtAt, stale, building, gameDir }。 */
+  getIndexState: () => ipcRenderer.invoke('dfae:icons-index-state'),
+  /** 重建索引(后台线程,进度走 onIndexProgress)。返回 { ok, count, stats } 或 { ok:false, error }。 */
+  buildIndex: () => ipcRenderer.invoke('dfae:icons-build-index'),
+  /** 索引进度订阅;返回取消订阅函数。 */
+  onIndexProgress: (handler) => {
+    const listener = (_e, payload) => {
+      try { handler(payload); } catch { /* 页面自己的异常不该影响主进程 */ }
+    };
+    ipcRenderer.on('dfae:icons-progress', listener);
+    return () => ipcRenderer.removeListener('dfae:icons-progress', listener);
+  },
+  /** 分页查询。opts = { query?, cat?, offset?, limit? }（cat = 按名称的分类），返回 { total, items }。 */
+  search: (opts) => ipcRenderer.invoke('dfae:icons-search', opts || {}),
+  /** 名称分类清单(含每类条数),返回 { items: [{ key, label, count }] }。 */
+  getCategories: () => ipcRenderer.invoke('dfae:icons-categories'),
+  /** 预览/渲染:opts = { id, tint? }。返回 { ok, data: Uint8Array(PNG), width, height }。 */
+  preview: (opts) => ipcRenderer.invoke('dfae:icons-preview', opts || {}),
+  /** 批量导出 PNG。opts = { ids: string[], tint?: string }。 */
+  exportIcons: (opts) => ipcRenderer.invoke('dfae:icons-export', opts || {}),
+  /** 当前导出目录。返回 { dir }。 */
+  getExportDir: () => ipcRenderer.invoke('dfae:icons-export-dir'),
+  /** 选择导出目录。返回 { ok, dir } 或 { ok:false, canceled? }。 */
+  pickExportDir: () => ipcRenderer.invoke('dfae:icons-pick-export-dir'),
+});

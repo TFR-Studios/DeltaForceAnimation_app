@@ -21,16 +21,18 @@ src/                  前端全部逻辑,14 个 .ts 约 24k 行
   mobile.ts/.css      移动端外壳 + 手写触屏手势;非触屏设备上零副作用
   logs.ts/devlog.ts   用户日志 / 开发者日志(采集 console、异常、业务事件;桌面端由主进程写 JSONL)
   audio-page.ts/.css  音频提取页;数据经 window.dfaeAudio 走主进程
+  icons-page.ts/.css  图标提取页;数据经 window.dfaeIcons 走主进程(BC7 解码与 PNG 编码在主进程)
   ui-upgrade.ts       Fluent 组件注册与 DOM 升级(顶层 await,必须最先执行)
   ui-theme.ts         主题开关;style.css 是唯一颜色令牌来源
   update-check.ts     更新检查
 electron/             Windows 壳
   main.cjs            127.0.0.1 随机端口静态服务、窗口/菜单/单实例、下载接管、自检/审计开关、IPC
-  preload.cjs         contextBridge 暴露 dfaeDesktop / dfaeDownloads / dfaeLogs / dfaeAudio
+  preload.cjs         contextBridge 暴露 dfaeDesktop / dfaeDownloads / dfaeLogs / dfaeAudio / dfaeIcons
   downloads.cjs       下载列表与历史(命名、清单、对账找回、重命名)
   logs.cjs            <userData>/logs/dfae.log(JSONL,2MB 轮转一代)
   smoke.cjs measure.cjs  自检(--smoke)与布局审计(--measure)
   audio/              读游戏 pak、解 Oodle(koffi)、vgmstream 解码;密钥在 audio/keys/AESKey1.json
+  icons/              UI 图标提取:自定义 uasset 解析(PaperSprite/Texture2DSpriteAtlas)、BC7 局部解码、PNG 编码、索引/服务
 src-tauri/            Android / Tauri 壳(Rust);gen/android 已提交,含锁横屏与权限定制
 animations/           10 套动画素材(约 130MB),打包时按动画分包
 posters/              画廊封面
@@ -72,6 +74,8 @@ README.md             维护手册:安装、打包、发版、外壳实现、FAQ
 - `node tools/verify-export-resilience.mjs` 探测挂死、编码器报错、透明 AVI 内存护栏后按钮锁复位
 - `node tools/verify-render-log.mjs` 导出浮层里的渲染器日志(卡片边界、无横向溢出)
 - `node tools/verify-image-editor.mjs` 图片编辑器:内置 PSD 载入 / 4 张背景图切换与撤销(换背景后屏幕无透明孔)/ 滚轮缩放+拖动平移+双击复位 / 改字改色改透明度 / 名片选择器(190 张、分类、搜索、方向键、等比/自由/透视三种模式、单角拖动、整体平移、旋转、复位、换背景位置不变、来源标注、Esc 焦点归还)/ 导出 PNG(含忙碌态、结果卡、「打开文件夹」/整幅不透明且屏幕中心非黑)/ 撤销(含名片)/ 窄屏 / 手机底栏入口 + 舞台下控制条 + 分区 chips 跳转 + 双指捏合缩放 / 编辑区拉条折叠 / 名片触屏缩放 / 横屏左右分栏
+- `node tools/verify-icons.mjs` 图标提取页:注入假桥跑目录条 / 索引扫描 / 按名称分类 / 搜索 / 分页翻页 / 懒加载预览 / 染色 / 详情 / 单张与批量导出 / 结果卡(无需游戏)
+- `node tools/check-icons-parser.mjs` 图标解析器回归:夹具 sprite 解析 + 真机图集 BC7 裁剪与金标逐像素比对 + 兼容加载器 + 服务层 renderIcon(本机没装游戏时自动跳过真机部分)
 - `node tools/verify-logs.mjs`、`tools/verify-devlog.mjs`、`tools/verify-ux-motion.mjs` 用户日志 / 开发者日志 / 动效
 - `node tools/mobile-perf.mjs` 移动端交互性能探针(非断言型)
 
@@ -90,6 +94,7 @@ README.md             维护手册:安装、打包、发版、外壳实现、FAQ
 - 下载历史:清单存 `<userData>/download-history.json`(删软件仍在),文件缺失标 missing,靠相对路径 + 文件名 + 体积找回。
 - 日志:一条采集主线;桌面端主进程写 `<userData>/logs/dfae.log`(JSONL,2MB 轮转一代),网页/手机只留内存。
 - 音频:仅桌面;主进程解析 pak 后用 `vendor/vgmstream` 解码;koffi 原生模块必须随 electron-builder 的 `files` 发出。
+- UI 图标提取:仅桌面,链路 **pak → PaperSprite(UV/尺寸/图集引用) → Texture2DSpriteAtlas(像素) → 按 UV 裁 → PNG**。三角洲的 cooked 包是自定义变体:名字表**排序**、包导入的 ObjectName 直接是 `/Game/` 全路径(所以 sprite→图集不用外部索引)、属性流**纯连续无对齐**(StructProperty 值前有 `[StructType FName][1B 标志+16B GUID]`;ObjectProperty 值前有 1B 标志;Bool 值 2B;Byte 枚举为 `[枚举名 FName][1B][枚举值 FName]`)。**图集像素格式不止 BC7**:实测 179 个图集为 PF_BC7×110、PF_DXT5×19、PF_B8G8R8A8×48(未压缩 BGRA),都要支持;**存储尺寸不一定被 pad 到 2 的幂**(PowerOfTwoMode=None 的图集实测 1648×960)。平台头结构固定:`[SizeX][SizeY][1][PF 长度]["PF_XXX\0"][0][NumMips][1][72][mip0字节数][mip0字节数][?][0]`——**定位锚点是 PF 后那对等值的 u32 = mip0 字节数**(= W*H*每像素字节数),mip0 载荷 = 该对之后 +16,尾部固定 104 字节;别再用"pow2 尺寸对"或"完整 mip 链"猜,文件只存 3 级 mip。块压缩格式只抽裁剪区域的 4×4 块解(BC7/DXT5 都是 16B/块),BGRA 直接按字节裁;BGRA 输出必须换 R/B。索引约 2~4 秒(1.5 万 sprite),条目按 **(分组, 名字)** 排序——同一页的图集更集中,翻页不反复解压大图集;图集载荷按**字节预算**(384MB)缓存、预览 PNG 按 400 条缓存。SD(/Content/UI/UIAtlas)优先,HD 只补 SD 没有的名字。页面是**搜索式分页**(每页 120 个,底部页码条 `‹ 上一页 1 2 … 3 下一页 ›`),不提供无限滚动:新增格子时要用已缓存的 objectURL/失败状态立刻回填,否则回访页面缩略图不显示。筛选维度是**按名称的分类**(`nameCategory` 取名字第一个下划线前的段,8554 个图标 → 154 类;不是图集目录分组),走 `search({ cat })`;条目仍按 (分组, 名字) 排序以保证每页图集集中。索引版本 3 及以后才带 `cat` 字段;**老版本索引在 `loadIndex` 里就地升级**(补 `cat` 与分类清单并写回,不重扫游戏包)——不要改成"版本不符就丢弃",那会让用户误以为分类功能坏了、还得重扫 1.5 万个 sprite。图集中为空白(全透明)、图集缺失(移动端资源)的图标要显示「空白」/「无图」占位 + tooltip 原因,不能一直转或静默空白。导出支持原色/银灰/深灰/纯黑/自定义染色(白色 sprite × 目标色)。
 - Tauri / Android:同一份 `dist/` + 注入桥;导出字节必须 base64 单串过 IPC(数字数组会 OOM,Raw 通道不支持),写 MediaStore 进系统相册;release 构建必须走内置服务,不能使用配置里的 dev URL。
 
 ## Conventions
@@ -105,6 +110,7 @@ README.md             维护手册:安装、打包、发版、外壳实现、FAQ
 - `build/icon.ico` / `icon.png` / `splash.bmp` 是打包输入,必须提交;splash 固定 460×272,与 `electron/portable-splash.html` 改一边必须同步另一边。
 - 版本号三处一起改,优先用 `scripts/bump-version.mjs`;发版说明写在 `docs/RELEASE_NOTES_v<版本>.md`,其中的安装包文件名必须匹配当前版本(CI 会校验)。
 - 图片编辑器的页面 DOM 由 `image-page.ts` 在首次进入时生成(原生 `<button>`,不经过 `ui-upgrade` 的 Fluent 升级),样式全部收在 `image-page.css` 的 `.imged` 前缀下。
+- 别混淆两个入口:图片编辑器(`#viewImage` / `image-page.ts` / PSD 结算图)**全端可用**;图标提取(`#viewIcons` / `icons-page.ts` / 游戏 pak UI 图标)**仅桌面**——mobile.css 里 `#navIcons` 必须 display:none。
 - 名片选择器的 backdrop 关闭只能判断 `ev.target === dialog`:键盘 Enter / 脚本 `.click()` 的坐标是 0,0,按坐标判断会把面板内部点击误判成点遮罩。
 - 不要提交 `dist/`、`release/`、`release-assets*/`、keystore / keystore.properties。
 - 动导出链路(编码族 / 录制 / 封装 / 文件名)必须跑 `verify-mobile-export.mjs` 的 recorder + noaac 用例与 `verify-export-fallback.mjs`;只跑桌面基准不够。
@@ -123,10 +129,15 @@ README.md             维护手册:安装、打包、发版、外壳实现、FAQ
 - 改字动画的强制光栅化在手机上实测约 245ms/帧(3.95s 动画被拉成 58s);不要删掉导出前的 Canvas 探测而重新"一律光栅化"。
 - `tools/verify-mobile-export.mjs` 的 TMP 是硬编码绝对路径(`I:/Delta Force custom animation/tools/.mobile-test`),换机器/CI 前先改它,否则产物会写到别处。
 - `tools/verify-devlog.mjs` 默认连 5174(其余脚本 5173),跑之前用 `--url http://127.0.0.1:5173/` 覆盖。
+- `texture2ddecoder-wasm` 官方入口在 Electron 31 主进程(Node 20)加载失败("Cannot use 'import.meta' outside a module",包内胶水是 ESM):必须走 `electron/icons/wasm-loader.cjs`——把胶水复制成 `.mjs` 后动态 import。删掉这条回退,图标预览/导出会在打包版里全挂。
+- 图标缩略图别加 `loading="lazy"`:拿到 `is-previewed` 前 img 是 display:none,没有布局盒的懒加载图永远不会触发 load,而 `is-previewed` 只在 load 后加(死锁)。懒加载由页面自己的 IntersectionObserver 负责。
+- 图标"不显示/渲染慢"先查图集格式与缓存,不要先怀疑 sprite:换格式前曾把 DXT5/BGRA 图集全部判成"没有平台数据头",约 16% 的图标是静默空白;图集载荷缓存按条数会在 88MB 大图集上抖动,必须按字节预算。
 - `asar: false` 是有意为之(产物是 400+ 静态文件,便于核对/热替换),不要当警告"修复"。
 - `.bat` 里的中文按**当前控制台代码页**解码:文件存 GBK、开头 `chcp 936`;`more` 和部分外部命令会把代码页切成 65001,之后 cmd 按 UTF-8 解批处理里的 GBK,中文全变「锟斤拷」。回放日志用 `type`,并在每条外部命令之后补 `chcp 936 >nul`。
 - `.bat` 里把右括号转义成 `^)`(如 `(echo ...^)>> 日志`)会让 cmd 找不到收尾括号、一路读到文件尾并以退出码 255 中止整批,后面的 `pause` 不执行——构建一失败窗口就瞬间关闭。写日志改用 `>> "文件" echo ...`,或右括号不转义。
 - `tools/` 里 200+ 脚本多为一次性排障;复用前先看文件头是否标「常驻」,别把一次性诊断当回归。
+- Android 导出落盘走 `MediaStore`:`ipc.rs::mime_of` 必须把 png/jpg/webp 映射成 image/*,否则默认 video/mp4 会插进 Video 集合,系统会给 `xxx.png` 再补成 `xxx.png.mp4`;图片还要插 `MediaStore$Images$Media` + `Pictures/...`(见 `mediastore.rs` 的 `is_image` 分支)。
+- 改了 `pictures/settlement/settlement.psd` 后编辑器仍是旧图时,先排查三条:① `dist/assets/settlement-*.psd` 是否旧构建(必须 `npm run build`);② 页面是否只切 tab 没重载(PSD 解析结果常驻内存,点「重载 PSD」);③ 之前 `fetchBuffer` 用 `force-cache` 会命中旧响应,已改为开发态 `no-store + ?v=`。PSD 校验失败先看加载层报错。
 - 手机底栏指示条按选中格真实 rect 写 `--m-nav-x/--m-nav-w`,不要用 1/格数 假设等宽:五格 + 中文标签在窄屏 / 字体放大下会不等宽,按比例算会歪;格子必须 `min-width: 0` 允许收缩。底栏是 Fluent 按钮,图标/文字在 shadow DOM 的 `.content` 里:`::part(content)` 必须同时设 `align-items: center`(只改 flex-direction 不够),否则 19px 图标贴左、文字居中,看起来图标和文字不在一条中线上。
 - 图片编辑器舞台的 `pointerdown` 会 `preventDefault()` + `setPointerCapture()`,浮层控件(导出结果卡、缩放条、空状态)只要没在 `isStageUi()` 里放行,里面的按钮就永远收不到 click;这类回归必须用 `page.mouse.click` 真实点,脚本 `.click()` 绕过 pointerdown 查不出来。
 - `tools/check-downloads.mjs` 头部用法行写的是旧文件名 `verify-download-history.mjs`,以实际文件名为准。

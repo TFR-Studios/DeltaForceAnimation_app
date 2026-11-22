@@ -211,6 +211,10 @@ adb install -r -t src-tauri\gen\android\app\build\outputs\apk\universal\debug\ap
     横屏(高度 ≤619px)编辑区停靠右侧、舞台在左;名片选择器 3 列网格。
   - 「复位」回到默认透视四角;「恢复默认」清掉名片,回到 PSD 原来的黑屏。名片和背景、文字一样计入「撤销修改」。
   - 导出前先垫黑底再画名片,回归会检查屏幕中心是名片颜色而不是黑屏。
+  - 手机(Android 壳)导出 PNG 会落到系统相册的 `Pictures/三角洲行动动画编辑器`,文件名保持 `.png`;
+    视频落 `Movies/三角洲行动动画编辑器`。旧版曾把 PNG 按 `video/mp4` 插进 Video 集合,导致 `.png.mp4`。
+  - 改了 `pictures/settlement/settlement.psd` 后:开发态直接点「重载 PSD」(或刷新);`dist` / 安装包必须重新 `npm run build`,
+    因为 PSD 以带 hash 的静态资源打包。编辑器不再用 `force-cache`,开发态每次带 `?v=` 绕开 HTTP 缓存。
   - 缩略图与清单由 `tools/build-card-assets.py` 生成(190 张缩略图约 1.7MB),随构建打包;新增素材时重跑脚本即可
     (`--fulls` 才会输出 384 宽 WebP,默认不再打包大图):
     ```bash

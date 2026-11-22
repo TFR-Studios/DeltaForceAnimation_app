@@ -75,6 +75,7 @@ import { devEvent } from './devlog';
 import { initAudioPage } from './audio-page';
 import './audio-page.css';
 
+
 /* 音效资源:独立小文件(?url 打包为静态资源),不进入大体积动画数据 chunk */
 import bundledAudioUrl from '../animations/animation_1/gunmuchenggong.mp3?url';
 import exposedAudioUrl from '../animations/animation_2/UI_C201_Energy_Scout_Bow_Scout_02.wav?url';
@@ -116,6 +117,7 @@ initLogs();
   const audioHost = document.getElementById('audioMount');
   if (audioHost) initAudioPage(audioHost);
 }
+
 
 /* ---------- 启动加载界面 ----------
  * #app-loading 的样式是内联在 index.html 中的(不依赖本文件 import 的 style.css),

@@ -1335,6 +1335,9 @@
   }
   .imged-mobile-row .imged-actions-sep { display: none; }
   .imged-btn { height: 40px; padding: 0 var(--sp-3); font-size: 13px; }
+  /* 重载 PSD 在手机上收成图标,把宽度让给撤销 / 导出 */
+  .imged-mobile-row .imged-reload { width: 40px; padding: 0; }
+  .imged-mobile-row .imged-reload-text { display: none; }
   .imged-actions [data-imged="export-png"] { height: 40px; min-width: 96px; }
 
   /* 高度分配:面板高度由拉条写 --imged-sheet,舞台吃掉剩下的高度 */

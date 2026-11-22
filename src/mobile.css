@@ -865,6 +865,9 @@ html[data-ui='mobile'][data-rail='collapsed'] .rail-item span { display: inline;
 /* 手机端没有下载列表这一项(落点是系统相册) */
 html[data-ui='mobile'] #navDownloads { display: none; }
 
+/* 手机端也没有 UI 图标提取:要读本地游戏 pak + WASM 解 BC7,只有桌面客户端有意义 */
+html[data-ui='mobile'] #navIcons { display: none; }
+
 /* ---------- 页面入场 ----------
  * 换页时不再"整块啪一下出现":页面壳先淡入(160ms),标题区与内容分两级错峰
  * (各自 200/210ms,内容晚 50ms),总时长 260ms —— 在 start-screen.ts 移除

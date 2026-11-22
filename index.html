@@ -176,6 +176,12 @@
             <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>
             <span>音频提取</span>
           </button>
+          <!-- UI 图标提取:从游戏 pak 里解 PaperSprite + BC7 图集裁出透明底 PNG。
+               只在桌面端可用:主进程要读 pak、调 Oodle 解压、再解 BC7。见 electron/icons/。 -->
+          <button type="button" class="rail-item" data-page="icons" id="navIcons" title="图标提取">
+            <svg class="bi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+            <span>图标提取</span>
+          </button>
           <!-- 日志:应用运行 / 导出 / 更新 / 错误的关键事件。桌面版写入本地日志文件,
                网页版与手机端只保留本次会话的记录(见 src/logs.ts)。 -->
           <button type="button" class="rail-item" data-page="logs" id="navLogs" title="日志">
@@ -808,6 +814,12 @@
          数据能力来自 electron/audio/ 的主进程接口。 -->
     <section class="page page-audio" id="viewAudio" hidden aria-labelledby="audioTitle">
       <div class="audio-host" id="audioMount"></div>
+    </section>
+
+    <!-- UI 图标提取页:同样只留挂载点,页面由 src/icons-page.ts 渲染;
+         数据能力来自 electron/icons/ 的主进程接口(BC7 解码在主进程)。 -->
+    <section class="page page-icons" id="viewIcons" hidden aria-labelledby="iconsTitle">
+      <div class="icons-host" id="iconsMount"></div>
     </section>
 
     <!-- 图片编辑器:同样只留挂载点,页面由 src/image-page.ts 在首次进入时搭建
